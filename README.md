@@ -11,10 +11,14 @@
 [![Tests](https://img.shields.io/badge/tests-1416_passing-brightgreen.svg)](#-compatibility--verification)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#-what-it-never-does)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
+[![Donate Bitcoin](https://img.shields.io/badge/donate-bitcoin-f7931a.svg)](#-support-the-project)
 
 <img src="https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/main/assets/kame-cover.png" width="420" alt="KAME — Key-Aware Management Engine" />
 
 ### *4P1 R0T4T10N — 4FRE3D0M*
+
+**Free and MIT — built and paid for by one person.** If KAME saved a run, a tip keeps it going:
+**BTC `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`** — *any amount helps, genuinely.*
 
 **API key rotation, rate-limit recovery and 429 failover for the Hermes agent — Gemini, OpenAI, OpenRouter, Anthropic, or a provider that does not exist yet.**
 
@@ -334,6 +338,21 @@ Every release, newest first. The full entries — what broke, what the log said,
 KAME started as an [Agent Zero](https://github.com/agent0ai/agent-zero) plugin and was ported here. The two share the decision core and the version line.
 
 **→ [kame-api-rotation-for-agent-zero](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
+
+---
+
+## ❤️ Support the project
+
+KAME is free, MIT, and written by one person against real quotas on a real free
+tier. There is no company behind it, no telemetry, and nothing to upsell.
+
+If it saved you a run — or an afternoon — a tip keeps it going:
+
+**Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
+
+*Any amount helps, genuinely. Every sat goes into keeping this project alive and
+learning.* And if money is not on the table, a ⭐ costs nothing and helps other
+people find it.
 
 ---
 
