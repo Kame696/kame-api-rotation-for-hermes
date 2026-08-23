@@ -339,6 +339,9 @@ KAME started as an [Agent Zero](https://github.com/agent0ai/agent-zero) plugin a
 
 **→ [kame-api-rotation-for-agent-zero](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
 
+Both ports, the parity rule and the table of what each host already does itself:
+**[kame-api-rotation](https://github.com/Kame696/kame-api-rotation)** — the family's front door.
+
 ---
 
 ## ❤️ Support the project
