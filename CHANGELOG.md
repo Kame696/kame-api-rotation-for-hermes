@@ -1,14 +1,50 @@
-# Changelog — hermes-kame-api-rotation
+# 🐢⚡ Changelog — KAME API Rotation for Hermes
 
 All notable changes to the Hermes port of KAME are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/); versions
 follow [Semantic Versioning](https://semver.org/).
+
+Each release opens with **In short** — the whole release in a handful of lines —
+and folds the reasoning, the logs it came from and the test results underneath.
+
+---
+
+## 📌 At a glance
+
+| Version | Headline | What changed for you |
+|---|---|---|
+| **1.2.0** | Settings you can read | Three labelled shelves, so the one optional extra can no longer be mistaken for something rotation needs |
+| **1.1.3** | The rest that bought nothing | A key is no longer benched when it is the only well one — two defects found by reading the loop, not by anything failing |
+| **1.1.2** | The provider that refuses | Gemini will not be handed its own turn back; the continuation adapts instead of ending the turn it exists to save |
+| **1.1.1** | Answers arrive whole | Stream stitching, plus a panel that can actually be used: every switch a switch, every number a field |
+| **1.1.0** | A real panel | `/kame` stops being markdown painted raw and becomes a Desktop panel; Gemini's merged tool calls repaired |
+| **1.0.10** | The status line that shows up | The host keeps only text in its own shape — matched, so the line appears instead of blanking Hermes' own |
+| **1.0.9** | Causes, not symptoms | "It stops", "it freezes", "rewind broke" traced to four host facts — including a 410 the carousel was rotating against |
+| **1.0.8** | Trust the connection | The stream watchdog deleted (it corrupted rewind/edit/resend); throttled live status put in its place |
+| **1.0.2** | Stable baseline | Storm-log collapse, quota-period ordering, 1103 tests green |
+| **1.0.1** | Wait without ceiling | The 10-minute cap removed — a wait ends when the provider recovers, not when a timer says so |
+| **1.0.0** | The carousel | A failed call moves to the next key instead of ending the turn |
+| **0.0.3** | No provider allowlist | Every decision moved onto evidence in the response — never on who the provider is |
+
+**Version parity with Agent Zero.** The same MAJOR.MINOR means the same
+generation of behaviour on both hosts; the patch number moves independently.
+The 1.1.x series exists only here, because it fixed stream handling that Agent
+Zero owns itself — the two lines rejoin at 1.2.0.
 
 ## [1.2.0] — 2026-08-23
 
 The release where the two ports carry the same number again. Nothing in the
 rotation loop changed; what changed is what a person sees the first time they
 open the settings screen.
+
+**In short**
+
+- ✏️ *Changed* — The settings are on three labelled shelves instead of in one list.
+- ✏️ *Changed* — A setting the table has never heard of is shown under "Other", never dropped.
+- ✏️ *Changed* — The silent-key timeout explains itself to the person reading it.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Changed
 - **The settings are on three labelled shelves instead of in one list.** Twelve
@@ -43,11 +79,22 @@ open the settings screen.
   `tool_call_cuts` from 1.1.3. The panel and `state.py` move together, as
   always — the panel refuses a document it does not understand.
 
+</details>
+
 ## [1.1.3] — 2026-08-23
 
 Two defects with the same shape, both found by reading the loop rather than by
 anything failing: KAME doing something reasonable-looking on a path nobody had
 measured.
+
+**In short**
+
+- 🔧 *Fixed* — A key is no longer rested when it is the only one that is well.
+- 🔧 *Fixed* — A stream that stops inside a tool call is no longer recorded as an answer.
+- ✏️ *Changed* — The settings panel leads with the numbers.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Fixed
 - **A key is no longer rested when it is the only one that is well.** This
@@ -92,11 +139,24 @@ measured.
   on every call in both directions. A setting the order list has never heard of
   is shown after the ones it knows, rather than not at all.
 
+</details>
+
 ## [1.1.2] — 2026-08-23
 
 The first release of 1.1.1 into real use found the one provider that will not
 be handed its own turn back, and the failure was the worst kind: the feature
 that exists so the user never sees a broken answer was ending the turn instead.
+
+**In short**
+
+- 🔧 *Fixed* — Gemini refuses a prefilled continuation, and that no longer breaks the turn.
+- 🔧 *Fixed* — A continuation that cannot be made to work never costs the answer.
+- 🔧 *Fixed* — And neither does any other way out of the carousel.
+- 🔧 *Fixed* — The manifest declares a version Hermes' installer will actually accept.
+- 🛠️ *Tooling* — `tools/deploy.py` has a second road, and verifies what it wrote.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Fixed
 - **Gemini refuses a prefilled continuation, and that no longer breaks the
@@ -159,12 +219,31 @@ that exists so the user never sees a broken answer was ending the turn instead.
   by file by digest, through whichever route it was written with — the check
   that would have caught the 1.0.8 deploy that never ran.
 
+</details>
+
 ## [1.1.1] — 2026-08-22
 
 1.1.0 could show things. This release can be *used*: every switch is a switch,
 every number is a field, the panel says why something happened, and the one
 thing the user still saw go wrong — an answer stopping in the middle of a
 sentence — stops happening.
+
+**In short**
+
+- ➕ *Added* — The stream seam.
+- ➕ *Added* — A settings editor in the panel.
+- ➕ *Added* — The path back.
+- ➕ *Added* — An Events screen.
+- ➕ *Added* — A first-run state.
+- ✏️ *Changed* — The status-bar chip names the pool, not the model.
+- ✏️ *Changed* — The sidebar row is `KAME API Rotation`.
+- ✏️ *Changed* — `silent_stream_patience_seconds` is now `stream_silence_timeout_seconds`.
+- ✏️ *Changed* — An invalid key says so.
+- 🔧 *Fixed* — `api_version` is an integer.
+- 🔧 *Fixed* — Uninstalling removes the Desktop half.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Added
 - **The stream seam.** When a provider closes the stream mid-answer, Hermes
@@ -258,6 +337,8 @@ sentence — stops happening.
   a snapshot nothing was writing. It is now taken back out through
   `ctx.on_unload`, and only ever its own file and its own empty directory.
 
+</details>
+
 ## [1.1.0] — 2026-08-21
 
 1.0.10 put the status line where the renderer would keep it, and stopped there.
@@ -265,6 +346,21 @@ Everything else it added was written for a surface that does not exist: `/kame`
 was markdown, and a plugin command's reply is painted with `pretty={false}`, so
 the headings and the table pipes arrived as themselves. This release stops
 guessing at a panel and ships one.
+
+**In short**
+
+- ➕ *Added* — A real panel, in the app's own language.
+- ➕ *Added* — The snapshot behind it.
+- ➕ *Added* — The install is the install.
+- 🔧 *Fixed* — "Response truncated due to output length limit" on turns nowhere near a length limit.
+- 🔧 *Fixed* — `/kame` is plain text.
+- 🔧 *Fixed* — The version reads as newer than the one before it.
+- ✏️ *Changed* — `tools/deploy.py` proves it is writing to the real Hermes rather than assuming it from where the interpreter lives.
+- ➕ *Added* — 4 new host tripwires, 22 in all.
+- ➕ *Added* — 49 new tests.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Added
 - **A real panel, in the app's own language.** The package now carries a
@@ -359,11 +455,24 @@ guessing at a panel and ships one.
 - The Gemini repair's self-check run against the installed adapter: the merge
   reproduced, the repair separated the two calls, patch applied.
 
+</details>
+
 ## [1.0.10] — 2026-08-21
 
 Everything v1.0.9 added was invisible, and one thing it changed made the
 symptom it was chasing worse. This release is that, corrected, after reading
 the parts of the host v1.0.9 had only reasoned about.
+
+**In short**
+
+- 🔧 *Fixed* — The status line never appeared, and was blanking the host's.
+- 🔧 *Fixed* — `HERMES_STREAM_RETRIES` is no longer touched — and this was making the mid-stream cuts worse.
+- ✏️ *Changed* — `/kame` is markdown.
+- ➕ *Added* — Two host tripwires, eighteen in all.
+- ➕ *Added* — 6 new tests.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Fixed
 - **The status line never appeared, and was blanking the host's.** Desktop
@@ -423,12 +532,37 @@ the parts of the host v1.0.9 had only reasoned about.
 - 1203/1203 tests passing.
 - 18/18 host assumptions holding against the installed Hermes.
 
+</details>
+
 ## [1.0.9] — 2026-08-21
 
 The release that went looking for the causes rather than the symptoms. Three
 separate complaints — "it stops for no reason", "it freezes", "rewind stopped
 working" — turned out to be four distinct host-level facts, and every fix
 below is named after the one it answers.
+
+**In short**
+
+- 🔧 *Fixed* — The 410 loop.
+- 🔧 *Fixed* — Rotating into Hermes' own circuit breaker.
+- 🔧 *Fixed* — The silent gap between 90 seconds and ten minutes.
+- ➕ *Added* — The live status line, always on.
+- ➕ *Added* — A cadence instead of a pulse.
+- ➕ *Added* — `/kame` — the panel that did not exist.
+- ➕ *Added* — A mid-stream cut counter, and what it explains.
+- ➕ *Added* — `on_session_reset`.
+- ➕ *Added* — Three new host tripwires.
+- ➕ *Added* — 84 new tests.
+- ✏️ *Changed* — Speed: `HERMES_STREAM_RETRIES` is claimed and set to 0.
+- ✏️ *Changed* — Unanimity is evidence about the request.
+- ✏️ *Changed* — Bind by signature now pins the parameter that matters.
+- ✏️ *Changed* — `_Spinner` is locked, and keyed per conversation.
+- ✏️ *Changed* — `/kame` says whose numbers it is showing.
+- ✏️ *Changed* — `deploy.py` refuses to copy from the wrong interpreter.
+- ✏️ *Changed* — `first_token_patience_seconds` is now `silent_stream_patience_seconds`,.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Fixed
 - **The 410 loop.** `_TERMINAL_STATUS` did not include HTTP 410, so an
@@ -571,7 +705,25 @@ Three new, all off by default: `live_status_disabled`,
 - 1200/1200 tests passing (1116 existing + 84 new).
 - 16/16 host assumptions holding against the installed Hermes.
 
+</details>
+
 ## [1.0.8] — 2026-08-20
+
+**In short**
+
+- ➖ *Removed* — `_StreamWatchdog`.
+- ➖ *Removed* — `_emit_wait_notice` in the rotation loop.
+- ➖ *Removed* — `_emit_wait_notice` in `_Vigil.maybe_speak`.
+- ➖ *Removed* — `VIGIL_FIRST_S = 5.0`.
+- ➖ *Removed* — `CHUNK_STALE_TIMEOUT`.
+- ➕ *Added* — `_Spinner`.
+- ➕ *Added* — Jitter.
+- ➕ *Added* — Bind by signature.
+- ➕ *Added* — 13 new tests.
+- • *Decided* — First-Token Timeout.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
 
 ### Removed
 - **`_StreamWatchdog`** — the thread daemon that killed the active HTTP client
@@ -625,6 +777,8 @@ Three new, all off by default: `live_status_disabled`,
 
 ### Test results
 - 1116/1116 tests passing (1103 existing + 13 new).
+
+</details>
 
 ## [1.0.2] — stable baseline
 

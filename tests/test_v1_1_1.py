@@ -927,10 +927,17 @@ class TestTheReleaseIsConsistent:
             assert not found, f"{path.name}: {found[:5]}"
 
     def test_the_readme_says_how_to_install_it_and_under_what_licence(self):
+        # Asserted by content and not by heading text: 1.2.0 retitled the
+        # sections ("Install" -> "Install - three lines", "Screenshots" ->
+        # "What you see") and a test that fails on a better heading is a test
+        # that teaches you to leave the heading alone.
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        assert "## Install" in readme
+        assert "hermes plugins install" in readme
         assert "MIT" in readme
-        assert "## Screenshots" in readme
+        # The two views a reader needs before installing: the status chip and
+        # the panel. Both are shown as layout blocks, so look for their content.
+        assert "KAME  gemini:" in readme
+        assert "POOL HEALTH" in readme
 
     def test_the_licence_is_a_file_and_not_a_claim(self):
         licence = (ROOT / "LICENSE").read_text(encoding="utf-8")
