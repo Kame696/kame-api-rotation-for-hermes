@@ -26,15 +26,16 @@ homepage: https://github.com/Kame696/kame-api-rotation-for-hermes
 tags:
   - api
   - rotation
+  - rate-limiting
+  - reliability
+  - keys
   - quota
-  - rate-limit
-  - resilience
   - multi-key
 # One paragraph, because this is the text a person reads in a plugin list.
 # The full account of what each release claims and how it was checked lives in
 # README.md and DESIGN.md, which is where a reader can choose to go looking.
 description: "Rotates your API keys on every single call, not only when one refuses, and waits out a spent quota instead of giving up on it. Paste several keys into one provider field, comma separated: Hermes stores them as one credential, and KAME reads them as the several keys they are. Before each request it picks the healthiest key — fewest requests in the last 60 seconds, least recently used to break the tie — so a pool of fifteen spreads fifteen ways instead of hammering the first. When a call fails it rests that key for exactly as long as the evidence justifies and takes the next one, without the error reaching your chat: a 503 outage, a read timeout, a per-minute throttle and an invalid key are four different waits, and only a genuinely bad request stops the turn. When every key is resting there is no time limit on how long it will wait for one — a daily quota that rolls at midnight is worth waiting for — and it says so while it waits, with the count of resting keys, the estimate, and how to cancel, so a long wait never looks like a freeze. Cooldowns are sized from what the provider actually said — retry timing in SDK exceptions, rate-limit headers and structured error bodies, which the built-in classifier does not read — except for a daily cap, whose retry hint is deliberately ignored because it lies. Remembers which model spent the quota, so a key exhausted on the main model keeps its allowance on a smaller one, and pulls the whole pool back early once an outage ends. A long outage is collapsed in the log instead of writing the same line a thousand times. No provider allowlist — it acts on evidence and declines what it cannot size, leaving Hermes' own classifier in charge. Adds /kame-keys for bulk import and /kame-quota for the per-key, per-model picture."
-author: "C0DEM4ST3R"
+author: "Kame696"
 # Every switch is also an environment variable, and the environment wins. The
 # config entry exists because that is where Hermes keeps plugin switches and a
 # knob nobody can find is a knob nobody has; the environment stays on top
