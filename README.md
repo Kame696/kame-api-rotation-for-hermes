@@ -254,35 +254,48 @@ Every protection KAME adds is one named subsystem with one switch that gives the
 
 And one master switch, `disabled`, which leaves the plugin installed and doing nothing.
 
-### Selection algorithm
+### 🔬 How it works — internals
 
-```mermaid
-flowchart TD
-    A[Hermes resolves the credential pool for provider:model] --> B[candidates - split every comma-joined value, dedupe by key text]
-    B --> C[Carousel.select - most idle key in the last 60s window]
-    C --> D{Healthy key available?}
+The engine lives in `core/carousel.py`, framework-free on purpose: no sleeping, no logging, no Hermes object, no clock but the one passed in — so the decision rules are testable without a provider or a network. `dispatch_binding.py` is the only part that touches Hermes: it resolves the credential pool, calls `select()` before every request, calls `mark()` after every result, and owns the sleep when the whole pool is resting.
 
-    D -->|Yes| E[Mark used - anti-dogpile]
-    D -->|No, all resting| F[Read soonest cooldown end]
+Per-key health state
 
-    E --> G[Hermes makes the real call, KAME's key injected]
-    G --> H{Result?}
+Every API key carries this dictionary, scoped under `{provider}:{model}`:
 
-    F --> I[Chip shows countdown, no call made]
-    I --> C
+```
+{
+    "sick_until":     float,  # epoch time when key becomes available again
+    "last_used":      float,  # for LRU tie-break + anti-dogpile
+    "request_log":    [float],# 60s sliding window of request timestamps
+    "last_sick_at":   float,  # for the stream-stitch "fresh recovery" filter
+    "consecutive_rl": int,    # consecutive rate-limit fails -> adaptive backoff (resets on success)
+}
+```
 
-    H -->|Success| J[Mark healthy, reset backoff, return the answer]
-    H -->|Stream cut mid-answer| K[Stitch: resume on the next key, up to stream_resume_limit]
-    K --> C
-    H -->|429 / daily quota / invalid key| L[Classify: per-minute vs daily vs quarantine]
-    L --> M[Rest that key for the parsed duration]
-    M --> C
+Selection algorithm
 
-    style E fill:#10b981
-    style J fill:#10b981
-    style F fill:#f59e0b
-    style M fill:#f59e0b
-    style I fill:#3b82f6
+```
+healthy = [k for k in usable if pool[k]["sick_until"] < now]
+if not healthy:
+    return min(usable, key=lambda k: pool[k]["sick_until"]), "EXHAUSTED"
+
+chosen = min(healthy, key=lambda k: (
+    len(pool[k]["request_log"]),  # primary: most remaining 60s-window capacity
+    pool[k]["last_used"],         # secondary: LRU for even spreading
+))
+# Then, inside the same lock: mark used NOW (anti-dogpile)
+#                             append to request_log NOW (anti-thundering-herd)
+```
+
+ETA-driven sleep formula
+
+```
+eta = next_recovery_seconds(identity, keys)   # None if a key is free right now
+if eta is None:
+    wait = 1.0                                 # re-check slice, never a spin
+else:
+    wait = min(eta + 0.5 + random.uniform(0.1, 1.5), 60.0)
+sleep in 1s slices, interruptible, chip redrawn every slice
 ```
 
 Every few minutes, `select()` also drops any pooled key the current candidate list no longer offers — so a key you removed from Settings stops being retried, refused and counted as broken, instead of quarantining forever against a config that no longer mentions it (the 1.2.2 fix — see the [FAQ](#-faq)).
