@@ -90,6 +90,22 @@ A chip on the status bar and a `/kame` panel show which keys are resting and whe
 </td>
 </tr>
 <tr>
+<td width="50%" valign="top">
+
+### 🤝 Trusts the connection
+
+**Zero artificial timeout on top of what Hermes already gives a call.** `stream_silence_timeout_seconds` defaults to `0` — off — so a slow but healthy provider, or a local model that legitimately takes minutes to think, is never cut for looking quiet. Hermes' own 120-second read timeout is the only ceiling, unless you choose to lower it yourself.
+
+</td>
+<td width="50%" valign="top">
+
+### 🥷 Stays invisible
+
+Every wait for a cooling pool adds `random.uniform(0.1, 1.5)` seconds of **jitter** — the same mechanism the Agent Zero sibling uses, built into both for parity. No two waits land on the same tick, so what a provider sees is an uneven, human-shaped pause between calls, not a bot polling on a fixed clock.
+
+</td>
+</tr>
+<tr>
 <td colspan="2" valign="top">
 
 ### 🚫 No provider allowlist — anywhere
