@@ -315,6 +315,12 @@ class TestReadingAFailure:
         delay, kind, _ = carousel.classify(TimeoutError("read timed out"))
         assert (kind, delay) == ("timeout", carousel.TIMEOUT_S)
 
+    def test_gemini_streaming_read_timeout_is_classified_as_timeout_and_non_terminal(self):
+        exc = Exception("Gemini streaming request failed: The read operation timed out")
+        delay, kind, _ = carousel.classify(exc)
+        assert (kind, delay) == ("timeout", carousel.TIMEOUT_S)
+        assert carousel.is_terminal(exc) is False
+
     def test_a_spending_limit_403_is_a_quota_not_a_bad_key(self):
         # Rotating past it is right; quarantining the key as invalid is not.
         exc = Boom("403 key limit exceeded — rate limit reached", status_code=403)

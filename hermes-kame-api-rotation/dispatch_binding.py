@@ -280,22 +280,35 @@ def candidates(agent: Any) -> Tuple[List[str], Dict[str, Any]]:
     """
     entry_by_key: Dict[str, Any] = {}
     keys: List[str] = []
+
+    def _add(raw: str, entry: Any) -> None:
+        # One raw string may hold several keys. The parts are what the
+        # provider accepts; the whole — a comma-joined list — is the malformed
+        # credential whose failure is what this binding exists to hide. When
+        # the value holds one key, or the split cannot parse the value, the
+        # raw string itself is kept; no callers of candidates() ever see a
+        # comma.
+        split, _rejected = multikey.split_value(raw)
+        parts = split if len(split) > 1 else ([raw] if raw else [])
+        for part in parts:
+            if part not in entry_by_key:
+                entry_by_key[part] = entry
+                keys.append(part)
+
     for entry in _entries_of(agent):
         key = _key_of(entry)
-        if key and key not in entry_by_key:
-            entry_by_key[key] = entry
-            keys.append(key)
+        if key:
+            _add(key, entry)
 
     current = str(getattr(agent, "api_key", "") or "").strip()
     if not keys:
-        split, _rejected = multikey.split_value(current)
-        keys = split if len(split) > 1 else ([current] if current else [])
+        _add(current, None)
     elif current and current not in entry_by_key:
         # The agent is carrying a key the pool does not know — a resolver
         # substitution, a fallback provider, a manually set key. It is a
         # working credential and dropping it would narrow what the host would
         # have sent, which this plugin never does.
-        keys.append(current)
+        _add(current, None)
     return keys, entry_by_key
 
 
@@ -329,6 +342,21 @@ def _apply_key(agent: Any, key: str, entry: Any) -> bool:
     if getattr(agent, "api_mode", "") == "anthropic_messages":
         swap = getattr(agent, "_swap_credential", None)
         if entry is None or not callable(swap):
+            return False
+        # 1.2.2. ``candidates`` splits a comma-joined row into the keys it
+        # holds, and each part is mapped back to the row it came from — which
+        # means the entry handed here can be the *list*, not the key. On every
+        # other path that does not matter, because the key is written onto the
+        # agent directly. Here the entry is the credential: swapping it would
+        # send the whole joined list, which is precisely the malformed
+        # credential this release exists to stop. Leave the host's own key in
+        # place instead and say why once.
+        if _key_of(entry) != key:
+            logger.debug(
+                "kame: not swapping an Anthropic credential whose stored value "
+                "holds several keys — the host bakes the key into the client, "
+                "so only the pool's own split can rotate on this path"
+            )
             return False
         try:
             swap(entry)

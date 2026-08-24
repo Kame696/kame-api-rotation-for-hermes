@@ -13,6 +13,8 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
+| **1.2.1** | Resilient Gemini Streams | Captures SDK-wrapped stream read timeouts as non-terminal timeouts and rotates smoothly without ending turns |
 | **1.2.0** | Settings you can read | Three labelled shelves, so the one optional extra can no longer be mistaken for something rotation needs |
 | **1.1.3** | The rest that bought nothing | A key is no longer benched when it is the only well one — two defects found by reading the loop, not by anything failing |
 | **1.1.2** | The provider that refuses | Gemini will not be handed its own turn back; the continuation adapts instead of ending the turn it exists to save |
@@ -30,6 +32,138 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.2.2] — 2026-08-24
+
+Found by reading one real pool. A NVIDIA provider with **two** comma-separated
+keys reported **three**, and the third — `key:d48bbb` in `state.json` — was the
+comma-joined list itself, being offered to the provider as one long credential
+and refused with a 403. The two real keys were beside it, both quarantined 401.
+The pool had learned three broken things about a healthy pair of keys.
+
+**In short**
+
+- 🐛 *Fixed* — A pool row holding several comma-separated keys is split into
+  the keys it holds before anything is sent. The joined list is never a
+  candidate.
+- 🐛 *Fixed* — One physical key declared in two config blocks (`providers:` and
+  `custom_providers:`) counts once.
+- 🐛 *Fixed* — A key edited out of the config leaves the pool instead of being
+  retried, refused and counted as broken for ever.
+- 🐛 *Fixed* — Saving a setting from the panel no longer makes the value flick
+  back to the old one and forward again. One save is one movement.
+- ✨ *Added* — The panel says when `config.yaml` has been edited since Hermes
+  started, and that a restart is what applies it.
+- ✏️ *Changed* — The silent-stream timeout is titled **Wait for the first
+  token**. The setting name is untouched.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
+
+### Fixed
+
+- **The comma-joined list is no longer a credential.** `candidates()` split the
+  agent's own `api_key` when the host's pool handed back nothing at all, and
+  only then. A Hermes pool holding one row whose value is `k1,k2` is not
+  nothing, so the split never ran and the row went out whole. Every raw value
+  is now split, and a value that yields more than one part is replaced by its
+  parts — on every path, from `providers:`, from `custom_providers:`, and from
+  a key the agent carries itself. Nothing downstream of `candidates()` can see
+  a comma.
+
+- **One key, one row.** The same split pass dedupes by key text, so a
+  credential written into two config blocks is one entry in the pool with one
+  health record, rather than two rows that quarantine separately and make a
+  pair of keys read as three.
+
+- **The pool retires what the config no longer declares.** `Carousel` only ever
+  added keys; the single thing that removed anything was `forget()`, which
+  drops a whole identity. A key replaced in Settings therefore stayed in the
+  pool, kept its last refusal, and went on being counted — a panel reading
+  "2/3 healthy" for a pool of two. `select()` now mirrors the candidate list:
+  a row nothing has offered for five minutes is dropped, with its ledger
+  history left where escalation keeps it. Five minutes rather than
+  immediately, because one identity can be reached by two agents with
+  different lists, and dropping a row the moment one of them looks away would
+  erase a cooldown the other one earned. An empty candidate list mirrors
+  nothing at all — a host failing to load a pool for one call is not evidence
+  that every key was deleted.
+
+- **One save is one movement.** The panel's number field handed itself back to
+  the snapshot the instant Save was pressed, and the snapshot had not been
+  written yet — so the value fell back to the old number for a tick or two and
+  then jumped to the new one. Read as a setting changing itself twice. A
+  control now holds what was written until the backend reports that value, or
+  until it is clear the write did not land. Switches do the same.
+
+### Added
+
+- **"config.yaml has been edited since Hermes started."** KAME reads the config
+  once, at registration, because `ctx.get_config` re-parses the file on every
+  access and these settings sit on the classification and selection paths.
+  That is still the right trade, and it left a person with no way to tell an
+  edit that was wrong from an edit that was merely not in force yet. The file
+  is now re-read off the hot path — on the snapshot the panel already takes,
+  throttled to once every fifteen seconds — and any setting whose entry has
+  changed is named on the Settings screen, with what to do about it. A setting
+  the environment owns is never named: restarting would not apply that edit
+  either.
+
+### Changed
+
+- **"Wait for the first token."** The title only; `stream_silence_timeout_seconds`,
+  `KAME_STREAM_SILENCE_TIMEOUT` and the deprecated `silent_stream_patience_seconds`
+  all still answer to their own names. "Give up on a silent key after" named
+  the mechanism; this names the decision.
+
+### Tests
+
+- **A test that could fail for something KAME never did.** Two tests in
+  `test_v1_1_3.py` proved "no wait happened" by recording
+  `dispatch_binding.time.sleep` — and that attribute *is* the stdlib module, so
+  the recorder was installed process-wide. `register()` starts a state
+  heartbeat, a daemon looping on `time.sleep`, which never stops; a full suite
+  ends with two of them alive, because two test files load the plugin under
+  different package names. A heartbeat tick landing inside the recorder's
+  window put a number in a list that was asserted empty, which is why the
+  failure appeared in one full run and not in the next one over identical code,
+  and never at all when the file ran alone. Both tests now use
+  `DispatchBinding(sleep=...)`, the injection point the binding has exposed
+  since 1.0.1. No shipped code changed: in Hermes, `register()` runs once,
+  against one module instance, with one heartbeat.
+
+### Considered and rejected
+
+- **A sixty-second cap on a sole credential's cooldown.** The host has one
+  (`EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS`), and mirroring it would undo 1.1.3.
+  A cooldown that came from the provider's own words — a daily quota, an auth
+  refusal, a `Retry-After` — binds whatever else is in the pool, and retrying
+  it once a minute for an afternoon spends the quota it is waiting for. The
+  cooldowns a pool of one genuinely makes meaningless are the ones that exist
+  only to move the next call elsewhere, and
+  `dispatch_binding._rest_unless_it_is_the_only_one` has dropped exactly those
+  — and dropped them to nothing, not to sixty seconds — since 1.1.3.
+
+- **Refusing to record an outcome for a key no `select()` ever offered.** It
+  reads like a safety rule and protects nothing: `select()` only ever chooses
+  from the candidates it was handed, so a row nothing declares is unreachable
+  whatever the pool holds, and `_mirror` retires it. What the rule did do was
+  silence 1.1.3's `_rest_unless_it_is_the_only_one`, which marks a key the
+  moment a stream drops.
+
+</details>
+
+---
+
+## [1.2.1] — 2026-08-24
+
+SDK-wrapped streaming read timeouts (e.g. `Gemini streaming request failed: The read operation timed out`) are now classified as non-terminal timeouts, rotating to the next key or continuing the stream instead of ending the turn.
+
+**In short**
+
+- 🐛 *Fixed* — Gemini streaming read operation timeouts are recognized as non-terminal timeouts and rotated transparently.
+
+---
 
 ## [1.2.0] — 2026-08-23
 

@@ -173,8 +173,10 @@ class TestThePanelIsToldRatherThanTaught:
         assert json.loads(json.dumps(document))["setting_groups"]
 
     def test_the_two_halves_agree_on_the_schema(self):
-        assert state.SCHEMA == 3
-        assert re.search(r"const SCHEMA = 3\b", UI)
+        # The number itself belongs to whichever release last moved it — the
+        # invariant that outlives every release is that both halves carry the
+        # same one, because the panel refuses a document it does not match.
+        assert re.search(rf"const SCHEMA = {state.SCHEMA}\b", UI)
 
     def test_the_panel_lays_the_screen_out_from_the_snapshot(self):
         # The grouping must not be spelled a second time in JavaScript, where
@@ -249,8 +251,11 @@ class TestTheChatCommandAgrees:
 
 class TestTheSilentKeyTimeoutExplainsItself:
     def test_it_is_titled_for_what_it_does_not_for_what_it_is_called(self):
+        # Retitled in 1.2.2. The key name is the compatibility surface and it
+        # has not moved; the title is free to say the plainer thing.
         row = settings.describe(settings.STREAM_SILENCE_TIMEOUT)
-        assert row["title"] == "Give up on a silent key after"
+        assert row["title"] == "Wait for the first token"
+        assert row["key"] == "stream_silence_timeout_seconds"
 
     def test_the_help_says_what_zero_means(self):
         help_text = settings.explain(settings.STREAM_SILENCE_TIMEOUT).lower()
@@ -272,9 +277,11 @@ class TestTheSilentKeyTimeoutExplainsItself:
 
 class TestTheRelease:
     def test_the_manifest_and_the_core_agree(self):
+        # The literal for the *current* release is asserted by that release's
+        # own test file. What belongs here, and in every release after it, is
+        # that the two numbers have not drifted apart from each other.
         text = MANIFEST.read_text(encoding="utf-8")
-        assert core.__version__ == "1.2.0"
-        assert 'version: "1.2.0"' in text
+        assert f'version: "{core.__version__}"' in text
 
     def test_the_manifest_version_the_installer_accepts_is_unchanged(self):
         # 1.1.2 found that Hermes' installer refuses anything above 1, and a
@@ -283,7 +290,7 @@ class TestTheRelease:
 
     def test_the_changelog_has_an_entry(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        assert "## [1.2.0]" in changelog
+        assert f"## [{core.__version__}]" in changelog
 
     def test_nothing_the_reader_sees_is_written_in_another_language(self):
         # The plugin ships in English, headings and shelf notes included.

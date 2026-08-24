@@ -164,8 +164,18 @@ def conversation():
     return {"model": "gemini-3.7-flash", "messages": [{"role": "user", "content": "tell me"}]}
 
 
-def _binding():
-    return DispatchBinding(engine=Carousel())
+def _binding(sleep=None):
+    # ``sleep`` is the binding's own injection point, and a test that wants to
+    # prove nothing waited must use it rather than patch ``time.sleep``.
+    # ``dispatch_binding.time`` *is* the stdlib module, so patching it there
+    # reaches every thread in the interpreter — including the plugin's state
+    # heartbeat, a ``while True: time.sleep(...)`` daemon that ``register()``
+    # starts and never stops. Whether that daemon is already running when this
+    # file executes depends on whether ``test_plugin.py`` happened to be
+    # ordered earlier, which under ``pytest-randomly`` is a coin flip: the
+    # recorder would then collect the daemon's ticks and a "did KAME wait?"
+    # assertion would fail for something KAME never did.
+    return DispatchBinding(engine=Carousel(), sleep=sleep)
 
 
 def content_of(result):
@@ -228,12 +238,11 @@ class TestAKeyIsNotRestedWhenItIsTheOnlyOne:
 
 
 class TestASingleKeyContinuesItsAnswerAtOnce:
-    def test_the_only_key_is_not_benched_after_a_cut(self, monkeypatch):
+    def test_the_only_key_is_not_benched_after_a_cut(self):
         # Before 1.1.3 this run rested the key for DROP_REST_S and then waited
         # it out inside `_wait_for_recovery` before continuing the same answer
         # on the same key. Any sleep at all here is that bug coming back.
         slept = []
-        monkeypatch.setattr(dispatch_binding.time, "sleep", lambda s: slept.append(s))
 
         only = [KEYS[0]]
         agent = Agent(only)
@@ -247,15 +256,14 @@ class TestASingleKeyContinuesItsAnswerAtOnce:
             agent_._fire_stream_delta(" on the mat.")
             return answer("The cat sat on the mat.")
 
-        binding = _binding()
+        binding = _binding(sleep=slept.append)
         result = binding.run(host, agent, conversation(), (), {})
         assert content_of(result) == "The cat sat on the mat."
         assert binding.stitched == 1
         assert slept == []
 
-    def test_a_pool_with_company_still_rests_the_key_that_cut(self, monkeypatch):
+    def test_a_pool_with_company_still_rests_the_key_that_cut(self):
         slept = []
-        monkeypatch.setattr(dispatch_binding.time, "sleep", lambda s: slept.append(s))
 
         agent = Agent()
         calls = []
@@ -268,7 +276,7 @@ class TestASingleKeyContinuesItsAnswerAtOnce:
             agent_._fire_stream_delta(" on the mat.")
             return answer("The cat sat on the mat.")
 
-        binding = _binding()
+        binding = _binding(sleep=slept.append)
         binding.run(host, agent, conversation(), (), {})
         # Rested, and no wait: there were other keys to go to, which is exactly
         # when a rest is worth something.

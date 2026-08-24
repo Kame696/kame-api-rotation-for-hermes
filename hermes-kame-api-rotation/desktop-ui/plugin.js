@@ -75,7 +75,7 @@ const PRODUCT = 'KAME API Rotation'
 
 /** Schema of `state.json` this UI understands. A document from a newer Python
  *  half is refused with a readable reason rather than half-rendered. */
-const SCHEMA = 3
+const SCHEMA = 4
 
 /** Schema of the `control.json` this UI writes. Read by `control.py`, which
  *  refuses a number it does not know rather than guessing. */
@@ -94,6 +94,16 @@ const STALE_AFTER_S = 75
 /** How long a request may go unanswered before the page says so. The backend
  *  looks for one every second, so five is already six chances missed. */
 const CONTROL_TIMEOUT_MS = 5000
+
+/** How long a control that has been written keeps its value on screen while
+ *  the snapshot catches up. Longer than `CONTROL_TIMEOUT_MS`, on purpose: the
+ *  backend acknowledges a request in one document and may publish the new
+ *  settings in the next, and a field that let go on the acknowledgement would
+ *  show the old number for exactly one frame — which is the flicker this
+ *  exists to end. If the value never arrives, the control gives up and shows
+ *  the truth, because a page that keeps displaying a setting nothing holds is
+ *  worse than one that flickers. */
+const SETTLE_GRACE_MS = 8000
 
 /** How many pools the chip shows in full before the rest collapse into `+N`.
  *  Two, because the status bar is shared with every other contribution in the
@@ -826,8 +836,21 @@ function SettingShell({ setting, control, error }) {
 /** A switch. Turning off the plugin itself asks first. */
 function FlagSetting({ setting, busy }) {
   const [confirming, setConfirming] = useState(false)
+  const [sent, setSent] = useState(null)
 
-  const apply = next => void request('set', setting.key, next ? 'true' : 'false')
+  // Same rule as `NumberSetting`: a switch shows what was asked of it until
+  // the snapshot says the same thing, so one click is one movement instead of
+  // a flick back to the old position and a flick forward again a tick later.
+  useEffect(() => {
+    if (sent !== null && (Boolean(setting.value) === sent.value || Date.now() - sent.at > SETTLE_GRACE_MS)) {
+      setSent(null)
+    }
+  }, [sent, setting.value])
+
+  const apply = next => {
+    setSent({ at: Date.now(), value: next })
+    void request('set', setting.key, next ? 'true' : 'false')
+  }
 
   return h(
     'div',
@@ -841,14 +864,17 @@ function FlagSetting({ setting, busy }) {
               {
                 disabled: busy,
                 key: 'reset',
-                onClick: () => void request('reset', setting.key),
+                onClick: () => {
+                  setSent({ at: Date.now(), value: Boolean(setting.default) })
+                  void request('reset', setting.key)
+                },
                 size: 'sm',
                 variant: 'ghost'
               },
               'Reset'
             ),
         h(Switch, {
-          checked: Boolean(setting.value),
+          checked: sent === null ? Boolean(setting.value) : sent.value,
           disabled: busy,
           key: 'switch',
           onCheckedChange: next => {
@@ -885,16 +911,36 @@ function FlagSetting({ setting, busy }) {
 function NumberSetting({ setting, busy }) {
   const [draft, setDraft] = useState(String(setting.value ?? ''))
   const [dirty, setDirty] = useState(false)
+  const [sent, setSent] = useState(null)
   const [error, setError] = useState('')
 
   // The snapshot is the truth. While the field is untouched it follows what
   // the backend says — including a change made from `/kame set` in the chat,
   // which would otherwise leave this page showing a value nothing holds.
+  //
+  // `sent` is the exception, and it is the whole of the 1.2.2 fix. Saving used
+  // to clear `dirty` straight away, which handed the field back to a snapshot
+  // that had not been written yet: the number flicked back to the old value
+  // for a tick or two and then forward to the new one, so one save read on
+  // screen as the setting changing twice by itself. While a write is in
+  // flight the field holds what was written, and lets go the moment the
+  // backend reports that value — or when the write has plainly not landed.
   useEffect(() => {
-    if (!dirty) {
-      setDraft(String(setting.value ?? ''))
+    const arrived = String(setting.value ?? '')
+
+    if (sent !== null) {
+      if (arrived === sent.value || Date.now() - sent.at > SETTLE_GRACE_MS) {
+        setSent(null)
+        setDraft(arrived)
+      }
+
+      return
     }
-  }, [dirty, setting.value])
+
+    if (!dirty) {
+      setDraft(arrived)
+    }
+  }, [dirty, sent, setting.value])
 
   const save = () => {
     const problem = validateNumber(setting, draft)
@@ -905,9 +951,13 @@ function NumberSetting({ setting, busy }) {
       return
     }
 
+    const value = String(draft).trim()
+
     setError('')
     setDirty(false)
-    void request('set', setting.key, String(draft).trim())
+    setSent({ at: Date.now(), value })
+    setDraft(value)
+    void request('set', setting.key, value)
   }
 
   const range =
@@ -949,8 +999,12 @@ function NumberSetting({ setting, busy }) {
               disabled: busy,
               key: 'reset',
               onClick: () => {
+                const value = String(setting.default ?? '')
+
                 setDirty(false)
                 setError('')
+                setSent({ at: Date.now(), value })
+                setDraft(value)
                 void request('reset', setting.key)
               },
               size: 'sm',
@@ -1017,6 +1071,7 @@ function SettingsPage({ snap }) {
   const settings = snap.settings ?? []
   const busy = Boolean(pending)
   const writable = Boolean(window.hermesDesktop?.writeTextFile)
+  const stale = snap.settings_pending_restart ?? []
 
   return h(
     'div',
@@ -1026,6 +1081,17 @@ function SettingsPage({ snap }) {
       Note(
         'This Hermes shell cannot write files, so nothing here can be changed from the panel. ' +
           '/kame set <key> <value> in the chat does the same job.'
+      ),
+
+    // The one thing this page could not say before 1.2.2. KAME reads
+    // config.yaml once, when Hermes starts, so an edit made since then is
+    // sitting in the file doing nothing — and the page showed the old value
+    // with no hint that it was old.
+    stale.length > 0 &&
+      Note(
+        `config.yaml has been edited since Hermes started, so ${stale.join(', ')} ` +
+          `${stale.length === 1 ? 'still holds the value it was read with' : 'still hold the values they were read with'}. ` +
+          'Restart Hermes to apply the file, or set it here — a change made on this page takes effect on the next call.'
       ),
 
     notice &&

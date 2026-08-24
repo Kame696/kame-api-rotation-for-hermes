@@ -85,6 +85,18 @@ DAILY_COOLDOWN_S = 3600.0
 #: No cooldown may exceed a day, whatever a provider claims.
 HARD_DELAY_CAP_S = 86400.0
 
+#: How long a key may stay in the pool after a call stopped offering it.
+#:
+#: The pool mirrors the credential list, but "this call did not offer it" and
+#: "the config no longer declares it" are not the same sentence. One identity
+#: can be reached by two agents with different lists — a fallback key carried
+#: on ``agent.api_key``, a resolver substitution — and dropping a row the
+#: moment one of them looks away would erase a cooldown the other one earned.
+#: A key really removed from the config is never offered again, so it leaves
+#: within this window; a key that belongs to somebody else's list is offered
+#: again long before it closes.
+MIRROR_GRACE_S = 300.0
+
 #: A 5xx is the provider's problem, not the key's. Rest briefly, escalate
 #: slowly, and never past this.
 SERVER_BASE_S = 5.0
@@ -178,6 +190,18 @@ DAILY_INDICATORS = (
     "exceeded your current quota",
     "billing",
     "credit balance",
+)
+
+#: Phrases that mean a timeout or connection drop occurred.
+TIMEOUT_INDICATORS = (
+    "timed out",
+    "time out",
+    "read operation timed out",
+    "streaming request failed",
+    "connection timed out",
+    "connect timeout",
+    "read timeout",
+    "deadline exceeded",
 )
 
 #: Phrases that mean the request itself is wrong, so no key can answer it.
@@ -416,6 +440,8 @@ def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None
         return True
     if is_auth_failure(error, message, status_code):
         return False
+    if _matches(text, TIMEOUT_INDICATORS):
+        return False
     if _matches(text, CONTENT_POLICY_INDICATORS):
         return True
     status = _status_of(error, status_code)
@@ -455,7 +481,10 @@ def classify(
         # cooldown worth applying here -- ``is_terminal`` stops the turn -- so
         # the delay is nominal.
         return 0.0, "host_breaker", status
-    if error is not None and type(error).__name__ in {"TimeoutError", "CancelledError", "ReadTimeout", "ConnectTimeout"}:
+    if (
+        error is not None
+        and type(error).__name__ in {"TimeoutError", "CancelledError", "ReadTimeout", "ConnectTimeout", "StreamTimeout"}
+    ) or _matches(text, TIMEOUT_INDICATORS):
         return TIMEOUT_S, "timeout", status
 
     if status in _SERVER_STATUS or _matches(
@@ -504,6 +533,11 @@ def _fresh(now: float) -> Dict[str, Any]:
         "kind": "",
         "successes": 0,
         "failures": 0,
+        # When a select() last carried this key among its candidates — not
+        # when it was last *chosen*, which is ``last_used``. The difference is
+        # what tells a key removed from the config apart from a key that is
+        # simply resting: both go unused, only one stops being offered.
+        "last_offered": now,
     }
 
 
@@ -541,6 +575,38 @@ class Carousel:
                 pool[key] = _fresh(now)
         return pool
 
+    def _mirror(
+        self, pool: Dict[str, Dict[str, Any]], keys: Sequence[str], now: float
+    ) -> None:
+        """Drop the keys nothing has offered for :data:`MIRROR_GRACE_S`.
+
+        The pool is a view of the credential list, not an archive of it. A key
+        edited out of the config is a credential nowhere else, and keeping it
+        means its last failure is carried for ever: it stays counted in
+        ``keys``, stays counted in ``invalid``, and reads on the panel as a
+        broken key the user has already replaced. Before the split fix in
+        ``candidates()`` it was worse than bookkeeping — the comma-joined
+        parent list itself sat in the pool as one malformed credential.
+
+        Two things this deliberately does not do:
+
+        * **An empty candidate set mirrors nothing.** The host failing to load
+          a pool for one call is not evidence that every key was deleted.
+        * **Absence from one call is not removal.** One ``provider:model`` can
+          be reached by two agents carrying different lists, so a row is only
+          dropped once nothing has offered it for a while — see
+          :data:`MIRROR_GRACE_S`.
+        """
+        if not keys:
+            return
+        wanted = set(keys)
+        stale = now - MIRROR_GRACE_S
+        for key, state in list(pool.items()):
+            if key in wanted:
+                state["last_offered"] = now
+            elif state.get("last_offered", now) <= stale:
+                del pool[key]
+
     # -- selection -------------------------------------------------------
 
     def select(
@@ -566,6 +632,7 @@ class Carousel:
 
         with self._lock:
             pool = self._pool_for(identity, usable, now)
+            self._mirror(pool, usable, now)
             for key in usable:
                 pool[key]["request_log"] = [t for t in pool[key]["request_log"] if t > cutoff]
 
@@ -606,6 +673,14 @@ class Carousel:
             return 0.0
         now = time.time() if now is None else now
         with self._lock:
+            # A mark creates the row when it has to. It cannot make a key
+            # selectable: ``select`` only ever chooses from the candidates it
+            # was handed this call, so a row nothing declares is never picked,
+            # and ``_mirror`` retires it once nothing offers it. Refusing to
+            # record the outcome instead would lose the one thing a failure is
+            # good for — 1.1.3's ``_rest_unless_it_is_the_only_one`` marks a
+            # key the moment a stream drops, and a mark that quietly did
+            # nothing there would spend the cooldown on nobody.
             pool = self._pool_for(identity, [key], now)
             state = pool[key]
 
@@ -627,6 +702,16 @@ class Carousel:
             state["kind"] = kind
             applied = self._escalate(state, delay, kind)
             applied = max(0.0, min(applied, HARD_DELAY_CAP_S))
+            # There is deliberately no shorter cap for a pool of one here.
+            # The host has one (``EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS`` =
+            # 60) and copying it would undo 1.1.3: a cooldown that came from
+            # the provider's own words — a daily quota, an auth refusal, a
+            # Retry-After — binds no matter what else is in the pool, and
+            # retrying it once a minute for an afternoon spends the quota it
+            # is waiting for. The cooldowns that exist only to move the next
+            # call elsewhere are the ones with nowhere to go when there is one
+            # key, and ``dispatch_binding._rest_unless_it_is_the_only_one``
+            # already drops exactly those and no others.
             # Never shortens. A key that said "out for the day" must not be
             # released early because a softer refusal arrived afterwards.
             state["sick_until"] = max(state.get("sick_until", 0.0), now + applied)

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,18 @@ _NUMBER_INTEGRAL = frozenset({STREAM_RESUME_LIMIT})
 _FROM_CONFIG: Dict[str, bool] = {}
 _NUMBERS_FROM_CONFIG: Dict[str, float] = {}
 
+# The host context ``load`` was given, kept only so the config can be read a
+# second time — see ``pending_restart``. Nothing on the hot path touches it.
+_CTX: object = None
+
+# How often the config file may be re-read to look for an edit, and the last
+# answer. ``ctx.get_config`` parses the file on every access, so this is
+# throttled hard: a person who edits a YAML file and switches to the panel
+# will wait a few seconds, and nobody will wait for a parse per second.
+_DRIFT_EVERY_S = 15.0
+_drift_checked_at = 0.0
+_drift: Tuple[str, ...] = ()
+
 
 def _as_flag(value: object) -> Optional[bool]:
     """A truthy/falsy reading of one setting, or ``None`` for "said nothing".
@@ -268,8 +281,12 @@ def load(ctx) -> None:
     Called from ``register``. Anything that goes wrong here leaves the
     plugin exactly as it was before config was a source at all.
     """
+    global _CTX, _drift, _drift_checked_at
     _FROM_CONFIG.clear()
     _NUMBERS_FROM_CONFIG.clear()
+    _CTX = ctx
+    _drift = ()
+    _drift_checked_at = 0.0
     getter = getattr(ctx, "get_config", None)
     if not callable(getter):
         return
@@ -318,8 +335,87 @@ def load(ctx) -> None:
 
 def forget() -> None:
     """Drop what was read. For tests and for a re-registration."""
+    global _CTX, _drift, _drift_checked_at
     _FROM_CONFIG.clear()
     _NUMBERS_FROM_CONFIG.clear()
+    _CTX = None
+    _drift = ()
+    _drift_checked_at = 0.0
+
+
+def _config_now(getter) -> Tuple[Dict[str, bool], Dict[str, float]]:
+    """What ``config.yaml`` says right now, read the same way ``load`` reads it."""
+    flags: Dict[str, bool] = {}
+    numbers: Dict[str, float] = {}
+    for key in _NUMBER_ENV_FOR:
+        try:
+            raw = getter(key, None)
+            if raw is None:
+                raw = _from_legacy_config(getter, key)
+        except Exception:
+            continue
+        parsed = _as_number(raw, key)
+        if parsed is not None:
+            numbers[key] = parsed
+    for key in _ENV_FOR:
+        try:
+            raw = getter(key, None)
+        except Exception:
+            continue
+        flag = _as_flag(raw)
+        if flag is not None:
+            flags[key] = flag
+    return flags, numbers
+
+
+def pending_restart(now: Optional[float] = None) -> Tuple[str, ...]:
+    """Settings whose config file entry has changed since Hermes started.
+
+    The config is read once, at registration, because ``ctx.get_config``
+    re-parses the file on every access and these are consulted on the
+    classification and selection paths. That is the right trade and it has one
+    cost: a person can edit ``config.yaml``, watch nothing happen, and have no
+    way to tell an edit that did not take from one that did nothing. This is
+    the way to tell — the file is re-read off the hot path, on the snapshot
+    the panel already reads once a second, throttled to
+    :data:`_DRIFT_EVERY_S`, and what comes back is compared with what was
+    captured at registration.
+
+    A key the environment owns is never listed. The environment outranks the
+    config file, so an edit to the file changes nothing whether Hermes is
+    restarted or not, and reporting it would send somebody to restart for a
+    change that will still not apply.
+
+    Returns the setting names, sorted. Empty is the normal answer, and the
+    answer on any host that offers no config surface at all.
+    """
+    global _drift, _drift_checked_at
+    getter = getattr(_CTX, "get_config", None)
+    if not callable(getter):
+        return ()
+    now = time.time() if now is None else now
+    if now - _drift_checked_at < _DRIFT_EVERY_S:
+        return _drift
+    _drift_checked_at = now
+    try:
+        flags, numbers = _config_now(getter)
+    except Exception:
+        logger.debug("%s: could not re-read the config", __name__, exc_info=True)
+        return _drift
+    changed = []
+    for key in list(_ENV_FOR) + list(_NUMBER_ENV_FOR):
+        if provenance(key) == "environment":
+            continue
+        if key in _ENV_FOR:
+            before = _FROM_CONFIG.get(key)
+            after = flags.get(key)
+        else:
+            before = _NUMBERS_FROM_CONFIG.get(key)
+            after = numbers.get(key)
+        if before != after:
+            changed.append(key)
+    _drift = tuple(sorted(changed))
+    return _drift
 
 
 def number(key: str, default: float) -> float:
@@ -455,8 +551,13 @@ META = {
         "provider's own retry hint is ignored for these on purpose: it "
         "routinely says a minute when the truth is midnight.",
     ),
+    # 1.2.2 renames the *title* only. "Give up on a silent key after" named
+    # the mechanism; this names the thing a person is deciding about, which is
+    # how long they are willing to sit in front of a provider that has said
+    # nothing yet. The key, the environment variable and the config name are
+    # untouched — a title is read once and a name is typed for years.
     STREAM_SILENCE_TIMEOUT: (
-        "Give up on a silent key after",
+        "Wait for the first token",
         "For a provider that accepts a request and then sends nothing. KAME "
         "waits this long for the first character — and for every character "
         "after it — before dropping that key and asking the next one. Zero, "

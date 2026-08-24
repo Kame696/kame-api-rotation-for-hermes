@@ -61,7 +61,11 @@ PLUGIN_ID = "hermes-kame-api-rotation"
 #: shelf, so the panel lays the screen out from the process that owns the
 #: settings rather than from a copy of the same decisions written in
 #: JavaScript.
-SCHEMA = 3
+#: 4 (1.2.2): the document gained ``settings_pending_restart`` — the settings
+#: whose ``config.yaml`` entry has been edited since this Hermes read it, so
+#: the panel can say "restart to apply" instead of showing a value the user
+#: has already changed and letting them conclude the edit was wrong.
+SCHEMA = 4
 
 #: Floor between two writes of an *unchanged* document. A changed document is
 #: always written immediately: the whole point is that the chip moves when the
@@ -251,6 +255,12 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # optional and another is an escape hatch is a fact about the plugin,
         # and a copy of it in JavaScript is a copy that will disagree.
         "setting_groups": _setting_groups(),
+        # 1.2.2. The settings whose config.yaml entry has been edited since
+        # this Hermes started, and which therefore still hold the value they
+        # were read with. The panel says so rather than leaving somebody to
+        # decide, from a screen that shows the old number, whether their edit
+        # was wrong or merely not yet in force.
+        "settings_pending_restart": _settings_pending_restart(),
         "desktop_ui": _desktop_ui_state(),
         # The last fifty decisions, newest first, so the panel's Events screen
         # can answer "why did that stall" without anyone opening a log file.
@@ -280,6 +290,22 @@ def _settings_rows() -> List[Dict[str, Any]]:
         return list(_settings.describe_all())
     except Exception:
         logger.debug("kame: could not read settings for the snapshot", exc_info=True)
+        return []
+
+
+def _settings_pending_restart() -> List[str]:
+    """Settings edited in ``config.yaml`` since Hermes read it.
+
+    Empty on every host without a config surface, and empty — deliberately —
+    for a setting the environment owns, since restarting would not apply that
+    edit either. See ``settings.pending_restart``.
+    """
+    try:
+        from . import settings as _settings
+
+        return list(_settings.pending_restart())
+    except Exception:
+        logger.debug("kame: could not check the config for edits", exc_info=True)
         return []
 
 
