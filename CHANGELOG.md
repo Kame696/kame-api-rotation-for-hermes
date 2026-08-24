@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker was the cause of the next one — a keyless list remounted the settings form mid-save; fixed structurally, with a test that renders the real panel and checks it |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
 | **1.2.1** | Resilient Gemini Streams | Captures SDK-wrapped stream read timeouts as non-terminal timeouts and rotates smoothly without ending turns |
 | **1.2.0** | Settings you can read | Three labelled shelves, so the one optional extra can no longer be mistaken for something rotation needs |
@@ -32,6 +33,103 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.2.3] — 2026-08-24
+
+Three symptoms reported together: the status chip looked like it was
+restarting, the Settings tab looked like it was refreshing on its own, and a
+number typed into **Wait for the first token** went back to 0 on Save. All
+three traced to one file, `desktop-ui/plugin.js` — the backend was innocent,
+and a test now says so directly rather than by absence of complaint.
+
+**In short**
+
+- 🐛 *Fixed* — Pressing Save no longer loses what was just typed. The "Saving…"
+  paragraph that 1.2.2 added to hold the pending value on screen made the
+  settings list grow by one row the instant it appeared; a **keyless** list
+  reconciles by position, so React unmounted and rebuilt every setting field
+  at that moment, taking the in-flight value down with it. Every list in the
+  panel is keyed now, so nothing above a field can ever shift it into another
+  field's old slot.
+- 🐛 *Fixed* — The Settings and Events tabs no longer re-render once a second.
+  The panel handed every subscriber a new snapshot object every second
+  regardless of whether the file's bytes had changed, and the whole page
+  re-rendered on the same clock a countdown needed on one tab only. Reads are
+  now compared to the last bytes before anything is rebuilt, and only the two
+  small pieces that show a countdown subscribe to the clock.
+- 🐛 *Fixed* — A second `register()` call — Hermes reloading the plugin without
+  disposing the old one first — could start a second one-second reader
+  alongside the first. One reader can run at a time now.
+- ✅ *Added* — `tests/ui_reconcile.mjs` renders the real panel with React and
+  the SDK stubbed, opens every tab, and fails if any list of two or more
+  children is keyless. `tests/test_v1_2_3.py` runs it from `pytest tests/`
+  and separately proves the save/reset/describe path never touched the value
+  — the regression this release fixes was never in that path.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
+
+### Fixed
+
+- **The remount that ate a keystroke.** `h()`, the panel's local JSX wrapper,
+  drops falsy children before React ever sees the list — so a child that
+  appears conditionally changes the list's length, not just its content. The
+  settings cards lived in one such list. The moment Save was pressed, 1.2.2's
+  own pending-value paragraph appeared above them and pushed every card down
+  one slot, into the position the *previous* render had filled with an
+  element of a different type. React's answer to a type change at a given
+  position is to tear down that subtree and build a new one — so every
+  `NumberSetting` and `FlagSetting` was destroyed and rebuilt at exactly the
+  moment it was holding a value the backend had not published yet, and the
+  rebuilt field read the snapshot instead, which still said 0. Read as "I
+  typed 30 and it saved 0". Every variadic child list in the file — the chip,
+  every card, every field, every row on every tab — now carries a stable
+  `key`, so a sibling appearing or disappearing can never again relocate an
+  unrelated component and destroy its state.
+
+- **The second-long re-render.** `readSnapshot()` parsed the file and called
+  `$snapshot.set()` every second whether or not the file had changed — and the
+  backend only rewrites it unconditionally once every twenty seconds, so most
+  of those seconds were spent re-rendering identical data. Bytes are now kept
+  from the last read and compared before anything downstream is touched;
+  pending-request timeouts still resolve on an unchanged read, only the
+  snapshot update is skipped.
+
+- **The clock the whole page listened to.** `KamePage` read the one-second
+  `$now` atom at its top level so the Overview tab's countdown would tick,
+  which meant Settings and Events re-rendered on the same clock for no reason
+  of their own. The header's live/stale line and the pool countdown moved
+  into two small components (`HeaderStatus`, and the existing `RightNow` /
+  `PoolRow`) that read the clock themselves; `KamePage` no longer reads it at
+  all.
+
+- **A second reader.** `startReading()` had no guard against being called
+  twice, so a plugin reload that skipped disposing the previous instance —
+  which Hermes' own reload path can do — left two `setInterval` readers
+  racing each other against the same file. A module-level guard now refuses
+  to start a second one while the first is still running.
+
+### Added
+
+- **`tests/ui_reconcile.mjs`.** Loads `plugin.js` for real with `jsx`/`jsxs`,
+  the hooks, and `window.hermesDesktop` stubbed to a realistic fixture,
+  resolves function components recursively into a tree, opens all three tabs,
+  and asserts every child list of two or more is fully keyed. Caught three
+  remaining keyless lists on its first run — in the pool row's tally block, in
+  `Field()`, and in the header — before the fix was complete.
+
+- **`tests/test_v1_2_3.py`.** Runs the Node check from `pytest`, and carries
+  four backend tests that drive `control._apply` exactly as the panel's Save
+  button does — set, read back through `describe_all` twenty times in a row,
+  reset, and a below-floor value refused with a sentence — all to state
+  plainly that the value was never lost on that side of the file.
+
+### Verified
+
+`node tests/ui_reconcile.mjs` — 4/4 structural checks pass, all three tabs.
+`pytest tests/test_v1_2_3.py` — 8/8 pass (one skips without `node` on PATH).
+
+</details>
 
 ## [1.2.2] — 2026-08-24
 

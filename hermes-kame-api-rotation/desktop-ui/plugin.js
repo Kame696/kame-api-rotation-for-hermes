@@ -338,6 +338,17 @@ async function dataDir() {
 
 let cachedDir = null
 
+/** The exact bytes behind the reading currently on screen.
+ *
+ *  The backend rewrites `state.json` when something happens and otherwise once
+ *  every twenty seconds; this file reads it once a second, which is the
+ *  resolution a countdown needs. Those two rates are not the same rate, and
+ *  until 1.2.3 the difference was paid by the whole panel: every read parsed
+ *  the document and handed `$snapshot` a brand-new object, so every subscriber
+ *  re-rendered once a second over bytes that had not changed. On the Settings
+ *  tab that is a form rebuilding itself under the cursor. */
+let lastText = ''
+
 async function readSnapshot() {
   const desktop = window.hermesDesktop
 
@@ -369,6 +380,16 @@ async function readSnapshot() {
     return
   }
 
+  if (text === lastText && $snapshot.get()) {
+    // Byte-identical to what is already on screen. Nothing is published, so
+    // nothing re-renders — but the pending request is still given its chance to
+    // time out, because a backend that has stopped writing is exactly the case
+    // where the file never changes and "Saving…" would otherwise stay for ever.
+    settle($snapshot.get())
+
+    return
+  }
+
   let snap
 
   try {
@@ -392,6 +413,7 @@ async function readSnapshot() {
     return
   }
 
+  lastText = text
   $snapshot.set(snap)
   $problem.set('')
   settle(snap)
@@ -470,9 +492,20 @@ async function request(action, key = '', value = null) {
   }
 }
 
+/** The one live timer, so a second `register()` cannot add a second reader. */
+let activeTimer = null
+
 /** Start the tick. Returns a disposer, so a reload of this plugin leaves no
  *  timer behind. */
 function startReading() {
+  if (activeTimer !== null) {
+    // Registering twice without a dispose in between is the shape a hot reload
+    // has. One reader is the correct number: two would read, parse and publish
+    // twice a second, and the panel would flicker at a rate nothing on the
+    // backend is producing.
+    return () => {}
+  }
+
   let stopped = false
 
   const tick = () => {
@@ -496,9 +529,15 @@ function startReading() {
 
   const timer = window.setInterval(tick, TICK_MS)
 
+  activeTimer = timer
+
   return () => {
     stopped = true
     window.clearInterval(timer)
+
+    if (activeTimer === timer) {
+      activeTimer = null
+    }
   }
 }
 
@@ -637,10 +676,20 @@ function Card(props, ...children) {
       ),
       key: props?.key
     },
+    // Keyed, like every other variadic child list in this file. `h` drops a
+    // falsy child, so a card that gains or loses its note shifts everything
+    // after it by one — and React, reconciling a keyless list by position,
+    // reads that shift as "different element here" and remounts the subtree.
+    // For a card full of text that is invisible. For a card full of text
+    // *inputs* it is the bug 1.2.3 exists to fix.
     props?.title &&
-      h('h2', { className: 'text-xs font-medium tracking-wide text-(--ui-text-secondary) uppercase' }, props.title),
-    props?.note && h('p', { className: 'mt-1 text-xs text-(--ui-text-quaternary)' }, props.note),
-    h('div', { className: 'mt-3' }, ...children)
+      h(
+        'h2',
+        { className: 'text-xs font-medium tracking-wide text-(--ui-text-secondary) uppercase', key: 'title' },
+        props.title
+      ),
+    props?.note && h('p', { className: 'mt-1 text-xs text-(--ui-text-quaternary)', key: 'note' }, props.note),
+    h('div', { className: 'mt-3', key: 'body' }, ...children)
   )
 }
 
@@ -648,17 +697,17 @@ function Field(label, value, hint) {
   return h(
     'div',
     { className: 'flex items-baseline justify-between gap-3 py-1', key: label },
-    h('span', { className: 'text-xs text-(--ui-text-tertiary)' }, label),
+    h('span', { className: 'text-xs text-(--ui-text-tertiary)', key: 'label' }, label),
     h(
       'span',
-      { className: 'text-right text-xs tabular-nums text-(--ui-text-primary)' },
+      { className: 'text-right text-xs tabular-nums text-(--ui-text-primary)', key: 'value' },
       value,
-      hint && h('span', { className: 'ml-2 text-(--ui-text-quaternary)' }, hint)
+      hint && h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'hint' }, hint)
     )
   )
 }
 
-function Note(text, tone = 'plain') {
+function Note(text, tone = 'plain', key = undefined) {
   return h(
     'p',
     {
@@ -667,14 +716,21 @@ function Note(text, tone = 'plain') {
         tone === 'bad'
           ? 'border-destructive/40 bg-destructive/5 text-(--ui-text-secondary)'
           : 'border-(--ui-stroke-tertiary) text-(--ui-text-secondary)'
-      )
+      ),
+      key
     },
     text
   )
 }
 
-/** One pool, with the bar that makes "12 of 15" readable without arithmetic. */
-function PoolRow({ pool, snap, now }) {
+/** One pool, with the bar that makes "12 of 15" readable without arithmetic.
+ *
+ *  Subscribes to the clock itself rather than being handed it. Every component
+ *  that reads `$now` re-renders once a second, which is right for a countdown
+ *  and wrong for everything else on the page — so the subscription lives on the
+ *  countdown and not on the page that happens to contain one. */
+function PoolRow({ pool, snap }) {
+  const now = useValue($now)
   const ratio = pool.keys ? pool.healthy / pool.keys : 0
   const eta = countdown(pool.soonest_s, snap, now)
 
@@ -683,18 +739,20 @@ function PoolRow({ pool, snap, now }) {
     { className: 'py-2', key: pool.identity },
     h(
       'div',
-      { className: 'flex items-baseline justify-between gap-3' },
-      h('span', { className: 'font-mono text-xs break-all text-(--ui-text-primary)' }, pool.identity),
+      { className: 'flex items-baseline justify-between gap-3', key: 'head' },
+      h('span', { className: 'font-mono text-xs break-all text-(--ui-text-primary)', key: 'identity' }, pool.identity),
       h(
         'span',
-        { className: 'shrink-0 text-xs tabular-nums text-(--ui-text-tertiary)' },
+        { className: 'shrink-0 text-xs tabular-nums text-(--ui-text-tertiary)', key: 'ready' },
         `${pool.healthy}/${pool.keys} ready`,
-        eta !== null && h('span', { className: 'ml-2 text-(--ui-text-quaternary)' }, `next in ${duration(eta)}`)
+        // Comes and goes with the cooldown, so it needs a key of its own.
+        eta !== null &&
+          h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'eta' }, `next in ${duration(eta)}`)
       )
     ),
     h(
       'div',
-      { className: 'mt-1.5 h-1 w-full overflow-hidden rounded-full bg-(--ui-bg-quinary)' },
+      { className: 'mt-1.5 h-1 w-full overflow-hidden rounded-full bg-(--ui-bg-quinary)', key: 'bar' },
       h('div', {
         className: cn(
           'h-full rounded-full transition-[width] duration-500',
@@ -706,14 +764,14 @@ function PoolRow({ pool, snap, now }) {
     Boolean(pool.kinds?.length || pool.successes || pool.failures) &&
       h(
         'div',
-        { className: 'mt-1 flex flex-wrap gap-x-3 text-[0.6875rem] text-(--ui-text-quaternary)' },
-        h('span', null, `${pool.successes} answered · ${pool.failures} refused`),
-        pool.kinds?.length ? h('span', null, pool.kinds.join(', ')) : null
+        { className: 'mt-1 flex flex-wrap gap-x-3 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'tally' },
+        h('span', { key: 'counts' }, `${pool.successes} answered · ${pool.failures} refused`),
+        pool.kinds?.length ? h('span', { key: 'kinds' }, pool.kinds.join(', ')) : null
       ),
     pool.invalid
       ? h(
           'p',
-          { className: 'mt-1 text-[0.6875rem] text-destructive' },
+          { className: 'mt-1 text-[0.6875rem] text-destructive', key: 'invalid' },
           `${pool.invalid} key(s) refused as credentials — replace ${pool.invalid === 1 ? 'it' : 'them'}: ` +
             `${(pool.invalid_keys ?? []).join(', ')}`
         )
@@ -722,7 +780,8 @@ function PoolRow({ pool, snap, now }) {
 }
 
 /** What KAME is doing this second — the whole point of the page being live. */
-function RightNow({ snap, now }) {
+function RightNow({ snap }) {
+  const now = useValue($now)
   const activity = snap.activity
   const totals = snap.totals ?? {}
 
@@ -1031,7 +1090,7 @@ function settingCards({ busy, groups, settings }) {
   if (!settings.length) {
     return [
       Card(
-        { title: 'Settings' },
+        { key: '_empty', title: 'Settings' },
         h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, 'This KAME reports no settings.')
       )
     ]
@@ -1073,6 +1132,23 @@ function SettingsPage({ snap }) {
   const writable = Boolean(window.hermesDesktop?.writeTextFile)
   const stale = snap.settings_pending_restart ?? []
 
+  // Every child below carries a key, and that is the whole of the 1.2.3 fix
+  // for a saved number reverting to its old value.
+  //
+  // `h` drops a falsy child before handing the list to React, so this list
+  // physically grows when "Saving…" appears and shrinks when it goes. React
+  // reconciles a keyless child list by *position*: the settings cards used to
+  // sit at index 4 and, the instant Save was pressed, at index 5 — where the
+  // previous render had a paragraph. Different type at that position means
+  // unmount and mount, so every card was rebuilt from scratch, and every
+  // `NumberSetting` inside lost the `useState` holding what had just been
+  // typed and the record that a write was in flight. The freshly mounted field
+  // then initialised from the snapshot, which still carried the old value
+  // because the backend had not published yet — so one Save read on screen as
+  // the number jumping back to 0 on its own.
+  //
+  // With keys, position stops meaning anything and the cards keep their
+  // identity through the appearing and disappearing paragraphs above them.
   return h(
     'div',
     { className: 'flex flex-col gap-4' },
@@ -1080,7 +1156,9 @@ function SettingsPage({ snap }) {
     !writable &&
       Note(
         'This Hermes shell cannot write files, so nothing here can be changed from the panel. ' +
-          '/kame set <key> <value> in the chat does the same job.'
+          '/kame set <key> <value> in the chat does the same job.',
+        'plain',
+        'read-only'
       ),
 
     // The one thing this page could not say before 1.2.2. KAME reads
@@ -1091,7 +1169,9 @@ function SettingsPage({ snap }) {
       Note(
         `config.yaml has been edited since Hermes started, so ${stale.join(', ')} ` +
           `${stale.length === 1 ? 'still holds the value it was read with' : 'still hold the values they were read with'}. ` +
-          'Restart Hermes to apply the file, or set it here — a change made on this page takes effect on the next call.'
+          'Restart Hermes to apply the file, or set it here — a change made on this page takes effect on the next call.',
+        'plain',
+        'pending-restart'
       ),
 
     notice &&
@@ -1103,16 +1183,17 @@ function SettingsPage({ snap }) {
             notice.ok
               ? 'border-(--ui-stroke-tertiary) text-(--ui-text-secondary)'
               : 'border-destructive/40 bg-destructive/5 text-(--ui-text-secondary)'
-          )
+          ),
+          key: 'notice'
         },
         notice.detail || (notice.ok ? 'Done.' : 'That did not work.')
       ),
 
-    pending && h('p', { className: 'text-xs text-(--ui-text-quaternary)' }, 'Saving…'),
+    pending && h('p', { className: 'text-xs text-(--ui-text-quaternary)', key: 'saving' }, 'Saving…'),
 
     h(
       'p',
-      { className: 'text-xs text-(--ui-text-quaternary)' },
+      { className: 'text-xs text-(--ui-text-quaternary)', key: 'preamble' },
       'KAME works with none of these touched. A change takes effect on the next call, in every conversation this ' +
         "Hermes is serving, and is written to Hermes' own .env so it survives a restart. Only KAME_ lines are " +
         'touched; the rest of that file is left exactly as it is.'
@@ -1121,7 +1202,11 @@ function SettingsPage({ snap }) {
     ...settingCards({ busy, groups: snap.setting_groups ?? [], settings }),
 
     Card(
-      { note: 'Neither of these can reach a key. KAME never reads, writes or deletes a credential.', title: 'Maintenance' },
+      {
+        key: 'maintenance',
+        note: 'Neither of these can reach a key. KAME never reads, writes or deletes a credential.',
+        title: 'Maintenance'
+      },
       h(
         'div',
         { className: 'flex flex-wrap gap-2' },
@@ -1149,6 +1234,7 @@ function SettingsPage({ snap }) {
         'Every KAME setting goes back to its built-in default, and the KAME_ lines are removed from the .env. ' +
         'Nothing else in that file is touched, and no key is affected.',
       destructive: true,
+      key: 'confirm-reset',
       onClose: () => setConfirming(''),
       onConfirm: () => void request('reset_all'),
       open: confirming === 'reset_all',
@@ -1157,6 +1243,7 @@ function SettingsPage({ snap }) {
 
     h(ConfirmDialog, {
       confirmLabel: 'Clear the pool',
+      key: 'confirm-clear',
       description:
         'Every key starts again as if it had never been tried: cooldowns, quarantines and the request history are ' +
         'forgotten. This does not delete any key, and a key that is genuinely spent will simply be refused again.',
@@ -1192,7 +1279,7 @@ function EventRow({ event }) {
     { className: 'flex items-baseline gap-3 border-b border-(--ui-stroke-tertiary)/60 py-2 last:border-b-0', key: event.seq },
     h(
       'span',
-      { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)' },
+      { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', key: 'when' },
       Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '—'
     ),
     h(
@@ -1201,18 +1288,23 @@ function EventRow({ event }) {
         className: cn(
           'w-24 shrink-0 text-xs',
           tone === 'bad' ? 'text-destructive' : tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-secondary)'
-        )
+        ),
+        key: 'label'
       },
       label
     ),
     h(
       'span',
-      { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)' },
-      h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)' }, event.identity || ''),
-      event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)' }, event.key) : null,
-      event.reason ? h('span', { className: 'ml-2' }, event.reason) : null,
-      event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)' }, `HTTP ${event.code}`) : null,
-      event.seconds ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)' }, `rested ${duration(event.seconds)}`) : null
+      { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)', key: 'detail' },
+      // Four of these five come and go with what the provider said, so the row
+      // rebuilds its own tail on every event that carries a different set.
+      h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)', key: 'identity' }, event.identity || ''),
+      event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)', key: 'fingerprint' }, event.key) : null,
+      event.reason ? h('span', { className: 'ml-2', key: 'reason' }, event.reason) : null,
+      event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, `HTTP ${event.code}`) : null,
+      event.seconds
+        ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, `rested ${duration(event.seconds)}`)
+        : null
     )
   )
 }
@@ -1295,21 +1387,64 @@ function Tab({ id, label, active }) {
   )
 }
 
+/** The live reading beside the page title.
+ *
+ *  Its own component so that it, and not the page, is what the one-second clock
+ *  re-renders. Before 1.2.3 `KamePage` read `$now` itself, which meant the
+ *  Settings tab — which has no countdown anywhere on it — rebuilt its entire
+ *  form once a second. */
+function HeaderStatus({ snap }) {
+  const now = useValue($now)
+
+  const totals = snap.totals ?? {}
+  const age = ageSeconds(snap, now)
+  const stale = age > STALE_AFTER_S
+
+  return h(
+    'div',
+    { className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary)' },
+    h(StatusDot, { key: 'dot', tone: toneFor(snap, now) }),
+    h('span', { key: 'ready' }, snap.installed ? `${totals.healthy} of ${totals.keys} keys ready` : 'not rotating'),
+    h(
+      'span',
+      { className: cn('text-(--ui-text-quaternary)', stale && 'text-(--ui-red)'), key: 'age' },
+      stale ? `reading ${duration(age)} old` : 'live'
+    )
+  )
+}
+
+/** The "nothing has been written for a while" warning, on the same reasoning:
+ *  it is the only thing outside the header that needs the clock, so it keeps a
+ *  stable slot in the page and decides for itself whether to show anything. */
+function StaleNote({ snap }) {
+  const now = useValue($now)
+  const age = ageSeconds(snap, now)
+
+  if (age <= STALE_AFTER_S) {
+    return null
+  }
+
+  return Note(
+    `Nothing has been written for ${duration(age)}. The numbers below are the last reading, not the current one — ` +
+      'the backend is probably restarting.'
+  )
+}
+
 function KamePage() {
   const snap = useValue($snapshot)
   const problem = useValue($problem)
-  const now = useValue($now)
   const tab = useValue($tab)
 
   const header = right =>
     h(
       'header',
-      { className: 'flex flex-wrap items-baseline justify-between gap-3' },
+      { className: 'flex flex-wrap items-baseline justify-between gap-3', key: 'header' },
       h(
         'div',
-        { className: 'flex items-baseline gap-2' },
-        h('h1', { className: 'text-lg font-medium text-(--ui-text-primary)' }, PRODUCT),
-        snap?.version && h('span', { className: 'text-xs text-(--ui-text-quaternary)' }, `v${snap.version}`)
+        { className: 'flex items-baseline gap-2', key: 'title' },
+        h('h1', { className: 'text-lg font-medium text-(--ui-text-primary)', key: 'name' }, PRODUCT),
+        snap?.version &&
+          h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'version' }, `v${snap.version}`)
       ),
       right
     )
@@ -1319,19 +1454,16 @@ function KamePage() {
       'div',
       { className: 'flex h-full w-full flex-col gap-4 overflow-y-auto p-6' },
       header(null),
-      h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, problem || 'Reading the pool…'),
+      h('p', { className: 'text-sm text-(--ui-text-tertiary)', key: 'problem' }, problem || 'Reading the pool…'),
       h(
         'p',
-        { className: 'text-xs text-(--ui-text-quaternary)' },
+        { className: 'text-xs text-(--ui-text-quaternary)', key: 'hint' },
         'This page reads a file the backend half of KAME writes. If Hermes has just started, give it a moment.'
       )
     )
   }
 
-  const totals = snap.totals ?? {}
   const counters = snap.counters ?? {}
-  const age = ageSeconds(snap, now)
-  const stale = age > STALE_AFTER_S
   const repair = snap.gemini_tool_call_fix ?? {}
   const invalid = invalidCount(snap)
 
@@ -1339,72 +1471,64 @@ function KamePage() {
     'div',
     { className: 'flex h-full w-full flex-col gap-4 overflow-y-auto p-6' },
 
-    header(
-      h(
-        'div',
-        { className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary)' },
-        h(StatusDot, { tone: toneFor(snap, now) }),
-        h('span', null, snap.installed ? `${totals.healthy} of ${totals.keys} keys ready` : 'not rotating'),
-        h(
-          'span',
-          { className: cn('text-(--ui-text-quaternary)', stale && 'text-(--ui-red)') },
-          stale ? `reading ${duration(age)} old` : 'live'
-        )
-      )
-    ),
+    header(h(HeaderStatus, { key: 'status', snap })),
 
     h(
       'nav',
-      { className: 'flex gap-1' },
-      h(Tab, { active: tab === 'overview', id: 'overview', label: 'Overview' }),
-      h(Tab, { active: tab === 'settings', id: 'settings', label: 'Settings' }),
-      h(Tab, { active: tab === 'events', id: 'events', label: `Events${snap.events?.length ? ` (${snap.events.length})` : ''}` })
+      { className: 'flex gap-1', key: 'tabs' },
+      h(Tab, { active: tab === 'overview', id: 'overview', key: 'overview', label: 'Overview' }),
+      h(Tab, { active: tab === 'settings', id: 'settings', key: 'settings', label: 'Settings' }),
+      h(Tab, {
+        active: tab === 'events',
+        id: 'events',
+        key: 'events',
+        label: `Events${snap.events?.length ? ` (${snap.events.length})` : ''}`
+      })
     ),
 
     !snap.installed &&
-      Note(`KAME is loaded but every call keeps the key Hermes resolved: ${snap.reason}`),
+      Note(`KAME is loaded but every call keeps the key Hermes resolved: ${snap.reason}`, 'plain', 'not-rotating'),
 
-    stale &&
-      Note(
-        `Nothing has been written for ${duration(age)}. The numbers below are the last reading, not the current one — ` +
-          'the backend is probably restarting.'
-      ),
+    h(StaleNote, { key: 'stale', snap }),
 
     invalid > 0 &&
       Note(
         `${invalid} key(s) have been refused as credentials. Waiting will not repair one: replace ${invalid === 1 ? 'it' : 'them'} in ` +
           'Settings, or remove them from the pool. Until then every turn spends an attempt discovering the same thing.',
-        'bad'
+        'bad',
+        'invalid'
       ),
 
     tab === 'settings'
-      ? h(SettingsPage, { snap })
+      ? h(SettingsPage, { key: 'body', snap })
       : tab === 'events'
-        ? h(EventsPage, { snap })
+        ? h(EventsPage, { key: 'body', snap })
         : h(
             'div',
-            { className: 'flex flex-col gap-4' },
+            { className: 'flex flex-col gap-4', key: 'body' },
 
-            snap.first_run ? h(FirstRun, null) : null,
+            snap.first_run ? h(FirstRun, { key: 'first-run' }) : null,
 
-            Card({ title: 'Right now' }, h(RightNow, { now, snap })),
+            Card({ key: 'right-now', title: 'Right now' }, h(RightNow, { snap })),
 
             Card(
               {
+                key: 'pool-health',
                 note: 'One pool per provider and model. A key spent on one model keeps its allowance on another.',
                 title: 'Pool health'
               },
               (snap.pools ?? []).length
-                ? (snap.pools ?? []).map(pool => h(PoolRow, { key: pool.identity, now, pool, snap }))
+                ? (snap.pools ?? []).map(pool => h(PoolRow, { key: pool.identity, pool, snap }))
                 : h(
                     'p',
-                    { className: 'text-sm text-(--ui-text-tertiary)' },
+                    { className: 'text-sm text-(--ui-text-tertiary)', key: 'empty' },
                     'Nothing recorded yet — no call has been made through a pooled key this session.'
                   )
             ),
 
             Card(
               {
+                key: 'process',
                 note: 'Across every conversation it is serving, including subagents and the auxiliary lane.',
                 title: 'This Hermes process'
               },
@@ -1427,6 +1551,7 @@ function KamePage() {
 
             Card(
               {
+                key: 'gemini',
                 note: 'Two parallel calls to one tool arrive under the same slot and their arguments are concatenated, which Hermes reports as "Response truncated due to output length limit".',
                 title: 'Gemini parallel tool calls'
               },
@@ -1437,11 +1562,11 @@ function KamePage() {
 
     h(
       'footer',
-      { className: 'pb-2 text-[0.6875rem] text-(--ui-text-quaternary)' },
-      h('p', null, `Backend process ${snap.pid} · reading refreshed every second`),
+      { className: 'pb-2 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'footer' },
+      h('p', { key: 'pid' }, `Backend process ${snap.pid} · reading refreshed every second`),
       h(
         'p',
-        { className: 'mt-1' },
+        { className: 'mt-1', key: 'commands' },
         '/kame for the same picture in the chat, /kame-quota per key and model, /kame-keys to add keys in bulk'
       )
     )
