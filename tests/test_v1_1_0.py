@@ -222,10 +222,10 @@ class TestTheSnapshotIsTheDoorToARealPanel:
         assert state.publish(None, force=True) is False
         assert "home" in state.disabled_reason()
 
-    def test_a_profile_home_is_walked_back_to_its_base(self, tmp_path, monkeypatch):
-        # The Desktop half resolves the path from the plugin root the bridge
-        # reports, which is the base home. Publishing under `profiles/<name>`
-        # would leave the chip empty for anyone off the default profile.
+    def test_a_profile_home_is_preserved_for_isolation(self, tmp_path, monkeypatch):
+        # 1.2.4: Each profile keeps its own plugin-data directory. Do NOT walk
+        # back to the base home — that collapsed all profiles to the same
+        # state.json and caused races between concurrent profiles.
         base = tmp_path / "hermes"
         profile = base / "profiles" / "work"
         profile.mkdir(parents=True)
@@ -236,7 +236,7 @@ class TestTheSnapshotIsTheDoorToARealPanel:
                 return str(profile)
 
         monkeypatch.setitem(sys.modules, "hermes_constants", Constants)
-        assert state._hermes_home() == base
+        assert state._hermes_home() == profile
 
     def test_every_setting_is_in_the_document(self, home):
         keys = {row["key"] for row in state.snapshot(None)["settings"]}

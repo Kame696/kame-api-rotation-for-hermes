@@ -35,10 +35,8 @@ from .quota import (
     extract_from_headers,
     extract_from_text,
     extract_retry_delay_seconds,
-    looks_like_google,
     parse_absolute_timestamp,
     parse_duration_to_seconds,
-    seconds_until_pacific_midnight,
 )
 
 # Kept in step with ``plugin.yaml`` by ``test_core_version_matches_the_manifest``.
@@ -46,7 +44,7 @@ from .quota import (
 # string nobody reads is worth: this package is meant to be lifted into
 # another host, and the number that travels with it has to say which rules
 # came along.
-__version__ = "1.2.2"
+__version__ = "1.2.4"
 
 __all__ = [
     "__version__",
@@ -93,10 +91,8 @@ __all__ = [
     "extract_from_headers",
     "extract_from_text",
     "extract_retry_delay_seconds",
-    "looks_like_google",
     "parse_absolute_timestamp",
     "parse_duration_to_seconds",
-    "seconds_until_pacific_midnight",
     "ImportPlan",
     "build_labels",
     "format_plan_lines",

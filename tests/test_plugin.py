@@ -149,17 +149,12 @@ class TestHookResult:
     def test_per_day_benches_until_the_quota_resets(self):
         import time
 
-        from core import seconds_until_pacific_midnight
-
         result = _on_api_error_classification(
             provider="gemini", status_code=429, error_body=PER_DAY_BODY,
         )
-        # The whole point: the deadline is the quota's own reset, not the 1h
-        # EXHAUSTED_TTL_429_SECONDS the host would otherwise apply. That is
-        # usually much longer and, in the hour before Pacific midnight,
-        # correctly shorter — so the assertion is the reset, not a duration.
+        # 1.2.4: daily quotas use 1 hour (3600s) default bench.
         assert result["error_context"]["reset_at"] - time.time() == pytest.approx(
-            seconds_until_pacific_midnight(), abs=5
+            3600.0, abs=5
         )
 
     def test_serves_any_provider_that_supplies_evidence(self):

@@ -4,7 +4,7 @@
 
 ### KAME API Rotation for Hermes — one API key per call, chosen for you
 
-[![Version](https://img.shields.io/badge/version-1.2.2-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
+[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Hermes](https://img.shields.io/badge/Hermes-v0.20.x-purple.svg)](https://github.com/NousResearch/hermes)
 [![Python](https://img.shields.io/badge/python-3.9%2B-yellow.svg)](https://www.python.org/)
@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.2.2            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.2.4            ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -548,7 +548,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.2.2** — *because round-robin was never enough*
+🐢⚡ **KAME v1.2.4** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

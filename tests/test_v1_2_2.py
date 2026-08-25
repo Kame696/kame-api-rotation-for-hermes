@@ -328,8 +328,7 @@ def test_the_name_a_config_file_holds_did_not_move():
 def test_the_manifest_the_core_and_the_changelog_agree():
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert core_mod.__version__ == "1.2.2"
-    assert 'version: "1.2.2"' in manifest
+    assert f'version: "{core_mod.__version__}"' in manifest
     assert "## [1.2.2]" in changelog
     # 1.1.2's finding: the installer refuses anything above 1.
     assert "manifest_version: 1" in manifest

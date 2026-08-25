@@ -40,8 +40,7 @@ moment later. Backoff escalates per key and per kind, and resets on success.
 A per-minute throttle that says "retry in 6s" is honest and worth obeying on
 the first strike; from the second strike the same key saying the same thing is
 evidence the window is wider than it claims, so the delay escalates. A *daily*
-cap is different: Google returns a ``retryDelay`` of seconds on a quota that
-resets at midnight Pacific. Believing it produces a key that returns to
+cap is different: Google returns a short retryDelay on a daily-quota 429. Believing it produces a key that returns to
 rotation, fails, and repeats — hourly, all day. So for ``daily`` and
 ``insufficient_quota`` the parsed delay is discarded and the configured
 cooldown is used instead. This is v1.0.5's rule and it was learned the hard way.
@@ -78,8 +77,8 @@ RPM_WINDOW_S = 60.0
 
 #: A daily cap or a permanent denial rests the key this long by default. The
 #: host may override it (``daily_quota_cooldown_seconds``); one hour is the
-#: Agent Zero default, chosen so a key that regains quota at midnight Pacific
-#: is retried hourly rather than every twenty seconds.
+#: Agent Zero default, chosen so a daily-quota key is retried hourly
+#: rather than hammered every twenty seconds.
 DAILY_COOLDOWN_S = 3600.0
 
 #: No cooldown may exceed a day, whatever a provider claims.

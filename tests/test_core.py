@@ -38,11 +38,9 @@ from core import (  # noqa: E402
     detect_quota_window,
     extract_from_headers,
     extract_retry_delay_seconds,
-    looks_like_google,
     looks_like_upstream_wrapper,
     parse_absolute_timestamp,
     parse_duration_to_seconds,
-    seconds_until_pacific_midnight,
 )
 from core.quota import SOURCE_ANCHOR, extract_from_body  # noqa: E402
 
@@ -547,32 +545,7 @@ class TestQuotaWindow:
         assert detect_quota_window("something went wrong") == QuotaWindow.UNKNOWN
 
 
-class TestLooksLikeGoogle:
-    def test_by_provider_name(self):
-        for name in ("gemini", "google", "GOOGLE-GEMINI", "vertex"):
-            assert looks_like_google(provider=name)
 
-    def test_by_body_fingerprint(self):
-        # A proxy forwarding a Google error still gets Google's reset rule.
-        assert looks_like_google(provider="openrouter", body=PER_DAY_BODY)
-
-    def test_negative(self):
-        assert not looks_like_google(provider="anthropic", body=ANTHROPIC_RATE_BODY)
-
-
-class TestPacificMidnight:
-    def test_is_within_one_day(self):
-        assert 0 < seconds_until_pacific_midnight() <= 24 * 3600
-
-    def test_daylight_time(self):
-        # 2026-06-15 08:00 UTC == 01:00 PDT (UTC-7). 23h to midnight.
-        moment = datetime(2026, 6, 15, 8, 0, tzinfo=timezone.utc)
-        assert seconds_until_pacific_midnight(moment) == pytest.approx(23 * 3600, abs=1)
-
-    def test_standard_time(self):
-        # 2026-01-15 09:00 UTC == 01:00 PST (UTC-8). 23h to midnight.
-        moment = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
-        assert seconds_until_pacific_midnight(moment) == pytest.approx(23 * 3600, abs=1)
 
 
 # ── reconciliation ────────────────────────────────────────────────────────
@@ -594,39 +567,28 @@ class TestComputeResetAt:
         # for 23 hours a day is a suite that fails on the clock.
         decision = compute_reset_at(now_epoch=NOW, provider="gemini", body=PER_DAY_BODY)
         assert decision.window == QuotaWindow.PER_DAY
-        assert decision.reset_at - NOW == pytest.approx(
-            seconds_until_pacific_midnight(), abs=2
-        )
+        assert decision.reset_at - NOW == pytest.approx(3600, abs=1)
 
-    def test_google_daily_outlasts_the_host_default_at_a_normal_hour(self):
-        # Same rule with the clock pinned: mid-morning Pacific, a spent daily
-        # quota is benched for the rest of the day, not for the host's hour.
+    def test_google_daily_reprobes_hourly_matching_agent_zero(self):
+        # 1.2.4 parity with Agent Zero: daily quotas floor at 1 hour (3600s)
+        # instead of locking the key until Pacific midnight.
         morning = datetime(2026, 8, 16, 17, 0, tzinfo=timezone.utc)  # 10:00 PDT
         decision = compute_reset_at(
             now_epoch=NOW, provider="gemini", body=PER_DAY_BODY, now=morning
         )
-        assert decision.reset_at - NOW == pytest.approx(14 * 3600, abs=2)
+        assert decision.reset_at - NOW == pytest.approx(3600, abs=1)
 
-    def test_the_midnight_deadline_says_it_came_from_the_calendar(self):
-        # It matters downstream. ``escalate`` corrects a deadline that proves
-        # short by scaling it, which is right for a length and meaningless for
-        # an instant — and it cannot tell them apart from the window, because
-        # a non-Google daily cap is an hourly re-probe under the same name.
+    def test_the_daily_deadline_says_it_came_from_the_window(self):
         decision = compute_reset_at(now_epoch=NOW, provider="gemini", body=PER_DAY_BODY)
-        assert decision.source == SOURCE_ANCHOR
+        assert decision.source == "window"
 
-    def test_and_says_so_even_when_a_header_offered_a_delay(self):
-        # The header's delay was read and then deliberately discarded three
-        # lines earlier. Reporting it as the source of a deadline it did not
-        # produce is the kind of small lie that costs a later version an hour.
+    def test_daily_ignores_short_retry_after_header_and_uses_window(self):
         decision = compute_reset_at(
             now_epoch=NOW, provider="gemini", body=PER_DAY_BODY,
             headers={"retry-after": "37"},
         )
-        assert decision.source == SOURCE_ANCHOR
-        assert decision.reset_at - NOW == pytest.approx(
-            seconds_until_pacific_midnight(), abs=2
-        )
+        assert decision.source == "window"
+        assert decision.reset_at - NOW == pytest.approx(3600, abs=1)
 
     def test_non_google_daily_reprobes_hourly(self):
         # Without knowing the provider's reset clock, re-probing hourly is
@@ -738,14 +700,12 @@ class TestClassify:
         assert verdict.should_rotate_credential is True
         assert verdict.reset_at == NOW + 21.0
 
-    def test_google_daily_benches_until_the_quota_actually_resets(self):
+    def test_google_daily_benches_for_one_hour(self):
         verdict = classify(
             provider="gemini", status_code=429, error_body=PER_DAY_BODY, now_epoch=NOW
         )
         assert verdict.quota_window == QuotaWindow.PER_DAY
-        assert verdict.reset_at - NOW == pytest.approx(
-            seconds_until_pacific_midnight(), abs=2
-        )
+        assert verdict.reset_at - NOW == pytest.approx(3600, abs=1)
 
     def test_invalid_key_is_permanent(self):
         verdict = classify(
@@ -1048,7 +1008,7 @@ class TestTheSentenceGoogleSendsOnEveryThrottle:
         assert verdict.quota_window == QuotaWindow.PER_DAY
         # And it reaches the anchor branch v0.1.2 wrote for exactly this case,
         # which until now no real Google payload could ever get to.
-        assert verdict.source == SOURCE_ANCHOR
+        assert verdict.source == "window"
 
     def test_the_sentence_in_the_message_alone_is_enough_to_be_read_wrong(self):
         # The host hands the hook both halves, and a body that fails to parse
@@ -1532,4 +1492,4 @@ class TestAskingTheSourcesTheCascadeSkipped:
             message="Please try again in 23h.",
             body=GOOGLE_SENTENCE_RPD_BODY,
         )
-        assert decision.source == SOURCE_ANCHOR
+        assert decision.source == "text"

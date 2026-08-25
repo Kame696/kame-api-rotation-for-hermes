@@ -707,7 +707,7 @@ class _Vigil:
     records the consequence honestly — *"the user typically restarts A0 in that
     scenario"*. Restarting is not a decision the user made, it is one the
     silence made for them. A pool that hits its daily cap at 14:00 does not
-    recover until midnight Pacific, and ten hours of a spinner is
+    recover until the daily quota rolls over, and hours of a spinner is
     indistinguishable from a hang no matter how correct the waiting is.
 
     So the wait stays unbounded and stops being silent. ``agent._emit_status``
@@ -1097,6 +1097,13 @@ def _looks_local(agent: Any) -> bool:
     return any(mark in base for mark in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.docker.internal"))
 
 
+# Serialises os.environ access across concurrent calls. os.environ is
+# process-wide; without this two tasks could stomp each other's timeout value
+# or restore the wrong previous value. The lock is held only for the duration
+# of one API call, which is already bounded by HERMES_STREAM_READ_TIMEOUT.
+_SILENCE_TIMEOUT_LOCK = threading.Lock()
+
+
 class _SilenceTimeout:
     """Hermes' own stream read timeout, lowered for one attempt and put back.
 
@@ -1121,12 +1128,13 @@ class _SilenceTimeout:
 
     VARIABLE = "HERMES_STREAM_READ_TIMEOUT"
 
-    __slots__ = ("_seconds", "_previous", "_applied")
+    __slots__ = ("_seconds", "_previous", "_applied", "_lock_acquired")
 
     def __init__(self, agent: Any) -> None:
         self._seconds = 0.0
         self._previous: Optional[str] = None
         self._applied = False
+        self._lock_acquired = False
         seconds = settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0)
         if seconds <= 0 or _looks_local(agent):
             return
@@ -1137,19 +1145,26 @@ class _SilenceTimeout:
     def __enter__(self) -> "_SilenceTimeout":
         if self._seconds <= 0:
             return self
+        _SILENCE_TIMEOUT_LOCK.acquire()
+        self._lock_acquired = True
         self._previous = os.environ.get(self.VARIABLE)
         os.environ[self.VARIABLE] = f"{self._seconds:g}"
         self._applied = True
         return self
 
     def __exit__(self, *_exc: Any) -> None:
-        if not self._applied:
-            return
-        if self._previous is None:
-            os.environ.pop(self.VARIABLE, None)
-        else:
-            os.environ[self.VARIABLE] = self._previous
-        self._applied = False
+        try:
+            if not self._applied:
+                return
+            if self._previous is None:
+                os.environ.pop(self.VARIABLE, None)
+            else:
+                os.environ[self.VARIABLE] = self._previous
+            self._applied = False
+        finally:
+            if getattr(self, "_lock_acquired", False):
+                self._lock_acquired = False
+                _SILENCE_TIMEOUT_LOCK.release()
 
 
 # --- the binding ------------------------------------------------------------

@@ -40,7 +40,7 @@ Framework-free like the rest of ``core``: numbers in, a number out.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 from .probe import NEVER_PROBE_REASONS
 from .quota import SOURCE_ANCHOR, QuotaWindow
@@ -56,22 +56,31 @@ STRIKES_BEFORE_STRETCHING = 2
 # start working: something other than the window length is wrong.
 MAX_FACTOR = 8.0
 
-# A ceiling on the result, whatever the arithmetic says. A day is the longest
-# bench anything else in this plugin produces (the account-level default), and
-# a learned number should not be able to out-hold a read one.
-MAX_HOLD_SECONDS = 24 * 60 * 60.0
+# Per-window escalation ceilings. Per-minute and per-hour caps match Agent
+# Zero's backoff caps (_KAME_RL_BACKOFF_CAP_S = 300s) so a stuck RPM key
+# cannot escalate to a day-long bench. Daily/weekly/monthly keep the 24h
+# ceiling because those windows genuinely take hours to recover.
+MAX_HOLD_SECONDS = 24 * 60 * 60.0          # daily / weekly / monthly
+MAX_PER_MINUTE_HOLD_SECONDS = 300.0         # matches AZ _KAME_RL_BACKOFF_CAP_S
+MAX_PER_HOUR_HOLD_SECONDS   = 3600.0        # one full hour max on per-hour escalation
 
 # Windows a longer wait cannot fix. ``account`` is out of credits, not a
 # clock — the host already benches it for a day and only a human topping up
 # changes it.
 NEVER_STRETCH_WINDOWS = frozenset({QuotaWindow.ACCOUNT})
 
-# A deadline that is a calendar instant rather than a stopwatch reading. Only
-# ``quota.py``'s Pacific-midnight branch produces one today, and it says so in
-# the decision instead of leaving it to be guessed from the window — a
-# non-Google daily cap carries the same window name and is a one-hour
-# re-probe, which is a stopwatch and scales correctly.
+# A deadline that is a calendar instant rather than a stopwatch reading.
+# A stopwatch deadline scales multiplicatively; a calendar anchor (a provider
+# that says "your counter rolls at HH:MM") is moved additively instead,
+# because multiplying a calendar instant produces nonsense — 2× midnight is
+# not a meaningful time.
 ANCHOR_SOURCES = frozenset({SOURCE_ANCHOR})
+
+# Per-window caps looked up by window string in stretch().
+_WINDOW_ESCALATION_CAPS: Dict[str, float] = {
+    QuotaWindow.PER_MINUTE: MAX_PER_MINUTE_HOLD_SECONDS,
+    QuotaWindow.PER_HOUR:   MAX_PER_HOUR_HOLD_SECONDS,
+}
 
 # How much later to move an anchor that has been measured early, per strike.
 # Fifteen minutes doubling to two hours: wide enough to cover the ways a
@@ -161,7 +170,8 @@ def stretch(
         # for exactly the deadline that needed it.
         return float(reset_at) + nudge_for(strikes)
 
-    widened = min(seconds * factor_for(strikes), MAX_HOLD_SECONDS)
+    cap = _WINDOW_ESCALATION_CAPS.get(str(window or "").strip().lower(), MAX_HOLD_SECONDS)
+    widened = min(seconds * factor_for(strikes), cap)
     if widened <= seconds:
         # The ceiling already covered this bench. Saying so as ``None`` keeps
         # the row honest: nothing was added, so nothing claims to have been.

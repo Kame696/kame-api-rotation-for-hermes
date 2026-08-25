@@ -1890,10 +1890,9 @@ class TestTheRealGooglePayloadEndToEnd:
             ),
         )
         # Not the 37 seconds Google attaches to a spent daily counter, and not
-        # a day flat either: the calendar instant v0.1.2's escalation branch
-        # was written for, which no real payload could reach until now.
-        assert verdict.source == "anchor"
-        assert verdict.reset_at - clock.now > 37.0
+        # Pacific midnight either: the standard daily quota floor of 3600s.
+        assert verdict.source == "window"
+        assert verdict.reset_at - clock.now == pytest.approx(3600.0, abs=1)
 
     def test_the_last_key_is_still_rescuable(self, journaling):
         # ``billing`` sits in NEVER_PROBE_REASONS, so under the old reading a

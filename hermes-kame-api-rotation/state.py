@@ -118,10 +118,9 @@ def _hermes_home() -> Optional[Path]:
             home = Path(raw)
     if home is None:
         return None
-    # `<base>/profiles/<name>` -> `<base>`. Checked by shape, not by name, so
-    # a profile that happens to be called "profiles" cannot confuse it.
-    if home.parent.name == "profiles":
-        home = home.parent.parent
+    # Each profile keeps its own plugin-data directory. Do NOT walk to the
+    # base home — that collapsed all profiles to the same state.json and
+    # caused races between concurrent profiles (fixed v1.2.4).
     return home
 
 

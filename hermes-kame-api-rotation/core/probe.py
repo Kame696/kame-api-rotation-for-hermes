@@ -7,7 +7,7 @@ flight has **no other usable credential**.
 
 With ten keys, a deadline that was too long costs one key for a while and the
 pool routes around it. With one key it costs the agent entirely: a daily cap
-read as "midnight Pacific" locks the user out for a day, and if that reading
+misread as a day-long bench locks the user out, and if that reading
 was wrong there is nothing in the system that could ever discover it — the
 key is never tried, so no success is ever observed, so the mistake is
 invisible by construction. That is the failure this module exists to prevent,

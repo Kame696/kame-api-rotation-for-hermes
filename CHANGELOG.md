@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.2.4** | Full parity with Agent Zero on daily caps | Removed the US/Pacific midnight calculation that locked Google Gemini keys for 12-18h on burst errors. Daily quotas floor at 1 hour max (3600s), and per-minute RPM throttles keep standard short recovery |
 | **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker was the cause of the next one — a keyless list remounted the settings form mid-save; fixed structurally, with a test that renders the real panel and checks it |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
 | **1.2.1** | Resilient Gemini Streams | Captures SDK-wrapped stream read timeouts as non-terminal timeouts and rotates smoothly without ending turns |
@@ -33,6 +34,18 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.2.4] — 2026-08-25
+
+Restores full logic parity with Agent Zero v1.2.0. The initial v1.2.4 only removed the call site for the Pacific midnight bug; this update finishes the job, cleaning the dead code and addressing five other critical discrepancies found in a side-by-side audit of the Hermes port.
+
+**In short**
+
+- 🗑️ *Dead Code Gone* — Removed `seconds_until_pacific_midnight`, `_pacific_offset_hours`, and `looks_like_google` entirely.
+- 📉 *Caps Aligned* — Per-minute escalation now caps at 5 minutes (`300.0s`), matching Agent Zero, instead of escalating indefinitely to 24 hours. The absolute horizon was also lowered from 7 days to 24 hours.
+- ⏱️ *Account Bench Aligned* — Out-of-credit account benches now re-probe hourly (`3600.0s`) matching Agent Zero, down from 24 hours.
+- 🔒 *Multi-Profile Safety* — `state.json` is now kept strictly per-profile. A bug that stripped profile paths and collapsed all profiles to the same file (causing races) is fixed.
+- 🧵 *Thread-Safe Env* — Added a lock around the process-wide `HERMES_STREAM_READ_TIMEOUT` `os.environ` modifications to prevent concurrent agent executions from stomping each other's timeouts.
 
 ## [1.2.3] — 2026-08-24
 

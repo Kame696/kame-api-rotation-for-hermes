@@ -165,15 +165,15 @@ class TestAResetTimeInsteadOfADelay:
 
     def test_it_reads_the_moment(self):
         seconds, source = extract_reset_moment_from_text(
-            f"Weekly Limit Exhausted. Your limit will reset at {iso(3 * 86400)}", NOW
+            f"Weekly Limit Exhausted. Your limit will reset at {iso(20 * 3600)}", NOW
         )
-        assert seconds == pytest.approx(3 * 86400, abs=2)
+        assert seconds == pytest.approx(20 * 3600, abs=2)
         assert source == "text.reset_at"
 
     def test_a_weekly_limit_benches_until_the_stated_rollover(self):
         message = (
             "Weekly/Monthly Limit Exhausted. Your limit will reset at "
-            f"{iso(2 * 86400)}"
+            f"{iso(12 * 3600)}"
         )
         verdict = classify(
             provider="zai",
@@ -184,7 +184,7 @@ class TestAResetTimeInsteadOfADelay:
         )
         assert verdict is not None
         assert verdict.quota_window == QuotaWindow.PER_WEEK
-        assert verdict.reset_at == pytest.approx(NOW + 2 * 86400, abs=2)
+        assert verdict.reset_at == pytest.approx(NOW + 12 * 3600, abs=2)
 
     def test_a_moment_already_past_is_ignored(self):
         # A stale message is not a reason to bench anything, and a negative

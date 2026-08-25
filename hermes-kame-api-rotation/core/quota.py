@@ -36,7 +36,7 @@ MAX_RELATIVE_DELAY_SECONDS = 24 * 60 * 60
 
 # An absolute reset timestamp may legitimately sit further out — weekly
 # subscription windows exist (OpenCode Go, Copilot).
-MAX_ABSOLUTE_HORIZON_SECONDS = 7 * 24 * 60 * 60
+MAX_ABSOLUTE_HORIZON_SECONDS = 24 * 60 * 60  # 1 day — matches Agent Zero _KAME_HARD_DELAY_CAP_S
 
 MIN_BENCH_SECONDS = 1.0
 
@@ -65,9 +65,9 @@ DEFAULT_PER_HOUR_BENCH_SECONDS = 10 * 60.0
 DEFAULT_PER_DAY_BENCH_SECONDS = 60 * 60.0
 
 # Account-level exhaustion (out of credits) is not a throttle and will not
-# clear on its own, but a human may top up, so it is re-probed daily rather
-# than treated as permanently dead.
-DEFAULT_ACCOUNT_BENCH_SECONDS = 24 * 60 * 60.0
+# clear on its own, but a human may top up, so it is re-probed hourly rather
+# than treated as permanently dead. Matches Agent Zero's _KAME_DAILY_COOLDOWN_S = 3600.
+DEFAULT_ACCOUNT_BENCH_SECONDS = 60 * 60.0
 
 
 class QuotaScope:
@@ -779,91 +779,6 @@ def detect_quota_scope(message: str = "", body: Any = None) -> str:
     return QuotaScope.UNKNOWN
 
 
-# ── Google's daily reset ──────────────────────────────────────────────────
-
-_GOOGLE_EVIDENCE = (
-    "generativelanguage.googleapis.com",
-    "google.rpc",
-    "googleapis",
-    "aiplatform",
-)
-
-_GOOGLE_PROVIDERS = frozenset({
-    "gemini", "google", "google-gemini", "google-ai-studio", "vertex",
-})
-
-
-def looks_like_google(provider: str = "", message: str = "", body: Any = None) -> bool:
-    """Is this Google, by name or by the fingerprints in its own response?
-
-    Used for exactly one decision — whether a daily window resets at
-    midnight US/Pacific — and never as a gate on whether to act at all.
-    Checking the body as well as the name means a proxy or an aggregator
-    that forwards a Google error still gets the right reset time.
-    """
-    if str(provider or "").strip().lower() in _GOOGLE_PROVIDERS:
-        return True
-    hay = str(message or "").lower()
-    if isinstance(body, (dict, list, tuple)):
-        pairs: List[Tuple[str, Any]] = []
-        try:
-            _walk(body, pairs)
-        except Exception:
-            pairs = []
-        hay += " ".join(str(v) for _, v in pairs if isinstance(v, str)).lower()
-    return any(marker in hay for marker in _GOOGLE_EVIDENCE)
-
-
-def _pacific_offset_hours(moment: datetime) -> int:
-    """US/Pacific UTC offset, without depending on tzdata being installed.
-
-    Windows ships no tzdata, so ``zoneinfo`` raises there unless the
-    ``tzdata`` package happens to be present. Falling back to the DST rule
-    in force since 2007 (second Sunday in March to first Sunday in November)
-    keeps this correct without adding a dependency to a plugin whose whole
-    value is not breaking the host.
-    """
-    year = moment.year
-
-    def _nth_sunday(month: int, nth: int) -> datetime:
-        first = datetime(year, month, 1, tzinfo=timezone.utc)
-        offset = (6 - first.weekday()) % 7  # weekday(): Monday=0, Sunday=6
-        return first + timedelta(days=offset + 7 * (nth - 1))
-
-    # Transitions happen at 02:00 local, i.e. 10:00 UTC (PST) and 09:00 UTC (PDT).
-    dst_start = _nth_sunday(3, 2) + timedelta(hours=10)
-    dst_end = _nth_sunday(11, 1) + timedelta(hours=9)
-    return -7 if dst_start <= moment < dst_end else -8
-
-
-def seconds_until_pacific_midnight(now: Optional[datetime] = None) -> float:
-    """Seconds until the next midnight in US/Pacific.
-
-    Google AI Studio's free-tier daily counters roll over at Pacific
-    midnight, so that is when a spent daily key becomes useful again.
-    """
-    moment = now or datetime.now(timezone.utc)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    moment = moment.astimezone(timezone.utc)
-
-    try:
-        from zoneinfo import ZoneInfo
-
-        pacific = moment.astimezone(ZoneInfo("America/Los_Angeles"))
-        midnight = (pacific + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        return max(1.0, (midnight - pacific).total_seconds())
-    except Exception:
-        pass
-
-    offset = _pacific_offset_hours(moment)
-    local = moment + timedelta(hours=offset)
-    midnight = (local + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return max(1.0, (midnight - local).total_seconds())
 
 
 # ── the decision ──────────────────────────────────────────────────────────
@@ -933,18 +848,10 @@ def compute_reset_at(
     )
 
     if long_window:
-        if window == QuotaWindow.PER_DAY and looks_like_google(provider, message, body):
-            seconds = seconds_until_pacific_midnight(now)
-            rationale = "daily quota, Google — benched until midnight US/Pacific"
-            # Not "headers", even when a header supplied a delay: the delay was
-            # deliberately discarded above and this deadline came from the
-            # calendar. ``source`` names where the number that survived came
-            # from, or it names nothing useful.
-            source = SOURCE_ANCHOR
-        elif delay is not None and delay >= DEFAULT_PER_DAY_BENCH_SECONDS:
+        if delay is not None and delay >= DEFAULT_PER_DAY_BENCH_SECONDS:
             # A long delay on a long window is the provider being specific.
             # Only a *short* one is the misleading case worth overriding.
-            seconds = delay
+            seconds = min(delay, MAX_ABSOLUTE_HORIZON_SECONDS)
             rationale = f"{window} quota — provider reset in {_fmt(delay)}"
         else:
             # The strongest reading is shorter than the window, so it is the
@@ -972,6 +879,7 @@ def compute_reset_at(
             )
             if stated is not None:
                 seconds, source = stated
+                seconds = min(seconds, MAX_ABSOLUTE_HORIZON_SECONDS)
                 rationale = f"{window} quota — provider reset in {_fmt(seconds)}"
             else:
                 seconds = _WINDOW_BENCH_DEFAULTS[window]
