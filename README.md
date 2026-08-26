@@ -469,6 +469,8 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
+| **1.3.1** | httpx.ResponseNotRead Hotfix | Safely catches stream-read exceptions during error classification for native Gemini endpoints. |
+| **1.3.0** | The Absolute Shield | Intercepts unrecoverable API errors (404, 400 Context Exceeded) to prevent Hermes retries and crashes. Cleaned up Desktop UI error inspection. |
 | **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
 | **1.2.8** | Clean rotation UI | The spinner says 'rotating...' instead of spamming which key is being tested. |
 | **1.2.7** | Resilient 429 extraction | Fixes a bug where empty exception messages caused KAME to bench keys for 0 seconds on 429s. |
