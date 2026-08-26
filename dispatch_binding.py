@@ -2026,7 +2026,10 @@ class DispatchBinding:
             try:
                 error_body = exc.response.json()
             except Exception:
-                error_body = getattr(exc.response, "text", None)
+                try:
+                    error_body = getattr(exc.response, "text", None)
+                except Exception:
+                    error_body = None
 
         verdict = classify(
             provider=provider_name,
