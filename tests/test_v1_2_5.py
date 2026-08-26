@@ -101,7 +101,7 @@ def test_nvidia_daily_cap_floors_at_one_hour_max():
 def test_the_manifest_the_core_and_the_changelog_agree():
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert core_mod.__version__ == "1.2.4"
-    assert 'version: "1.2.4"' in manifest
+    assert core_mod.__version__ == "1.2.5"
+    assert 'version: "1.2.5"' in manifest
     assert "## [1.2.4]" in changelog
     assert "manifest_version: 1" in manifest
