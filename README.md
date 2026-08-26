@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.2.4            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.2.5            ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -548,7 +548,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.2.4** — *because round-robin was never enough*
+🐢⚡ **KAME v1.2.5** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.2.5** | Speed update — faster rotation during outages | Adaptive storm timeout slashes per-key wait from 20s to 5s after two consecutive timeouts; provider circuit breaker skips to recovery wait after 3; concurrent agents no longer block each other |
 | **1.2.4** | Full parity with Agent Zero on daily caps | Removed the US/Pacific midnight calculation that locked Google Gemini keys for 12-18h on burst errors. Daily quotas floor at 1 hour max (3600s), and per-minute RPM throttles keep standard short recovery |
 | **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker was the cause of the next one — a keyless list remounted the settings form mid-save; fixed structurally, with a test that renders the real panel and checks it |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
@@ -34,6 +35,27 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.2.5] — 2026-08-25
+
+The speed update. Every version until now rotated keys at the speed of the
+provider's failure — a hanging provider that takes 20 seconds to time out burned
+20 seconds per key, sequentially, across the whole pool. With twelve keys that is
+four minutes of dead air before the wait state even starts.
+
+**In short**
+
+- ⚡ *Adaptive Storm Timeout* — After two consecutive timeouts, the silence
+  timeout for remaining keys is slashed to 25% (floored at 5s). A pool that
+  would have burned 240s now burns ~50s.
+- 🔌 *Provider Circuit Breaker* — After three consecutive timeouts from different
+  keys, KAME concludes the provider is down and skips straight to the recovery
+  wait state instead of burning through the rest of the pool. The user sees a
+  countdown instead of silence.
+- 🧵 *Non-Blocking Concurrency* — The `_SILENCE_TIMEOUT_LOCK` that serialised
+  every concurrent API call (two agents blocked each other for the full timeout)
+  now holds only for the microsecond of the `os.environ` write, not for the
+  duration of the call itself.
 
 ## [1.2.4] — 2026-08-25
 

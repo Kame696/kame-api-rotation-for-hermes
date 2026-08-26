@@ -1128,43 +1128,41 @@ class _SilenceTimeout:
 
     VARIABLE = "HERMES_STREAM_READ_TIMEOUT"
 
-    __slots__ = ("_seconds", "_previous", "_applied", "_lock_acquired")
+    __slots__ = ("_seconds", "_previous", "_applied")
 
-    def __init__(self, agent: Any) -> None:
+    def __init__(self, agent: Any, attempt: int = 1) -> None:
         self._seconds = 0.0
         self._previous: Optional[str] = None
         self._applied = False
-        self._lock_acquired = False
         seconds = settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0)
         if seconds <= 0 or _looks_local(agent):
             return
         if os.environ.get(self.VARIABLE) is not None:
             return
+        # 1.2.5: adaptive storm timeout — after two timeouts the provider is
+        # proven slow, so the remaining keys get a shorter leash.
+        if attempt >= 3:
+            seconds = max(5.0, seconds * 0.25)
         self._seconds = seconds
 
     def __enter__(self) -> "_SilenceTimeout":
         if self._seconds <= 0:
             return self
-        _SILENCE_TIMEOUT_LOCK.acquire()
-        self._lock_acquired = True
-        self._previous = os.environ.get(self.VARIABLE)
-        os.environ[self.VARIABLE] = f"{self._seconds:g}"
+        with _SILENCE_TIMEOUT_LOCK:
+            self._previous = os.environ.get(self.VARIABLE)
+            os.environ[self.VARIABLE] = f"{self._seconds:g}"
         self._applied = True
         return self
 
     def __exit__(self, *_exc: Any) -> None:
-        try:
-            if not self._applied:
-                return
+        if not self._applied:
+            return
+        with _SILENCE_TIMEOUT_LOCK:
             if self._previous is None:
                 os.environ.pop(self.VARIABLE, None)
             else:
                 os.environ[self.VARIABLE] = self._previous
-            self._applied = False
-        finally:
-            if getattr(self, "_lock_acquired", False):
-                self._lock_acquired = False
-                _SILENCE_TIMEOUT_LOCK.release()
+        self._applied = False
 
 
 # --- the binding ------------------------------------------------------------
@@ -1382,6 +1380,7 @@ class DispatchBinding:
         empty_budget = EMPTY_RETRY_BUDGET
         empty_counts: Dict[str, int] = {}
         last_error: Optional[BaseException] = None
+        consecutive_timeouts = 0
         # 1.1.1. The answer as the user has seen it, across every attempt of
         # this call. Empty until a stream is cut; from then on it is both the
         # text a continuation is prefilled with and the text a continuation is
@@ -1523,7 +1522,7 @@ class DispatchBinding:
                     stitcher = stitch.Stitcher(seen)
             delivery, restore_fire = _install_delivery(agent, progress, stitcher)
             try:
-                with _SilenceTimeout(agent):
+                with _SilenceTimeout(agent, attempt):
                     result = original(agent, attempt_kwargs, *args, **call_kwargs)
             except _CONTROL_FLOW:
                 raise
@@ -1602,6 +1601,23 @@ class DispatchBinding:
                     self.rotations += 1
                     continue
                 verdicts[key] = (kind, status)
+                if kind == "timeout":
+                    consecutive_timeouts += 1
+                else:
+                    consecutive_timeouts = 0
+                if consecutive_timeouts >= 3 and all(v[0] == "timeout" for v in verdicts.values()):
+                    logger.warning(
+                        "kame: %s provider appears down — %d consecutive "
+                        "timeouts, skipping to recovery wait",
+                        label,
+                        consecutive_timeouts,
+                    )
+                    for k in keys:
+                        if self.engine.healthy_count(identity, [k]) > 0:
+                            self.engine.mark(identity, k, False, 5.0, "timeout")
+                    _clear_host_stale_streak(agent)
+                    self.rotations += 1
+                    continue
                 if self._pool_agrees_it_is_the_request(verdicts, keys, kind, status):
                     if the_answer_is_worth_more_than_this_exit():
                         # The pool agreeing is a statement about the request,
