@@ -13,7 +13,11 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
-| **1.2.5** | Speed update — faster rotation during outages | Adaptive storm timeout slashes per-key wait from 20s to 5s after two consecutive timeouts; provider circuit breaker skips to recovery wait after 3; concurrent agents no longer block each other |
+| **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
+| **1.2.8** | Clean rotation UI | The spinner says 'rotating...' instead of spamming which key is being tested. |
+| **1.2.7** | Resilient 429 extraction | Fixes a bug where empty exception messages caused KAME to bench keys for 0 seconds on 429s. |
+| **1.2.6** | Header-based waiting | Wired `dispatch_binding.py` into the modern `core.classify` engine. |
+| **1.2.5** | Speed update - faster rotation during outages | Adaptive storm timeout slashes per-key wait from 20s to 5s after two consecutive timeouts; provider circuit breaker skips to recovery wait after 3; concurrent agents no longer block each other |
 | **1.2.4** | Full parity with Agent Zero on daily caps | Removed the US/Pacific midnight calculation that locked Google Gemini keys for 12-18h on burst errors. Daily quotas floor at 1 hour max (3600s), and per-minute RPM throttles keep standard short recovery |
 | **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker was the cause of the next one — a keyless list remounted the settings form mid-save; fixed structurally, with a test that renders the real panel and checks it |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
@@ -35,6 +39,25 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.2.9] - 2026-08-26
+
+- **Fixed**: Removed hardcoded `provider="gemini"` in `dispatch_binding.py`. The classifier now uses the actual provider from the identity string, restoring correct logic for NVIDIA and other non-Google providers.
+- **Fixed**: Exception body and headers are now passed correctly to the classifier, allowing `Retry-After` headers and structured error JSON to be read.
+- **Added**: Desktop UI now supports clicking on any event in the Events tab to expand and inspect the raw error payload (`raw_error`), eliminating the "black box" feeling during outages.
+
+## [1.2.8] - 2026-08-26
+
+- **Changed**: Simplified the UI rotation status. It now displays "rotating..." instead of flickering "on key X", providing a cleaner visual experience.
+
+## [1.2.7] - 2026-08-26
+
+- **Fixed**: Exception message extraction now gracefully falls back to `str(exc)` if the exception lacks a `.message` attribute. This prevents a critical bug where empty error strings caused `extract_retry_delay_seconds` to return `None`, leading to a 0-second cooldown and rapid rotation exhaustion during 429s.
+
+## [1.2.6] - 2026-08-26
+
+- **Fixed**: Gemini rate limits were occasionally misclassified as daily quotas (triggering a 1-hour wait) because the natively injected Hermes guidance footer contained the text "requests/day".
+- **Fixed**: Wired `dispatch_binding.py` into the modern `core.classify` engine. This restores accurate header-based waiting (e.g. for NVIDIA provider throttling) which was accidentally omitted in the 1.2.4 parity port.
 
 ## [1.2.5] — 2026-08-25
 

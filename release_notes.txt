@@ -1,0 +1,9 @@
+Restores full logic parity with Agent Zero v1.2.0. The initial v1.2.4 only removed the call site for the Pacific midnight bug; this update finishes the job, cleaning the dead code and addressing five other critical discrepancies found in a side-by-side audit of the Hermes port.
+
+**In short**
+
+- 🗑️ *Dead Code Gone* — Removed seconds_until_pacific_midnight, _pacific_offset_hours, and looks_like_google entirely.
+- 📉 *Caps Aligned* — Per-minute escalation now caps at 5 minutes (300.0s), matching Agent Zero, instead of escalating indefinitely to 24 hours. The absolute horizon was also lowered from 7 days to 24 hours.
+- ⏱️ *Account Bench Aligned* — Out-of-credit account benches now re-probe hourly (3600.0s) matching Agent Zero, down from 24 hours.
+- 🔒 *Multi-Profile Safety* — state.json is now kept strictly per-profile. A bug that stripped profile paths and collapsed all profiles to the same file (causing races) is fixed.
+- 🧵 *Thread-Safe Env* — Added a lock around the process-wide HERMES_STREAM_READ_TIMEOUT os.environ modifications to prevent concurrent agent executions from stomping each other's timeouts.

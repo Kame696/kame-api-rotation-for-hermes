@@ -143,21 +143,27 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import settings
 from .core import multikey, stitch
+from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
-from .core.storm import StormFilter, Verdict
 from .core.carousel import (
     EMPTY_REST_S,
     EMPTY_RETRY_BUDGET,
     ENGINE,
     Carousel,
-    classify,
     fingerprint,
     format_duration,
     is_auth_failure,
     is_terminal,
 )
+from .core.classify import classify, Verdict
 
 logger = logging.getLogger(__name__)
+
+#: What the storm filter would have said if it were switched off: print
+#: everything, hold nothing back. A constant rather than a branch around the
+#: logging block, so the switched-off path runs the same code as the other one
+#: and cannot drift away from it.
+_ALWAYS_LOUD = StormVerdict(speak_full=True)
 
 _MARK = "__kame_carousel__"
 
@@ -178,7 +184,7 @@ _EXPECTED_SECOND_PARAM = "api_kwargs"
 #: everything, hold nothing back. A constant rather than a branch around the
 #: logging block, so the switched-off path runs the same code as the other one
 #: and cannot drift away from it.
-_ALWAYS_LOUD = Verdict(speak_full=True)
+
 
 _MODULE = "agent.chat_completion_helpers"
 
@@ -1486,7 +1492,7 @@ class DispatchBinding:
                 else status_line(
                     healthy,
                     len(keys),
-                    f"on key {attempt}",
+                    "rotating...",
                     subject=model_label(identity),
                     symbol="↻",
                 ),
@@ -1975,10 +1981,55 @@ class DispatchBinding:
         terminal error still tells us nothing bad about the key, and a
         mid-stream drop still does.
         """
-        message = str(getattr(exc, "message", "") or "")
-        delay, kind, status = classify(
-            exc, message, daily_cooldown_s=self.engine.daily_cooldown_s
+        message = str(getattr(exc, "message", "") or str(exc) or "")
+        # 1.2.6: Hermes appends a helpful footer to Gemini 429s containing the text
+        # "requests/day". If passed to the classifier, it falsely triggers the PER_DAY
+        # quota window and benches the key for an hour instead of 9 seconds.
+        _footer = "Your Google API key is on the free tier"
+        if _footer in message:
+            message = message.split(_footer)[0].strip()
+        exc_str = str(exc)
+        if _footer in exc_str:
+            if hasattr(exc, "message") and isinstance(exc.message, str):
+                exc.message = exc.message.split(_footer)[0].strip()
+            if hasattr(exc, "args") and exc.args and isinstance(exc.args[0], str):
+                exc.args = (exc.args[0].split(_footer)[0].strip(), *exc.args[1:])
+
+        provider_name = identity.split(":")[0] if ":" in identity else identity
+        error_body = getattr(exc, "body", None)
+        if error_body is None and hasattr(exc, "response"):
+            try:
+                error_body = exc.response.json()
+            except Exception:
+                error_body = getattr(exc.response, "text", None)
+
+        verdict = classify(
+            provider=provider_name,
+            model=identity,
+            status_code=getattr(exc, "status_code", None),
+            error_message=message,
+            error_body=error_body,
+            headers=getattr(exc, "headers", None),
+            error=exc,
+            now_epoch=time.time(),
         )
+
+        if verdict is not None:
+            delay = max(0.0, verdict.reset_at - time.time()) if verdict.reset_at else 0.0
+            kind = verdict.reason
+            if kind == "billing":
+                kind = "insufficient_quota"
+                delay = self.engine.daily_cooldown_s
+            elif kind == "auth_permanent":
+                kind = "auth"
+                delay = self.engine.daily_cooldown_s
+            status = getattr(exc, "status_code", None)
+        else:
+            # Fallback for old classify
+            from .core.carousel import classify as legacy_classify
+            delay, kind, status = legacy_classify(
+                exc, message, daily_cooldown_s=self.engine.daily_cooldown_s
+            )
         if kind == "host_breaker":
             # Hermes' own cross-turn breaker. It raises before touching the
             # network, so rotating into it is free and useless in equal
@@ -2061,6 +2112,7 @@ class DispatchBinding:
                 key=fingerprint(key),
                 reason=f"{kind or 'the connection'} failed mid-answer",
                 code=status,
+                raw_error=exc_str,
             )
             if can_stitch:
                 # Since 1.1.1: continue it on another key instead, prefilled
@@ -2093,6 +2145,7 @@ class DispatchBinding:
             reason=kind or "refused",
             code=status,
             seconds=applied,
+            raw_error=exc_str,
         )
         return "rotate", kind, status
 

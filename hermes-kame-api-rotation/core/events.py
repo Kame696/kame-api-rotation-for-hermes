@@ -73,8 +73,9 @@ class Events:
         code: Optional[int] = None,
         seconds: Optional[float] = None,
         at: Optional[float] = None,
+        raw_error: str = "",
     ) -> Dict[str, Any]:
-        """Record one event. Never raises — a readout must not end a turn."""
+        """Record one event. Never raises - a readout must not end a turn."""
         try:
             row = {
                 "seq": 0,
@@ -88,6 +89,7 @@ class Events:
                 "reason": str(reason or "")[:120],
                 "code": int(code) if isinstance(code, int) else None,
                 "seconds": round(float(seconds), 1) if seconds is not None else None,
+                "raw_error": str(raw_error or ""),
             }
         except Exception:
             return {}

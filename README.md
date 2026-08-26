@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.2.5            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.2.4            ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -469,9 +469,6 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
-| **1.2.5** | Speed update | Adaptive timeouts slash dead air when keys hang, circuit breaker detects downed providers, and cross-turn locking removed |
-| **1.2.4** | Agent Zero logic parity | Dead Pacific midnight code removed, escalation caps aligned, and thread-safe environment manipulation |
-| **1.2.3** | Desktop UI fixes | Saving settings no longer blanks fields, and the panel stops tearing itself down every second |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
 | **1.2.1** | Resilient Gemini streams | SDK-wrapped stream read timeouts are recognized as non-terminal and rotated transparently instead of ending the turn |
 | **1.2.0** | Settings you can read | Three labelled shelves, so the one optional extra can no longer be mistaken for something rotation needs |
@@ -551,7 +548,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.2.5** — *because round-robin was never enough*
+🐢⚡ **KAME v1.2.4** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

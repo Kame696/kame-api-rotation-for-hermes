@@ -1271,41 +1271,50 @@ const EVENT_LABELS = {
 }
 
 function EventRow({ event }) {
+  const [expanded, setExpanded] = useState(false)
   const [label, tone] = EVENT_LABELS[event.kind] ?? [event.kind, 'plain']
   const when = new Date((event.at ?? 0) * 1000)
 
   return h(
     'div',
-    { className: 'flex items-baseline gap-3 border-b border-(--ui-stroke-tertiary)/60 py-2 last:border-b-0', key: event.seq },
+    { className: 'border-b border-(--ui-stroke-tertiary)/60 py-2 last:border-b-0', key: event.seq },
     h(
-      'span',
-      { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', key: 'when' },
-      Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '—'
-    ),
-    h(
-      'span',
-      {
-        className: cn(
-          'w-24 shrink-0 text-xs',
-          tone === 'bad' ? 'text-destructive' : tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-secondary)'
-        ),
-        key: 'label'
+      'div',
+      { 
+        className: cn('flex items-baseline gap-3 select-none', event.raw_error ? 'cursor-pointer hover:text-(--ui-text-primary)' : ''), 
+        onClick: () => { if (event.raw_error) setExpanded(!expanded) }
       },
-      label
+      h(
+        'span',
+        { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', key: 'when' },
+        Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '-'
+      ),
+      h(
+        'span',
+        {
+          className: cn(
+            'w-24 shrink-0 text-xs',
+            tone === 'bad' ? 'text-destructive' : tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-secondary)'
+          ),
+          key: 'label'
+        },
+        label
+      ),
+      h(
+        'span',
+        { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)', key: 'detail' },
+        h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)', key: 'identity' }, event.identity || ''),
+        event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)', key: 'fingerprint' }, event.key) : null,
+        event.reason ? h('span', { className: 'ml-2', key: 'reason' }, event.reason) : null,
+        event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, HTTP ) : null,
+        event.seconds
+          ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, 
+ested )
+          : null,
+        event.raw_error ? h('span', { className: 'ml-2 text-[0.6rem] uppercase tracking-wide opacity-60' }, expanded ? '▼ hide payload' : '▶ inspect payload') : null
+      )
     ),
-    h(
-      'span',
-      { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)', key: 'detail' },
-      // Four of these five come and go with what the provider said, so the row
-      // rebuilds its own tail on every event that carries a different set.
-      h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)', key: 'identity' }, event.identity || ''),
-      event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)', key: 'fingerprint' }, event.key) : null,
-      event.reason ? h('span', { className: 'ml-2', key: 'reason' }, event.reason) : null,
-      event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, `HTTP ${event.code}`) : null,
-      event.seconds
-        ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, `rested ${duration(event.seconds)}`)
-        : null
-    )
+    expanded && event.raw_error ? h('div', { className: 'mt-2 mb-1 rounded bg-(--ui-bg-secondary)/50 p-3 overflow-x-auto whitespace-pre-wrap text-[11px] font-mono text-(--ui-text-secondary)' }, event.raw_error) : null
   )
 }
 
