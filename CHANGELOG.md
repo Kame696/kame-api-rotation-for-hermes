@@ -40,6 +40,11 @@ generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
 
+## [1.3.0] - 2026-08-26
+### Added
+- **Absolute Shield**: KAME now intercepts unrecoverable API errors (like 404 Not Found, 400 Context Exceeded, etc.) and aborts the request immediately. Instead of Hermes blindly retrying 3 times and crashing the chat with a red error, KAME returns a clean, synthetic system message explaining the failure instantly.
+- **UI Popup**: Clicking 'inspect payload' in the KAME Desktop UI now opens a direct alert/popup window with the full error details, fixing the issue where inline expansion wasn\'t visible.
+
 ## [1.2.9] - 2026-08-26
 
 - **Fixed**: Removed hardcoded `provider="gemini"` in `dispatch_binding.py`. The classifier now uses the actual provider from the identity string, restoring correct logic for NVIDIA and other non-Google providers.
