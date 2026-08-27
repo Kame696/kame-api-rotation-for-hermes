@@ -40,6 +40,11 @@ generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
 
+## [1.3.2] - 2026-08-26
+### Fixed
+- Fixed a bug where a global pool exhaustion of `rate_limit` (429) errors was falsely categorized as a malformed request, causing the plugin to crash instead of waiting.
+- Fixed an edge case where pool-wide terminal errors (e.g., every key getting 400) bypassed the UI `events` log and the Absolute Shield. They now correctly log to the UI and return a clean system message.
+
 ## [1.3.1] - 2026-08-26
 ### Fixed
 - Fixed an edge case where Gemini native streaming errors triggered an \httpx.ResponseNotRead\ exception inside KAME\'s error classifier when attempting to read the response body. KAME now safely catches property access exceptions and relies on the already-extracted error string.

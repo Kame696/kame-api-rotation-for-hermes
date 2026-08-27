@@ -217,7 +217,7 @@ _HOST_BREAKER_THRESHOLD = 5
 #: keys being right, not evidence about the request -- and promoting it would
 #: throw away the single behaviour this plugin exists for.
 _NEVER_PROMOTED = frozenset(
-    {"server", "timeout", "per_minute", "daily", "insufficient_quota", "auth"}
+    {"server", "timeout", "per_minute", "daily", "insufficient_quota", "auth", "rate_limit"}
 )
 
 VIGIL_FIRST_S = 90.0
