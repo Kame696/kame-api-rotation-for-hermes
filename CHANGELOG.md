@@ -40,6 +40,10 @@ generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
 
+## [1.3.3] - 2026-08-27
+### Fixed
+- Fixed an architectural "vanity" flaw where mid-stream connection drops that could not be stitched seamlessly (such as with the NVIDIA API) would intentionally trigger the Absolute Shield rather than repeating text on screen. This violated the eternal rotation philosophy. KAME now swallows its pride and rotates unconditionally—even if it means the text repeats—so the agent is never interrupted.
+
 ## [1.3.2] - 2026-08-26
 ### Fixed
 - Fixed a bug where a global pool exhaustion of `rate_limit` (429) errors was falsely categorized as a malformed request, causing the plugin to crash instead of waiting.

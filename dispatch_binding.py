@@ -2161,11 +2161,11 @@ class DispatchBinding:
                 return "stitch", kind, status
             self.mid_stream_cuts += 1
             logger.info(
-                "kame: %s dropped mid-answer and cannot be continued — handing "
-                "it to Hermes rather than printing the reply twice",
+                "kame: %s dropped mid-answer and cannot be continued — rotating "
+                "to a new key to prevent interruption (reply will be repeated)",
                 label,
             )
-            return "raise", kind, status
+            return "rotate", kind, status
         EVENTS.add(
             "quarantine" if applied >= 60.0 else "rotation",
             identity=identity,

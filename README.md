@@ -469,6 +469,7 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
+| **1.3.3** | Eternal Rotation Fix | Fixes a vanity flaw where un-stitchable mid-stream connection drops (e.g., NVIDIA) triggered the Absolute Shield instead of rotating. It now rotates unconditionally, guaranteeing an uninterrupted agent. |
 | **1.3.2** | Pool Exhaustion Fix | Fix pool-wide `rate_limit` exhaustion incorrectly surfacing errors and bypassing the Absolute Shield. |
 | **1.3.1** | httpx.ResponseNotRead Hotfix | Safely catches stream-read exceptions during error classification for native Gemini endpoints. |
 | **1.3.0** | The Absolute Shield | Intercepts unrecoverable API errors (404, 400 Context Exceeded) to prevent Hermes retries and crashes. Cleaned up Desktop UI error inspection. |
