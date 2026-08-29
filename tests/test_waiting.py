@@ -51,6 +51,16 @@ class _Clock:
         # object, so one patch reaches both readers.
         monkeypatch.setattr(dispatch_binding.time, "monotonic", lambda: self.now)
         monkeypatch.setattr(dispatch_binding.time, "time", lambda: self.now)
+        # The wait loop calls ``_publish`` once per simulated second, and
+        # ``state.publish`` does a real tempfile-write-and-replace each time —
+        # correct for a live wait (the desktop chip polls at the same 1 Hz),
+        # but with the clock faked there is no wall time left to spread those
+        # writes over. A six-hour wait here is 21,600 real file operations
+        # with no delay between them, which is the entire reason this file
+        # took four and a half minutes to run rather than a few seconds. The
+        # write path itself is covered by test_v1_1_0.py; this file is about
+        # the wait/notice logic, so the publish is a no-op here.
+        monkeypatch.setattr(dispatch_binding, "_publish", lambda *a, **k: None)
         return self
 
     def sleep(self, seconds: float) -> None:
