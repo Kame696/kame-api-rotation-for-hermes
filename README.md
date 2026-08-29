@@ -4,7 +4,7 @@
 
 ### KAME API Rotation for Hermes — one API key per call, chosen for you
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Hermes](https://img.shields.io/badge/Hermes-v0.20.x-purple.svg)](https://github.com/NousResearch/hermes)
 [![Python](https://img.shields.io/badge/python-3.9%2B-yellow.svg)](https://www.python.org/)
@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.4.0            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.5.0            ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -374,7 +374,7 @@ Then, in order of effort:
 
 1. The **chip** on the status bar shows `14/15` and counts down when a key is resting.
 2. `/kame-quota` shows how many requests each healthy key took in the last sixty seconds. **Fifteen keys with roughly equal counts is the whole feature, visible.**
-3. `/kame events` shows the decisions themselves — which key was rested, for how long, and what the provider said the status was. Since 1.4.0 each row also names **where the wait came from** — `field`, `header`, `retryDelay`, `reset time`, or `guess` — and expands in place to the provider's own payload, redacted before it was stored.
+3. `/kame events` shows the decisions themselves — which key was rested, for how long, and what the provider said the status was. Since 1.4.0 each row also names **where the wait came from** — `field`, `header`, `retryDelay`, `reset time`, or `guess`. Since 1.5.0 a row that *failed* is clickable and opens the provider's own payload in an inspector, redacted before it was ever stored. A row that succeeded is not clickable: there is nothing to check.
 
 A column of `guess` is the number worth watching: it means the provider told
 KAME nothing it could size a cooldown from, and every wait on screen is an
@@ -485,6 +485,7 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
+| **1.5.0** | The rest of the evidence, and the gate that was never run | The exception's own class is read at last, so a failure carrying no status and no body is sized instead of guessed, and a transport error rests three seconds rather than twenty; two payloads 1.4.0 wrongly claimed are handed back to the host; the Settings panel can no longer freeze with every control disabled |
 | **1.4.0** | The evidence was on the exception all along | The install can no longer claim to be running an engine it does not have; cooldowns are sized from the provider's own machine-readable fields instead of prose two providers share while meaning opposite things; Events says where every wait came from |
 | **1.2.9** | Provider names and inspectable payloads | The classifier stops calling every provider "gemini" — the hardcode that made NVIDIA's limits unreadable |
 | **1.2.8** | A quieter rotation | The spinner says `rotating…` instead of naming each key as it is tried |
@@ -508,7 +509,7 @@ Every release, newest first. The full entries — what broke, what the log said,
 | **1.0.0** | The carousel | A failed call moves to the next key instead of ending the turn |
 | **0.0.3** | No provider allowlist | Every decision moved onto evidence in the response — never on who the provider is |
 
-**Version parity with Agent Zero.** The same MAJOR.MINOR means the same generation of behaviour on both hosts; the patch number moves independently. 1.1.x, the 1.2.1–1.2.9 patch run and 1.4.0 exist only here because they fixed stream and pool-mirroring issues that Agent Zero either owns itself or doesn't expose the same way — the two lines rejoin at each shared MAJOR.MINOR.
+**Version parity with Agent Zero.** The same MAJOR.MINOR means the same generation of behaviour on both hosts; the patch number moves independently. 1.1.x, the 1.2.1–1.2.9 patch run, 1.4.0 and 1.5.0 exist only here because they fixed stream and pool-mirroring issues that Agent Zero either owns itself or doesn't expose the same way — the two lines rejoin at each shared MAJOR.MINOR.
 
 ---
 
@@ -572,7 +573,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.4.0** — *because round-robin was never enough*
+🐢⚡ **KAME v1.5.0** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

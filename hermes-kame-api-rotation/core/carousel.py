@@ -67,6 +67,11 @@ import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# Acyclic on purpose: ``catalog`` imports only ``quota``, and ``quota`` imports
+# nothing from this package. The carousel reads the catalogue rather than
+# keeping a second copy of the same facts.
+from . import catalog
+
 # --- the numbers, all in one place ------------------------------------------
 #
 # Every one of these is a v1.0.9 constant. Where a value is configurable in the
@@ -531,9 +536,17 @@ def classify(
         # cooldown worth applying here -- ``is_terminal`` stops the turn -- so
         # the delay is nominal.
         return 0.0, "host_breaker", status
+    # The class names used to be an inline set of five here — the same idea as
+    # ``catalog``'s exception table, written once by hand in the wrong module.
+    # Two tables of the same kind of fact drift, and the one nobody remembers
+    # is the one that goes stale, so there is now one. The catalogue's set is a
+    # superset: it also knows ``APIConnectionError`` and ``ConnectError``,
+    # which used to fall through to the twenty-second rest for the unrecognised
+    # when three seconds and a rotation is the whole of the right answer.
+    _klass = type(error).__name__ if error is not None else ""
+    _reading = catalog.read_exception_class(_klass)
     if (
-        error is not None
-        and type(error).__name__ in {"TimeoutError", "CancelledError", "ReadTimeout", "ConnectTimeout", "StreamTimeout"}
+        _reading is not None and _reading.family == catalog.TIMEOUT
     ) or _matches(text, TIMEOUT_INDICATORS):
         return TIMEOUT_S, "timeout", status
 

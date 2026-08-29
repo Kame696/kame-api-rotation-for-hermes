@@ -214,7 +214,9 @@ _TYPE_BUSY = re.compile(r"overload|capacity|unavailable|server[_\s-]*error", re.
 #: deep that happens to contain "rate limit" is prose, and treating it as a
 #: structured field would give the override the very weakness it exists to
 #: correct.
-def structured_error_values(body: Any, error: Any = None) -> list:
+def structured_error_values(
+    body: Any, error: Any = None, host_code: Any = None
+) -> list:
     """Every machine-readable type/code string a failure carries.
 
     **Ordered by specificity, not by where it was found**, because
@@ -243,6 +245,16 @@ def structured_error_values(body: Any, error: Any = None) -> list:
     def take(bucket: list, value: Any) -> None:
         if isinstance(value, str) and value.strip():
             bucket.append(value)
+
+    # The host's own extraction, handed to the hook as ``error_code``. Not
+    # redundant with the reads below: ``agent/error_classifier.py``'s
+    # ``_extract_error_code`` walks the exception's ``__cause__``/``__context__``
+    # chain five levels deep, parses a JSON object nested inside
+    # ``error.message``, and knows the ``error_code``/``errorCode`` spellings —
+    # all of which this module's fixed path list misses. It is the same *kind*
+    # of value from a strictly better extractor, so it goes in the same bucket
+    # and is ranked first within it.
+    take(code, host_code)
 
     if error is not None:
         try:
@@ -290,9 +302,22 @@ def structured_error_values(body: Any, error: Any = None) -> list:
     return reason + code + title + family
 
 
-def structured_error_tokens(body: Any, error: Any = None) -> str:
-    """The same values, joined — for the regex contradiction check below."""
-    return " ".join(structured_error_values(body, error))
+def structured_error_tokens(
+    body: Any, error: Any = None, host_code: Any = None, host_class: Any = None
+) -> str:
+    """The same values, joined — for the regex contradiction check below.
+
+    The exception's class name joins the stream here even though it is read
+    through a separate table for verdicts. The contradiction check asks
+    whether a *structured* signal disagrees with prose that says "overloaded",
+    and a class is exactly such a signal: ``InternalServerError`` beside
+    "overloaded" is agreement, ``RateLimitError`` beside it is the
+    disagreement this check exists to catch.
+    """
+    values = structured_error_values(body, error, host_code)
+    if isinstance(host_class, str) and host_class.strip():
+        values = values + [host_class]
+    return " ".join(values)
 
 # How long to bench a credential the provider is refusing outright. Long
 # enough that a dead key stops costing a round trip on every turn, short
@@ -458,6 +483,8 @@ def classify(
     error_body: Any = None,
     headers: Any = None,
     error: Any = None,
+    error_type: str = "",
+    error_code: str = "",
     now_epoch: Optional[float] = None,
 ) -> Optional[Verdict]:
     """Classify a failure, or return ``None`` to leave the host in charge.
@@ -465,6 +492,13 @@ def classify(
     Order matters. Permanent conditions are checked before throttles because
     an invalid key often arrives wearing a 429, and benching it for a minute
     means rediscovering it is dead a minute later, forever.
+
+    ``error_type`` and ``error_code`` are the host's own parse, handed to the
+    hook and — until 1.5.0 — discarded by it. ``error_type`` is literally
+    ``type(error).__name__`` (``agent/error_classifier.py:680``); ``error_code``
+    comes from an extractor that reaches further than this module's own. Both
+    default to empty so every existing caller, and every test, keeps working
+    unchanged.
     """
     now = float(now_epoch) if now_epoch is not None else time.time()
     message = str(error_message or "")
@@ -498,9 +532,44 @@ def classify(
     #     cases where the host is already right and KAME's job is to stay out
     #     of the way, so a row of those kinds returns ``None`` here exactly as
     #     the paths below would have.
-    catalog_reading = catalog.look_up(
-        *structured_error_values(error_body, error)
-    ) or catalog.look_up_status(status)
+    #     The class name is consulted last and only when the two lookups above
+    #     found nothing. A class names the family the SDK author chose; a field
+    #     names what the provider said about this call, and the provider always
+    #     outranks the library. Where it earns its place is the payload that
+    #     carries neither field nor status — every transport failure, and any
+    #     SDK class the host's own ``RateLimitError -> 429`` repair does not
+    #     cover.
+    #     A status code on its own is the weakest evidence this module reads —
+    #     it is the one signal every failure has, and the one that says least
+    #     about which of several conditions produced it. So a status-only
+    #     reading that would *end* the turn has to yield to a payload that
+    #     names a way out. Hermes' own corpus is where this surfaced:
+    #
+    #         402, body message "Usage limit reached, try again in 5 minutes"
+    #
+    #     ``_STATUS_READINGS[402]`` reads "payment required" and returns
+    #     ``billing`` — a key retired, no retry, never re-probed. But a balance
+    #     that is empty does not tell you to come back in five minutes. The
+    #     provider stated a window; the status was a guess about what the
+    #     window meant. KAME shipped 1.4.0 overriding the host on exactly this
+    #     payload, and nobody ran ``tools/host_corpus.py`` to find out.
+    status_reading = catalog.look_up_status(status)
+    if status_reading is not None and status_reading.family == catalog.BILLING:
+        stated, _stated_source = extract_retry_delay_seconds(
+            message=message,
+            body=error_body,
+            headers=headers,
+            error=error,
+            now_epoch=now,
+        )
+        if stated is not None:
+            status_reading = None
+
+    catalog_reading = (
+        catalog.look_up(*structured_error_values(error_body, error, error_code))
+        or status_reading
+        or catalog.read_exception_class(error_type)
+    )
 
     catalog_throttle = False
     if catalog_reading is not None:
@@ -627,7 +696,7 @@ def classify(
     #    says "overloaded" beside a structured type that says "rate_limit".
     #    The status branch is *not* covered by it — a 5xx is the transport
     #    agreeing with the prose, and no field in the body outranks that.
-    tokens = structured_error_tokens(error_body, error)
+    tokens = structured_error_tokens(error_body, error, error_code, error_type)
     busy_prose = _matches(_BUSY_PATTERNS, message, body_text)
     #: A contradiction needs *both* halves. Until 1.4.0 this was computed from
     #: the structured tokens alone, which was harmless while the only tokens
@@ -730,7 +799,35 @@ def classify(
     # An account-level window reached through the quota path is still an
     # account problem, not a rate limit — the distinction changes whether
     # the host counts it as retryable.
-    if decision.window == QuotaWindow.ACCOUNT:
+    #
+    # A week and a month join it in 1.5.0 — **but only when nothing stated a
+    # reset.** Hermes' own corpus taught both halves of that rule, one after
+    # the other, which is the entire argument for running it:
+    #
+    #   "Monthly quota reached."                      -> billing  (#39441)
+    #   "Weekly usage limit reached. Resets in 6hr."   -> rate_limit (#63021)
+    #
+    # Same window, opposite verdicts, and the difference is whether the
+    # provider said when it comes back. An allowance that is simply gone is
+    # metered on the credential rather than on a request rate: retrying this
+    # key sooner cannot help, only a different key can, which is what
+    # ``retryable=False, should_rotate_credential=True`` says. An allowance
+    # that names its own reset — six hours, not a month — is a wait, and
+    # calling it billing would retire a key that is coming back this evening.
+    #
+    # ``decision.source`` is exactly that distinction already computed:
+    # ``"window"`` is KAME's own default, applied because the payload supplied
+    # nothing to size by. Any other source is the provider having spoken.
+    #
+    # The bench length is untouched either way — ``_WINDOW_BENCH_DEFAULTS``
+    # gives a week and a month the day-window default, not the account one, so
+    # the key returns on the same schedule. What changed is the name of what
+    # happened, and therefore whether the host counts it as retryable.
+    _spent_allowance = (
+        decision.window in (QuotaWindow.PER_WEEK, QuotaWindow.PER_MONTH)
+        and decision.source == "window"
+    )
+    if decision.window == QuotaWindow.ACCOUNT or _spent_allowance:
         return Verdict(
             reason="billing",
             retryable=False,

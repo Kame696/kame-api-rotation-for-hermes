@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.5.0** | The rest of the evidence, and the gate that was never run | The class of the exception is read at last, so a failure with no status and no body is sized instead of guessed; two payloads 1.4.0 wrongly claimed are given back to the host; the Settings panel can no longer freeze |
 | **1.4.0** | The evidence was on the exception all along | The installed plugin had no engine and nothing said so; cooldowns are sized from the provider's own fields instead of its prose; the Events tab says where every wait came from |
 | **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
 | **1.2.8** | Clean rotation UI | The spinner says 'rotating...' instead of spamming which key is being tested. |
@@ -40,6 +41,126 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.5.0] — 2026-08-29
+
+The release that read the rest of what the host was already handing over, and
+ran the gate that would have caught 1.4.0.
+
+**In short**
+
+- 🐛 *Fixed* — The classifier hook discarded `error_type` and `error_code`
+  under a comment explaining that it discarded them. `error_type` is literally
+  `type(error).__name__` — the only evidence a transport failure carries, since
+  it has no status and no body at any point.
+- 🐛 *Fixed* — A **402 that says "try again in 5 minutes"** was read as a dead
+  balance: key retired, not retryable, never re-probed. An empty balance does
+  not tell you when to come back.
+- 🐛 *Fixed* — **"Monthly quota reached."** was called a rate limit and
+  re-probed hourly against a wall that stands for weeks. It is an allowance
+  that is gone, and only another key helps.
+- 🐛 *Fixed* — The Settings panel could freeze: five of `readSnapshot`'s seven
+  exits never settled a save in flight, so `Saving…` stayed for ever with every
+  control disabled. The schema-mismatch exit made an upgrade window the trigger.
+- ➕ *Added* — A curated exception-class table, so a bare `RateLimitError`
+  with no body is sized instead of declined, and a transport error rests three
+  seconds instead of twenty.
+- ➕ *Added* — Two host tripwires: the two functions the carousel patches, and
+  the two hook arguments this release started reading.
+- ♻️ *Changed* — The Events tab opens a failure's payload in an inspector, and
+  only for a failure. A row that succeeded has nothing to check.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
+
+### The evidence that was already on the call
+
+`agent/error_classifier.py:680` computes `error_type` as `type(error).__name__`
+and `:1808` derives `error_code` through an extractor that walks the
+exception's `__cause__`/`__context__` chain five levels deep, parses JSON
+nested inside `error.message`, and knows the `error_code`/`errorCode`
+spellings this plugin's own path list does not. Both were passed to the hook.
+Both went into `**_ignored`.
+
+The class name matters most where everything else is absent. A transport
+failure — `APIConnectionError`, `ReadTimeout`, `ConnectError` — has no status
+and no body, ever, and used to fall to the twenty-second rest for the
+unrecognised. It now rests three seconds and rotates, which is the whole of the
+right answer.
+
+**The table is curated rather than folded into `_TABLE`, and that is the point.**
+`_n` strips separators, so four class names normalise onto existing rows:
+`RateLimitError`, `OverloadedError` and `NotFoundError` land on rows that mean
+the same thing — and `AuthenticationError` lands on `authentication_error`,
+which reads as *retire this credential, permanently*. But that class is raised
+for **every** 401, including an expired OAuth token one second from refreshing.
+Feeding class names into the general lookup would have recreated the defect
+1.4.0 removed when it took `"unauthorized"` out of the permanent-auth patterns,
+after 21 hour-long quarantines of healthy keys. `AuthenticationError`,
+`PermissionDeniedError` and `ProviderStreamError` are listed as deliberate
+omissions with the reason attached, and a test asserts their absence.
+
+### Two payloads 1.4.0 claimed and did not own
+
+`tools/host_assumptions.py` and `tools/host_corpus.py` both existed before
+1.4.0 shipped. The corpus one — which runs Hermes' own ~14-provider error
+suite twice, with and without KAME behind the real hook dispatch — was not run.
+Against the pristine 1.4.0 tree it fails on two cases:
+
+| Payload | Host | KAME 1.4.0 |
+|---|---|---|
+| 402, body *"Usage limit reached, try again in 5 minutes"* | `rate_limit` | `billing` |
+| 429, *"Monthly quota reached."* | `billing` | `rate_limit` |
+
+Both are fixed, and the fix for the second one is conditional in a way the
+corpus itself taught: *"Weekly usage limit reached. Resets in 6hr 29min."* is
+the **same window** as the monthly wall and the opposite verdict, because the
+provider said when it comes back. `decision.source == "window"` is exactly
+that distinction — KAME's own default, applied because nothing was supplied.
+
+1.5.0 leaves the host's corpus at 130/130, unchanged, both runs.
+
+### The panel that appeared and would not move
+
+`readSnapshot()` has seven exits; only two called `settle()`, which is the only
+thing that clears a pending request once `CONTROL_TIMEOUT_MS` has passed. The
+five silent ones — no file bridge, no plugin root, read threw, parse failed,
+**schema mismatch** — left `$pending` set for ever, and every input, switch and
+button is disabled while it is. The schema-mismatch exit is the realistic
+trigger: `SCHEMA` moves with any release that changes the document, so the
+window between new files on disk and a restarted backend was the freeze.
+
+### Not done, and why
+
+- **No plugin-side fix for rewind after a model switch.** Root-caused to the
+  host: it inserts a `display_kind: "model_switch"` marker row, ordinal
+  counting skips rows carrying that tag, and Hermes' own comment
+  (`tui_gateway/server.py:6213`) spells out what happens when a code path drops
+  it — *"every later rewind resolves one turn too early and `replace_messages`
+  hard-deletes the difference"*. KAME was verified clean: `identity()` is
+  recomputed per call, nothing is cached across a switch, and the plugin never
+  touches host message history. Adding a second actor to a corrupted ordinal
+  address space is the 1.0.8 stream-watchdog mistake repeated.
+- **The dispatch patch stays.** All 33 hooks in `VALID_HOOKS` were checked:
+  `pre_llm_call` injects context only, `on_stream_*` are documented observers
+  that cannot transform the stream, and `ctx.llm` is for a plugin's own
+  out-of-band calls. Nothing can swap a credential and re-drive the request. A
+  tripwire now names the two patched functions so a rename upstream fails
+  loudly instead of silently stopping rotation.
+- **No `retry-after-ms` handling.** It was a hypothesis; no provider researched
+  was found sending a millisecond retry header.
+- **No build-time throttle on the snapshot.** Tried, and reverted: it cannot
+  know a document changed without building it, so it broke *"a changed document
+  is written immediately"* — a guarantee with a test defending it. The saving
+  was microseconds.
+
+### Verification
+
+1502 tests · `tests/ui_reconcile.mjs` 4/4 · `tools/host_assumptions.py` 38/38 ·
+**`tools/host_corpus.py` 130/130 both runs — KAME changed nothing in the host's
+own corpus.**
+
+</details>
 
 ## [1.4.0] — 2026-08-29
 

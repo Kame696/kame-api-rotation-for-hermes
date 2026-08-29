@@ -136,6 +136,14 @@ const $notice = atom(null)
 /** Which page of the panel is showing. */
 const $tab = atom('overview')
 
+/** The failure whose raw payload is open in the inspector, or null.
+ *
+ *  Module-level rather than component state on purpose: the overlay is drawn
+ *  once at the page root, so it is not clipped by the scroll container the
+ *  event list lives in, and it survives the list re-rendering under it when a
+ *  new snapshot lands mid-read. */
+const $inspect = atom(null)
+
 // -- helpers ----------------------------------------------------------------
 
 /**
@@ -356,6 +364,12 @@ async function readSnapshot() {
     $snapshot.set(null)
     $problem.set('This Hermes shell has no file bridge, so the pool cannot be read.')
 
+    // Settling here too: this branch can hold for as long as the
+    // condition does, and a Save in flight would otherwise stay "Saving..."
+    // for ever with every control disabled. settle() only ever clears a
+    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
+    settle($snapshot.get())
+
     return
   }
 
@@ -363,6 +377,12 @@ async function readSnapshot() {
 
   if (!cachedDir) {
     $problem.set('This Hermes shell reports no plugin root, so the snapshot cannot be located.')
+
+    // Settling here too: this branch can hold for as long as the
+    // condition does, and a Save in flight would otherwise stay "Saving..."
+    // for ever with every control disabled. settle() only ever clears a
+    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
+    settle($snapshot.get())
 
     return
   }
@@ -376,6 +396,12 @@ async function readSnapshot() {
     // running a KAME older than 1.1.0 — say which, rather than "error".
     $snapshot.set(null)
     $problem.set('No snapshot yet. KAME writes one as soon as the backend loads it.')
+
+    // Settling here too: this branch can hold for as long as the
+    // condition does, and a Save in flight would otherwise stay "Saving..."
+    // for ever with every control disabled. settle() only ever clears a
+    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
+    settle($snapshot.get())
 
     return
   }
@@ -400,6 +426,12 @@ async function readSnapshot() {
     // waits for the next tick rather than clearing a good reading.
     $problem.set('The snapshot could not be parsed. Waiting for the next write.')
 
+    // Settling here too: this branch can hold for as long as the
+    // condition does, and a Save in flight would otherwise stay "Saving..."
+    // for ever with every control disabled. settle() only ever clears a
+    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
+    settle($snapshot.get())
+
     return
   }
 
@@ -409,6 +441,12 @@ async function readSnapshot() {
       `The installed KAME writes snapshot schema ${snap?.schema ?? '?'}; this panel reads ${SCHEMA}. ` +
         'The two halves ship together, so restarting Hermes usually settles it.'
     )
+
+    // Settling here too: this branch can hold for as long as the
+    // condition does, and a Save in flight would otherwise stay "Saving..."
+    // for ever with every control disabled. settle() only ever clears a
+    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
+    settle($snapshot.get())
 
     return
   }
@@ -1290,17 +1328,22 @@ const SIZED_BY_LABELS = {
 
 function EventRow({ event }) {
   const [label, tone] = EVENT_LABELS[event.kind] ?? [event.kind, 'plain']
-  // 1.4.0: the payload expands *inline*, under the row that owns it.
+  // 1.5.0: the payload opens in an inspector, and only for a failure.
   //
-  // 1.2.9 shipped this as a `window.alert()`, which is a modal that stops the
-  // renderer, cannot be copied out of comfortably, and shows one payload at a
-  // time — and it arrived alongside a template-literal that had been mangled
-  // into three undefined identifiers, so the tab threw on the first event
-  // carrying a status code and took the whole panel with it. Whatever else is
-  // true, the row that explains a failure must not be able to cause one.
-  const [open, setOpen] = useState(false)
+  // The history matters, because two of the three shapes were wrong. 1.2.9
+  // used `window.alert()` — it stops the renderer, cannot be copied out of
+  // comfortably, and shows one payload at a time; it also arrived beside a
+  // mangled template literal, so the tab threw on the first event with a
+  // status code and took the panel with it. 1.4.0 replaced it with an inline
+  // expander, which fixed all of that and introduced a smaller problem: every
+  // row with a `detail` was clickable, including the ones that succeeded,
+  // where the thing revealed is not an error and there is nothing to check.
+  //
+  // So: an overlay rather than an alert (the renderer keeps running, the text
+  // stays selectable, Escape closes it), and only on a row that represents a
+  // failure. A recovery has nothing to inspect and no longer pretends to.
   const when = new Date((event.at ?? 0) * 1000)
-  const canExpand = Boolean(event.detail)
+  const canInspect = Boolean(event.detail) && tone !== 'good'
   const sized = SIZED_BY_LABELS[event.sized_by] ?? null
 
   return h(
@@ -1309,9 +1352,9 @@ function EventRow({ event }) {
     h(
       'div',
       {
-        className: cn('flex items-baseline gap-3', canExpand && 'cursor-pointer'),
-        onClick: canExpand ? () => setOpen(value => !value) : undefined,
-        title: canExpand ? 'Show what the provider actually said' : undefined,
+        className: cn('flex items-baseline gap-3', canInspect && 'cursor-pointer'),
+        onClick: canInspect ? () => $inspect.set(event) : undefined,
+        title: canInspect ? 'Show what the provider actually said' : undefined,
         key: 'summary'
       },
       h(
@@ -1359,31 +1402,114 @@ function EventRow({ event }) {
               sized[0]
             )
           : null,
-        canExpand
+        canInspect
           ? h(
               'span',
-              { className: 'ml-2 text-[0.625rem] text-(--ui-text-quaternary)', key: 'chevron' },
-              open ? '▾' : '▸'
+              {
+                className:
+                  'ml-2 rounded px-1 text-[0.625rem] uppercase tracking-wide text-(--ui-text-quaternary) ' +
+                  'underline decoration-dotted underline-offset-2',
+                key: 'inspect'
+              },
+              'see the error'
             )
           : null
       )
     ),
-    // The payload, already scrubbed by `core.redact` before it was ever
-    // written to disk. Nothing is redacted here on the way to the screen —
-    // doing it at display time would leave the secret in the snapshot file, in
-    // a screenshot of this panel, and in any support bundle built from either.
-    open && canExpand
-      ? h(
-          'pre',
-          {
-            className:
-              'mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-(--ui-bg-secondary) p-2 ' +
-              'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary) select-text',
-            key: 'payload'
-          },
-          event.detail
-        )
-      : null
+  )
+}
+
+/**
+ * The raw provider payload for one failure, over the page.
+ *
+ * Already scrubbed by `core.redact` **before it was written to disk**, which is
+ * the part that matters: redacting on the way to a screen would leave the
+ * secret in `state.json`, in a screenshot of this panel, and in any support
+ * bundle built from either. Nothing is redacted here, because nothing here
+ * ever held a secret.
+ *
+ * Deliberately not `ConfirmDialog`: that renders a sentence and asks a
+ * question, and this is neither — it is a block of machine output a person
+ * needs to read, select and copy.
+ */
+function PayloadInspector() {
+  const event = useValue($inspect)
+
+  useEffect(() => {
+    if (!event) {
+      return undefined
+    }
+    const onKey = codes => {
+      if (codes.key === 'Escape') {
+        $inspect.set(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+
+    return () => window.removeEventListener('keydown', onKey)
+  }, [event])
+
+  if (!event) {
+    return null
+  }
+
+  const when = new Date((event.at ?? 0) * 1000)
+  const [label] = EVENT_LABELS[event.kind] ?? [event.kind]
+
+  return h(
+    'div',
+    {
+      className: 'fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6',
+      // The backdrop closes; the card below stops the click so a drag that
+      // ends outside a selection does not dismiss what is being read.
+      onClick: () => $inspect.set(null)
+    },
+    h(
+      'div',
+      {
+        className:
+          'flex max-h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-lg border border-(--ui-stroke-tertiary) ' +
+          'bg-(--ui-bg-primary) p-4 shadow-xl',
+        onClick: codes => codes.stopPropagation()
+      },
+      h(
+        'div',
+        { className: 'flex items-baseline justify-between gap-3', key: 'head' },
+        h(
+          'div',
+          { className: 'flex min-w-0 items-baseline gap-2', key: 'what' },
+          h('span', { className: 'text-sm font-medium text-(--ui-text-primary)', key: 'label' }, label),
+          h(
+            'span',
+            { className: 'truncate font-mono text-xs text-(--ui-text-quaternary)', key: 'identity' },
+            event.identity || ''
+          ),
+          Number.isFinite(when.getTime())
+            ? h(
+                'span',
+                { className: 'font-mono text-[0.6875rem] text-(--ui-text-quaternary)', key: 'when' },
+                when.toLocaleTimeString()
+              )
+            : null
+        ),
+        h(Button, { onClick: () => $inspect.set(null), size: 'sm', variant: 'ghost', key: 'close' }, 'Close')
+      ),
+      h(
+        'p',
+        { className: 'text-xs text-(--ui-text-tertiary)', key: 'why' },
+        'What the provider actually sent, with anything key-shaped removed before it was stored.'
+      ),
+      h(
+        'pre',
+        {
+          className:
+            'min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded bg-(--ui-bg-secondary) p-3 ' +
+            'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary) select-text',
+          key: 'payload'
+        },
+        event.detail
+      )
+    )
   )
 }
 
@@ -1458,7 +1584,13 @@ function Tab({ id, label, active }) {
           ? 'bg-(--ui-bg-quinary) text-(--ui-text-primary)'
           : 'text-(--ui-text-tertiary) hover:text-(--ui-text-primary)'
       ),
-      onClick: () => $tab.set(id),
+      onClick: () => {
+        // Changing tab closes the inspector: the row it belongs to is about to
+        // leave the screen, and an overlay outliving its subject is a panel
+        // the user has to dismiss before they can use what they clicked.
+        $inspect.set(null)
+        $tab.set(id)
+      },
       type: 'button'
     },
     label
@@ -1622,6 +1754,11 @@ function KamePage() {
       Note(`KAME is loaded but every call keeps the key Hermes resolved: ${snap.reason}`, 'plain', 'not-rotating'),
 
     h(StaleNote, { key: 'stale', snap }),
+
+    // At the page root rather than inside the events list: an overlay drawn
+    // inside a scrolling container is clipped by it, and this one has to sit
+    // over the whole panel. It renders nothing until a row is opened.
+    h(PayloadInspector, { key: 'inspector' }),
 
     invalid > 0 &&
       Note(

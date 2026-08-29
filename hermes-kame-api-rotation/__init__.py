@@ -233,13 +233,27 @@ def _on_api_error_classification(
     error_message: str = "",
     error_body: Optional[Dict[str, Any]] = None,
     error: Any = None,
+    error_type: str = "",
+    error_code: str = "",
     **_ignored: Any,
 ) -> Optional[Dict[str, Any]]:
     """Classify one failure, or decline so the host pipeline runs.
 
-    Accepts and ignores the rest of the hook payload (``error_type``,
-    ``error_code``, token counts) via ``**_ignored`` so a future Hermes
-    release adding a field cannot break dispatch.
+    ``error_type`` and ``error_code`` were in ``**_ignored`` until 1.5.0, with
+    a comment explaining that they were discarded. They should not have been:
+
+    * ``error_type`` is literally ``type(error).__name__``
+      (``agent/error_classifier.py:680``). It is the only evidence a transport
+      failure carries at all — no status, no body, ever — and the only evidence
+      left for any SDK class the host's ``RateLimitError -> 429`` repair
+      (``:684``) does not cover.
+    * ``error_code`` comes from ``_extract_error_code`` (``:1808``), which walks
+      the exception's cause chain five deep, parses JSON nested inside
+      ``error.message``, and knows spellings this plugin's own path list does
+      not. Strictly more than KAME could dig out for itself.
+
+    Both stay keyword-with-default, and the remaining payload still lands in
+    ``**_ignored``, so a future Hermes adding a field cannot break dispatch.
     """
     if _is_disabled():
         return None
@@ -253,6 +267,8 @@ def _on_api_error_classification(
             error_body=error_body,
             headers=_headers_from(error),
             error=error,
+            error_type=error_type or "",
+            error_code=error_code or "",
         )
     except Exception:
         # Never let a classifier bug turn a recoverable API error into a crash.

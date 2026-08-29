@@ -492,7 +492,10 @@ class TestTheReleaseIsConsistent:
     def test_the_version_is_the_same_everywhere(self):
         manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        assert core_mod.__version__ == "1.4.0"
+        # Pinned as a floor, not an equality: this file asserts that 1.4.0's
+        # rules are still in force, and a later release must be free to ship
+        # without editing every version file behind it.
+        assert tuple(int(part) for part in core_mod.__version__.split(".")) >= (1, 4, 0)
         assert f'version: "{core_mod.__version__}"' in manifest
         assert f"## [{core_mod.__version__}]" in changelog
         assert "manifest_version: 1" in manifest

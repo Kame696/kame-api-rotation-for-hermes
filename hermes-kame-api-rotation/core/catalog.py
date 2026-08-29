@@ -318,6 +318,141 @@ def read_quota_id(body_text: str) -> Tuple[str, str]:
     return window, scope
 
 
+# ── the exception's own class name ───────────────────────────────────────
+# A curated table, deliberately *not* folded into ``_TABLE``.
+#
+# The host hands the plugin ``error_type``, and
+# ``agent/error_classifier.py`` computes it as literally
+# ``type(error).__name__``. That is the most provider-independent
+# machine-readable evidence there is: the OpenAI, Anthropic and Cerebras SDKs
+# are all Stainless-generated and raise one shared taxonomy, so a rule written
+# once here covers every provider shipping an OpenAI-compatible client —
+# without a single branch on who is calling, which is this module's whole
+# contract. It is also the *only* evidence that exists for a transport
+# failure, which carries no status and no body at any point.
+#
+# **Why this is a separate table rather than more rows above.** ``_n`` strips
+# separators, so a class name and a snake_case field value can normalise to
+# the same key. Four of them already do:
+#
+#     RateLimitError    -> ratelimiterror     == rate_limit_error
+#     OverloadedError   -> overloadederror    == overloaded_error
+#     NotFoundError     -> notfounderror      == not_found_error
+#     AuthenticationError -> authenticationerror == authentication_error
+#
+# The first three are harmless — the collision lands on a row that means the
+# same thing. **The fourth is not, and it is the reason this table exists.**
+# ``authentication_error`` is a provider *stating* a credential is dead, and
+# reads as ``AUTH_DEAD``: retire the key, permanently, no retry.
+# ``AuthenticationError`` is merely the class the SDK raises for **any** 401,
+# including an expired OAuth token about to be refreshed and a gateway hiccup.
+# Feeding class names into ``look_up`` would have retired healthy credentials
+# on a bare 401 — which is precisely the defect 1.4.0 removed when it took
+# ``"unauthorized"`` out of the permanent-auth patterns, after 21 hour-long
+# quarantines of keys that were fine.
+#
+# So the mapping is explicit, and the omissions are the point.
+_EXCEPTION_CLASSES: Dict[str, Reading] = {}
+
+
+def _put_class(reading: Reading, *names: str) -> None:
+    for name in names:
+        _EXCEPTION_CLASSES[_n(name)] = reading
+
+
+# A throttle. The most valuable row here: a bare ``RateLimitError`` with no
+# body and no headers is a spent counter that the sizing cascade cannot
+# measure, and without a reading this module falls silent and hands a spent
+# key back to the host. The reading buys the right to answer with a default.
+_put_class(
+    Reading(THROTTLE, why="the SDK raised its rate-limit class"),
+    "RateLimitError",
+)
+
+# An empty balance. Cerebras' SDK adds this to the shared taxonomy for 402,
+# which ``_STATUS_READINGS`` already reads the same way — the two agree, and
+# the class covers the case where the status did not survive.
+_put_class(
+    Reading(BILLING, window=QuotaWindow.ACCOUNT, scope=QuotaScope.ACCOUNT,
+            why="the SDK raised its payment-required class"),
+    "PaymentRequired", "PaymentRequiredError",
+)
+
+# The provider is busy. These return ``None`` from the classifier — the host
+# is already right about a 5xx — but they are catalogued so the token stream
+# used by the contradiction check sees them, and so the table is honest about
+# what it knows.
+_put_class(
+    Reading(SERVER, why="the SDK raised a server-side class"),
+    "InternalServerError", "OverloadedError", "ServiceUnavailableError",
+    "APIStatusError",
+)
+
+# Nothing arrived in time. The class name is the whole of the evidence here:
+# a transport failure has no status and no body, ever. ``core/carousel.py``
+# recognised five of these names inline; this is that list, in the one place
+# the plugin keeps such things.
+_put_class(
+    Reading(TIMEOUT, why="the SDK or transport raised a timeout class"),
+    "APITimeoutError", "APIConnectionError", "TimeoutError", "ReadTimeout",
+    "ConnectTimeout", "ConnectError", "StreamTimeout", "CancelledError",
+    "DeadlineExceededError", "ReadTimeoutError", "PoolTimeout",
+)
+
+# The request itself. Also ``None`` from the classifier; listed so that a
+# reader of this table can tell "we decided to stay out of it" from "we never
+# considered it".
+_put_class(
+    Reading(TERMINAL, certain=False,
+            why="the SDK raised a malformed-request class"),
+    "BadRequestError", "NotFoundError", "UnprocessableEntityError",
+    "RequestTooLargeError", "ContentTooLarge", "ConflictError",
+)
+
+#: Class names that reach here and are deliberately left unmapped, with the
+#: reason, because an omission nobody wrote down gets "fixed" by the next
+#: reader:
+#:
+#: ``AuthenticationError`` — the class of every 401, not a statement that the
+#:   credential is dead. See the note above this table. A provider that has
+#:   genuinely retired a key says so in words or in a field, and
+#:   ``_PERMANENT_AUTH_PATTERNS`` and ``_TABLE`` both already read that.
+#: ``PermissionDeniedError`` — the class of every 403. When the status is
+#:   present the classifier's own denial path already handles it; mapping the
+#:   class would add a one-hour bench for a status-less 403, which is rare,
+#:   on evidence that does not distinguish "wrong model for this tier" from
+#:   "this gateway refused once".
+#: ``ProviderStreamError`` — Hermes' own wrapper
+#:   (``agent/chat_completion_helpers.py:85``), raised when a provider encodes
+#:   an API error as streaming content instead of as an SDK error. It says
+#:   *how* the failure arrived, not *what* it was, and the host synthesizes
+#:   ``status_code`` and ``body`` from the parsed event — so the evidence is in
+#:   those fields and a family guessed from the wrapper would shadow them.
+_UNMAPPED_ON_PURPOSE: Tuple[str, ...] = (
+    "AuthenticationError",
+    "PermissionDeniedError",
+    "ProviderStreamError",
+)
+
+
+def read_exception_class(name: Any) -> Optional[Reading]:
+    """A reading for an exception class name, or ``None``.
+
+    Consulted only after :func:`look_up` and :func:`look_up_status` have both
+    come back empty. A class is the vaguest machine-readable evidence a
+    failure carries — it names the family the SDK author chose — so anything
+    the provider said in a field outranks it, every time.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return _EXCEPTION_CLASSES.get(_n(name))
+
+
+def known_exception_classes() -> Tuple[str, ...]:
+    """Every class name this table recognises. For the tests and ``/kame``."""
+    return tuple(sorted(_EXCEPTION_CLASSES))
+
+
 # ── the lookup ────────────────────────────────────────────────────────────
 
 def look_up(*values: Any) -> Optional[Reading]:

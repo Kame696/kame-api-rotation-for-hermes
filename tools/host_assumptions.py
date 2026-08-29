@@ -967,6 +967,72 @@ def the_host_still_discards_retry_info(_=None):
     return True, True
 
 
+def the_two_functions_the_carousel_wraps_still_exist(_=None):
+    """The carousel rides unsupported surface. This makes that loud.
+
+    ``dispatch_binding`` installs itself with ``setattr`` on
+    ``agent.chat_completion_helpers``, over ``interruptible_streaming_api_call``
+    and ``interruptible_api_call``. Nothing in Hermes' plugin API offers an
+    alternative, and that was checked rather than assumed in 1.5.0: of the 33
+    hooks in ``hermes_cli/plugins.py``'s ``VALID_HOOKS``, ``pre_llm_call``
+    returns context injection only, the ``on_stream_*`` family is documented as
+    observers that "cannot transform the stream", and ``ctx.llm`` is a facade
+    for a plugin's *own* out-of-band calls. None of them can swap the
+    credential and re-drive the request, which is the whole of what a carousel
+    does. So the patch is necessary.
+
+    What is not necessary is finding out it broke by noticing that rotation
+    stopped. A rename upstream would leave KAME registered, reporting itself
+    active, and choosing no keys at all -- the exact shape of the nine days
+    that produced ``integrity.py``. This check turns that into a named failure
+    the moment the host moves.
+    """
+    path = AGENT / "agent/chat_completion_helpers.py"
+    if not path.is_file():
+        return "chat_completion_helpers.py not found", False
+    body = path.read_text(encoding="utf-8", errors="replace")
+    missing = [
+        name
+        for name in ("interruptible_streaming_api_call", "interruptible_api_call")
+        if f"def {name}" not in body
+    ]
+    if missing:
+        return (
+            "the carousel patches "
+            + ", ".join(missing)
+            + " and the host no longer defines it -- rotation is off until this is re-pointed",
+            False,
+        )
+    return True, True
+
+
+def the_error_hook_still_hands_over_type_and_code(_=None):
+    """Why 1.5.0 stopped discarding two of the hook's arguments.
+
+    ``error_classifier.py`` computes ``error_type`` as literally
+    ``type(error).__name__`` and ``error_code`` through ``_extract_error_code``,
+    then passes both to ``transform_api_error_classification``. KAME reads them
+    now: the class name is the only evidence a transport failure carries, and
+    the host's code extractor walks the exception's cause chain deeper than
+    this plugin's own path list.
+
+    If the host stops sending them, KAME does not break -- both default to
+    empty and every other source still runs -- but it quietly loses the one
+    signal that survives a payload with no status and no body, which is worth
+    being told about.
+    """
+    path = AGENT / "agent/error_classifier.py"
+    if not path.is_file():
+        return "error_classifier.py not found", True
+    body = path.read_text(encoding="utf-8", errors="replace")
+    if "type(error).__name__" not in body:
+        return "error_type is no longer the exception's class name", True
+    if "_extract_error_code" not in body:
+        return "the host no longer derives error_code", True
+    return True, True
+
+
+
 CHECKS = (
     ("agent/conversation_loop.py", "an empty answer is retried on the same key", the_empty_retry_never_asks_the_pool),
     ("agent/agent_runtime_helpers.py", "the pool is asked once a turn, not once a call", the_only_outside_selection_is_per_turn),
@@ -999,6 +1065,10 @@ CHECKS = (
     ("agent/gemini_native_adapter.py", "the host still appends its own guidance to a 429", the_host_still_appends_its_own_guidance_to_a_429),
     ("agent/gemini_native_adapter.py", "the provider error still carries its evidence", the_provider_error_still_carries_its_evidence),
     ("agent/gemini_native_adapter.py", "the host still discards RetryInfo", the_host_still_discards_retry_info),
+    # v1.5.0. The surface the carousel rides on, and the two hook arguments
+    # this release stopped throwing away.
+    ("agent/chat_completion_helpers.py", "the two functions the carousel wraps still exist", the_two_functions_the_carousel_wraps_still_exist),
+    ("agent/error_classifier.py", "the hook still hands over error_type and error_code", the_error_hook_still_hands_over_type_and_code),
 )
 
 
