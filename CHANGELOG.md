@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.4.0** | The evidence was on the exception all along | The installed plugin had no engine and nothing said so; cooldowns are sized from the provider's own fields instead of its prose; the Events tab says where every wait came from |
 | **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
 | **1.2.8** | Clean rotation UI | The spinner says 'rotating...' instead of spamming which key is being tested. |
 | **1.2.7** | Resilient 429 extraction | Fixes a bug where empty exception messages caused KAME to bench keys for 0 seconds on 429s. |
@@ -40,23 +41,272 @@ generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
 
-## [1.3.3] - 2026-08-27
-### Fixed
-- Fixed an architectural "vanity" flaw where mid-stream connection drops that could not be stitched seamlessly (such as with the NVIDIA API) would intentionally trigger the Absolute Shield rather than repeating text on screen. This violated the eternal rotation philosophy. KAME now swallows its pride and rotates unconditionally—even if it means the text repeats—so the agent is never interrupted.
+## [1.4.0] — 2026-08-29
 
-## [1.3.2] - 2026-08-26
-### Fixed
-- Fixed a bug where a global pool exhaustion of `rate_limit` (429) errors was falsely categorized as a malformed request, causing the plugin to crash instead of waiting.
-- Fixed an edge case where pool-wide terminal errors (e.g., every key getting 400) bypassed the UI `events` log and the Absolute Shield. They now correctly log to the UI and return a clean system message.
+The release that went looking for why nine days of fixes had not changed
+anything, and found that the plugin being fixed was not the plugin that was
+running.
 
-## [1.3.1] - 2026-08-26
-### Fixed
-- Fixed an edge case where Gemini native streaming errors triggered an \httpx.ResponseNotRead\ exception inside KAME\'s error classifier when attempting to read the response body. KAME now safely catches property access exceptions and relies on the already-extracted error string.
+**In short**
 
-## [1.3.0] - 2026-08-26
-### Added
-- **Absolute Shield**: KAME now intercepts unrecoverable API errors (like 404 Not Found, 400 Context Exceeded, etc.) and aborts the request immediately. Instead of Hermes blindly retrying 3 times and crashing the chat with a red error, KAME returns a clean, synthetic system message explaining the failure instantly.
-- **UI Popup**: Clicking 'inspect payload' in the KAME Desktop UI now opens a direct alert/popup window with the full error details, fixing the issue where inline expansion wasn\'t visible.
+- 🔎 *Found* — The installed KAME had no `core/` package. It registered,
+  published `installed: true, reason: "active"`, and rotated nothing.
+- 🐛 *Fixed* — `getattr(exc, "message", "")` returned the empty string on every
+  Gemini failure there has ever been, so the sizing cascade had nothing to read.
+- 🐛 *Fixed* — Google's per-minute sentence is, word for word, OpenAI's
+  out-of-credits sentence. The table read both as a daily cap.
+- 🐛 *Fixed* — A throttle nothing could size benched its key for **zero
+  seconds**, because `Verdict.reason` said `rate_limit` and the escalation
+  ladder spoke only `per_minute`.
+- ➕ *Added* — `core/evidence.py`, `core/catalog.py`, `core/redact.py`,
+  `host_text.py`, `integrity.py`.
+- ➕ *Added* — The Events tab says where every cooldown came from, and expands
+  to the provider's own payload, redacted before it was stored.
+
+<details>
+<summary><b>Everything in this release, in detail</b></summary>
+
+### What the telemetry said
+
+The plugin had been writing a journal the whole time. Nine days of one real
+pool, 2026-08-17 to 2026-08-26 — 276 recorded blocks, 30 recoveries:
+
+| Measure | Value |
+|---|---|
+| `reset_at` set | **0 / 276 (0 %)** |
+| `sized_by: "dropped"` | **184 / 276 (67 %)** |
+| `source: header` | **0 — never fired** |
+| Recovery, median | **3.8 h** |
+| Recovery, longest | **192 h (8 days)** |
+
+And in the host log, per symptom:
+
+| Line | Count |
+|---|---|
+| `daily [429] — resting 1h 0m` | 79 |
+| `auth [400] — resting 1h 0m` | 21 |
+| `rate_limit [429] — resting 0s` | 20 |
+| unanimity promoting a pool-wide 429 to terminal | 14 |
+| `per_minute [429] — resting 20s/40s` (NVIDIA) | 250 |
+| `panel requested clear_pool` | 15 |
+
+That last row is a person opening the panel to get working again.
+
+### The install was never the plugin
+
+Four copies of KAME existed in the Hermes tree. The one Hermes scans said
+`1.0.2` and carried an engine dated 08-17 **with the Pacific-midnight bug
+live**. A second, at `hermes-agent/hermes_plugins/hermes_kame_api_rotation/`,
+declared `1.3.3` — and had no `core/` directory at all, while its
+`dispatch_binding.py` opened with `from .core import multikey, stitch`.
+
+That directory is not one Hermes reads. `hermes_plugins` is a synthetic
+namespace module created at runtime with an empty `__path__`; the loader imports
+a plugin with `spec_from_file_location(..., submodule_search_locations=[plugin_dir])`
+against the real directory. `git status` inside the Hermes checkout reports it
+untracked. Somebody read the module name in a log line and deployed to a folder
+of that name.
+
+The copy that made it had not recursed: the package's `.pyc` files were sitting
+in the package root instead of `__pycache__/`, and the whole subpackage had been
+dropped on the way. Every zip in `dist/` and `releases/` was checked and all 29
+contain a complete `core/` — the packager was never the problem.
+
+**`integrity.py`** answers it. At registration the plugin checks that every
+module it needs is on disk, computes a twelve-character fingerprint over the
+bytes actually there, and publishes both. A version string is written by
+whoever last edited the manifest and survives a partial copy; a fingerprint
+computed from the files cannot describe files that are missing. The panel shows
+it beside the version, and an incomplete install gets the loudest thing on the
+page instead of a green tick.
+
+### The attribute that was never there
+
+```python
+message = str(getattr(exc, "message", "") or "")
+```
+
+The host's `GeminiAPIError` passes its text to `Exception.__init__` and defines
+no `message` attribute. That read returned the empty string on every Gemini
+failure. An empty message meant the footer strip below it had nothing to strip,
+the classifier had no prose to match, and the four-source cascade in `quota` had
+nothing to size from — which is the whole of the 0 %, the 67 %, and the header
+source that never fired once.
+
+Everything it wanted was on the exception:
+
+```python
+self.code = code            # "gemini_rate_limited" / "gemini_unauthorized" / ...
+self.status_code = status_code
+self.response = response    # the httpx.Response, body and headers included
+self.retry_after = retry_after
+self.details = details      # google.rpc.ErrorInfo -> {reason, metadata}
+```
+
+**`core/evidence.py`** reads all of it, guarded field by field — a property that
+raises costs one field, not the harvest, which is the shape that cost 1.3.1 a
+hotfix. It also recovers `google.rpc.RetryInfo.retryDelay` from the raw body,
+which the host discards: `exc.retry_after` is populated only from a
+`Retry-After` header, and Gemini does not send one.
+
+### The host's own handwriting, read as evidence
+
+Hermes appends `_FREE_TIER_GUIDANCE` to every free-tier 429, and that paragraph
+contains *"a few hundred requests/day"*. The day markers in `quota` match
+`/day`. A sixty-second throttle therefore arrived carrying, in the host's
+handwriting, the phrase that means "spent for the day" — and was benched for an
+hour, on key after key, fourteen keys deep.
+
+**`host_text.py`** imports the blocks from the host rather than copying them, so
+a reword upstream is followed automatically; the literals are a floor, and the
+state is reported (`host:2` or `fallback`) rather than assumed. 1.2.6 fixed the
+same bug by splitting on one hardcoded prefix and mutating the exception's
+`args` on the way past. This leaves the host's exception exactly as it arrived.
+
+### One sentence, two meanings
+
+> `You exceeded your current quota, please check your plan and billing details.`
+
+Google sends it for a 21-second throttle. OpenAI sends it when the balance is
+empty. Identical. `carousel.DAILY_INDICATORS` listed **both**
+`"exceeded your current quota"` and `"billing"`, so every Gemini throttle read
+as a daily cap: 1,088 occurrences of that sentence in nine days.
+
+`classify.py` already knew — its ambiguous-billing pattern matches the sentence
+and refuses to read it as billing unless the payload also fails to name a wait,
+with a comment saying the sentence had already cost one version. The lesson
+lived in the module that declines most of the time and had never been carried to
+the module that decides. Now it is in both, and what replaces the phrases is not
+another phrase.
+
+### The catalogue
+
+**`core/catalog.py`** is a table of what providers call things, keyed on
+machine-readable fields — `error.type`, `error.code`, Google's `status`,
+`ErrorInfo.reason`, RFC 7807's `title`. No prose. Prose is the only evidence two
+providers can share while meaning opposite things; the fields never collide.
+
+Its ranking rule is the interesting part, and three real payloads forced it:
+
+```
+Google    status "INVALID_ARGUMENT"      + ErrorInfo.reason "API_KEY_INVALID"
+OpenAI    type   "invalid_request_error" + code "invalid_api_key"
+DeepSeek  code   "invalid_request_error" + type "authentication_error"
+```
+
+DeepSeek inverts OpenAI. So specificity is a property of the **value**, not of
+the field it sits in: `invalid_request_error` and `INVALID_ARGUMENT` are marked
+uncertain — buckets, not facts — and any certain row beats them wherever it sat.
+A bare bucket with nothing beside it still reads as a malformed request.
+
+Also now read, none of which was before:
+
+- **NVIDIA's `title`.** Its entire 429 body is
+  `{"status": 429, "title": "Too Many Requests"}` — no `Retry-After`, no
+  `X-RateLimit-*`, sometimes no body at all. `title` was the one field it fills
+  in and the one field nothing looked at. The status is recovered from the body
+  too: 15 of 38 recorded NVIDIA blocks had no status code on the exception.
+- **402, 498, 529.** Anthropic and DeepSeek use 402 for an empty balance; Groq
+  returns 498 when the flex tier is at capacity; Anthropic 529 is overload.
+  None is in a standard status set, so all three fell into the generic
+  twenty-second bucket.
+- **Google's 400 `FAILED_PRECONDITION`** — "the free tier is unavailable in your
+  country, enable billing". A 400 that is an account problem, and read as
+  terminal it ended a turn no rotation could have saved.
+- **OpenRouter's normalised `error_type`**, including the length errors it turns
+  into *successful* completions with `finish_reason: length`.
+- **Alibaba's `Throttling.*` family**, which never says "rate limit", and
+  `AllocationQuota.FreeTierOnly`, which is billing on a 403 and must beat the
+  prefix rule.
+
+The reasoning, with sources, is in `knowledge_base/provider-errors.md`.
+
+### Resting zero seconds
+
+`Verdict.reason` says `rate_limit`. `Carousel._escalate` handled `daily`,
+`insufficient_quota`, `denied`, `auth`, `per_minute` and `server` — and fell
+through to a flat rest for anything else. A throttle the payload could not size
+arrives with a delay of zero, so the key was benched for **nothing** and the
+pool burned through every credential it had in a few hundred milliseconds before
+declaring itself exhausted.
+
+Two halves of one plugin disagreeing about the name of the commonest failure
+there is. 1.2.7 blamed an empty error string and added a fallback for it; the
+fallback was correct and the bench stayed at zero, because the string was never
+what routed the kind.
+
+`rate_limit` now escalates as the throttle it is, with a one-second floor on the
+first strike — not an invented cooldown, the smallest rest that cannot spin.
+
+### The dictionary, reviewed
+
+Three entries removed from `core/carousel.py`, each with the release that had
+already learned it elsewhere:
+
+- **`"exceeded your current quota"`, `"billing"`** out of `DAILY_INDICATORS`.
+- **`"unauthorized"`** out of `INVALID_KEY_INDICATORS`. It is the HTTP reason
+  phrase for 401, so it arrives on every bare 401 a proxy or an expired token
+  produces, and reading it as "this key is not a key" retires a healthy
+  credential over a refresh that was about to succeed. `classify.py` had removed
+  it for that reason, citing the host's own corpus. 21 hour-long quarantines.
+- **`"is disabled"`** narrowed to `"is disabled for this project"` in
+  `PERMANENT_DENIAL_INDICATORS`. The bare stem reaches into "streaming is
+  disabled", "caching is disabled for this model" — configuration facts, each of
+  which benched a healthy key for an hour.
+
+Added: `"key is invalid"` and `"key is no longer valid"`, which is how Anthropic
+and DeepSeek phrase it — the words the other way round from every pattern that
+was already there.
+
+### Seeing why, without leaking how
+
+1.1.1 built the Events screen and kept **no** provider text, because a provider
+can quote the request back inside an error and the request can be the user's
+prompt. 1.2.9 put the raw payload back under a click, silently, without meeting
+the rule it was reversing — and shipped it as a browser alert beside a mangled
+template literal that left three undefined identifiers in `EventRow`, so the tab
+threw on the first event carrying a status code and took the panel with it.
+
+Both halves were right about something. **`core/redact.py`** scrubs on the way
+*into* the store, so the secret is not in the file, not in a screenshot, and not
+in a support bundle — where redacting at display time would have left it in all
+three. Credentials go by vendor prefix, by named field, and by shape; the shape
+rule requires a digit, because the first draft of it ate
+`GenerateRequestsPerMinutePerProjectPerModel-FreeTier`, which is the single most
+informative string a Gemini 429 carries.
+
+The row expands inline, and it carries one new column: **where the cooldown came
+from** — `field`, `header`, `retryDelay`, `reset time`, or `guess`. The most
+useful number in nine days of telemetry was the proportion that were guesses,
+and nobody could see it.
+
+### Snapshot schema 5
+
+`build` (complete, fingerprint, missing modules, guidance source) on the
+document; `detail` and `sized_by` on each event. The panel and `state.py` move
+together, as always.
+
+### Test results
+
+- 1,487 tests passing (1,445 existing + 42 new in `tests/test_v1_4_0.py`).
+- `node tests/ui_reconcile.mjs` — 4/4 structural checks, all three tabs.
+- The schema-agreement test now asserts *agreement* rather than the literal 4 it
+  had been pinned to since 1.2.2 — a test that has to be edited to allow a
+  correct change teaches people to edit tests.
+
+### Not done, on purpose
+
+- **No rotation ceiling.** ADR 0002, unchanged.
+- **The Absolute Shield from 1.3.0 is not here.** It swallowed genuine bad
+  requests that had nothing on screen — breaking the contract 1.1.2 wrote and
+  tested by name — and injected KAME's own text into the model's message
+  history, which every release since 1.0.8 has routed around on purpose. If some
+  terminal kinds deserve a synthetic answer, the list has to be explicit and
+  tested, and the object returned has to be the host's own response type.
+- **1.3.3's unconditional replay is not here.** It reversed 1.0.0's "a partial
+  stream is never replayed" without a bound.
+
+</details>
 
 ## [1.2.9] - 2026-08-26
 

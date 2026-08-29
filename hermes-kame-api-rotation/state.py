@@ -65,7 +65,15 @@ PLUGIN_ID = "hermes-kame-api-rotation"
 #: whose ``config.yaml`` entry has been edited since this Hermes read it, so
 #: the panel can say "restart to apply" instead of showing a value the user
 #: has already changed and letting them conclude the edit was wrong.
-SCHEMA = 4
+#: 5 (1.4.0): the document gained ``build`` — whether every module this plugin
+#: needs is actually on disk, a fingerprint of the source tree that is there,
+#: and where the host-guidance blocks were resolved from. Events gained
+#: ``detail`` (the provider's payload, redacted on the way in) and
+#: ``sized_by`` (where the cooldown came from). The first exists because an
+#: install missing its whole ``core/`` package reported ``installed: true,
+#: reason: "active"`` for nine days; the second because two thirds of every
+#: cooldown in that period was a guess and nothing said so.
+SCHEMA = 5
 
 #: Floor between two writes of an *unchanged* document. A changed document is
 #: always written immediately: the whole point is that the chip moves when the
@@ -240,6 +248,14 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         "pid": os.getpid(),
         "installed": binding is not None,
         "reason": str(getattr(binding, "reason", "not installed")),
+        # 1.4.0. `installed` and `reason` describe *registration*, and for nine
+        # days they said `true` / `"active"` on an install whose `core/`
+        # package was not on disk at all — true about registration, worthless
+        # about function, and the only thing anybody could see. `build` is
+        # computed from the bytes actually present, so it cannot describe files
+        # that are missing, and `complete` is the field that says whether this
+        # plugin can do its job. See `integrity.py`.
+        "build": _integrity(),
         "counters": counters,
         "pools": rows,
         "totals": _totals(rows),
@@ -339,6 +355,33 @@ def _control_state() -> Dict[str, Any]:
     except Exception:
         logger.debug("kame: could not read the control result", exc_info=True)
         return {}
+
+
+def _integrity() -> Dict[str, Any]:
+    """What the install actually contains, for every reader of the snapshot.
+
+    Read from the value `register()` computed rather than recomputed here: the
+    fingerprint walks the package directory, and the snapshot is written on a
+    twenty-second heartbeat. Hashing every file on every tick to answer a
+    question whose answer cannot change without a restart would be a lot of
+    disk for nothing.
+    """
+    try:
+        from . import _INTEGRITY, host_text
+
+        return {
+            "complete": bool(_INTEGRITY.get("complete", True)),
+            "fingerprint": str(_INTEGRITY.get("fingerprint") or ""),
+            "missing": list(_INTEGRITY.get("missing_required") or []),
+            # Where the host's appended-guidance blocks came from. A plugin
+            # silently running on fallback literals is one Hermes reword away
+            # from reading its own host's handwriting as evidence, which is the
+            # bug that benched fourteen keys for an hour at a time.
+            "guidance": host_text.guidance_source(),
+        }
+    except Exception:
+        logger.debug("kame: could not read the install report", exc_info=True)
+        return {"complete": True, "fingerprint": "", "missing": [], "guidance": ""}
 
 
 def _desktop_ui_state() -> Dict[str, Any]:

@@ -4,9 +4,14 @@ Nothing in this package imports Hermes, Agent Zero, or any HTTP client. That is
 deliberate: the decision rules are the asset, the host bindings are disposable.
 """
 
-from . import answer, carousel, escalate, events, probe, reconcile, report, stitch, storm
+from . import (
+    answer, carousel, catalog, escalate, events, evidence, probe, reconcile,
+    redact, report, stitch, storm,
+)
 from .carousel import Carousel
 from .events import EVENTS, Events
+from .evidence import Evidence, harvest
+from .redact import redact as redact_text
 from .stitch import Stitcher, prefill_message, resumable, stitch_text
 from .classify import Verdict, classify, looks_like_upstream_wrapper
 from .journal import Block, Journal, Recovery, WindowStat, short_streak, summarize
@@ -44,11 +49,17 @@ from .quota import (
 # string nobody reads is worth: this package is meant to be lifted into
 # another host, and the number that travels with it has to say which rules
 # came along.
-__version__ = "1.2.9"
+__version__ = "1.4.0"
 
 __all__ = [
     "__version__",
     "answer",
+    "catalog",
+    "Evidence",
+    "evidence",
+    "harvest",
+    "redact",
+    "redact_text",
     "Carousel",
     "carousel",
     "EVENTS",

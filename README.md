@@ -4,7 +4,7 @@
 
 ### KAME API Rotation for Hermes — one API key per call, chosen for you
 
-[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Hermes](https://img.shields.io/badge/Hermes-v0.20.x-purple.svg)](https://github.com/NousResearch/hermes)
 [![Python](https://img.shields.io/badge/python-3.9%2B-yellow.svg)](https://www.python.org/)
@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.2.4            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.4.0            ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -358,11 +358,27 @@ Nine switches, each named for what it gives back to Hermes: `disabled`, `spread_
 
 ## ❓ Is it working?
 
-Three ways to tell, in order of effort:
+**First, is the whole plugin actually there?** The panel header shows the
+version *and* a twelve-character **build fingerprint** — a hash of the files on
+disk. A version string is written by whoever last edited the manifest and
+survives a copy that dropped half the package; a fingerprint computed from the
+bytes cannot describe files that are not there. If a module is missing, the
+panel says so in the loudest thing on the page instead of showing a green tick,
+and the same fact is in the Hermes log at registration.
+
+This is not hypothetical. Through 1.3.x the installed copy had no `core/`
+package at all — it registered, reported `active`, and rotated nothing, for nine
+days. That is what the fingerprint exists to make impossible to miss.
+
+Then, in order of effort:
 
 1. The **chip** on the status bar shows `14/15` and counts down when a key is resting.
 2. `/kame-quota` shows how many requests each healthy key took in the last sixty seconds. **Fifteen keys with roughly equal counts is the whole feature, visible.**
-3. `/kame events` shows the decisions themselves — which key was rested, for how long, and what the provider said the status was.
+3. `/kame events` shows the decisions themselves — which key was rested, for how long, and what the provider said the status was. Since 1.4.0 each row also names **where the wait came from** — `field`, `header`, `retryDelay`, `reset time`, or `guess` — and expands in place to the provider's own payload, redacted before it was stored.
+
+A column of `guess` is the number worth watching: it means the provider told
+KAME nothing it could size a cooldown from, and every wait on screen is an
+invention. Before 1.4.0 two thirds of them were, and nobody could see it.
 
 If KAME is doing nothing, the counters say so plainly rather than looking like an install that went quiet.
 
@@ -469,17 +485,14 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
-| **1.3.3** | Eternal Rotation Fix | Fixes a vanity flaw where un-stitchable mid-stream connection drops (e.g., NVIDIA) triggered the Absolute Shield instead of rotating. It now rotates unconditionally, guaranteeing an uninterrupted agent. |
-| **1.3.2** | Pool Exhaustion Fix | Fix pool-wide `rate_limit` exhaustion incorrectly surfacing errors and bypassing the Absolute Shield. |
-| **1.3.1** | httpx.ResponseNotRead Hotfix | Safely catches stream-read exceptions during error classification for native Gemini endpoints. |
-| **1.3.0** | The Absolute Shield | Intercepts unrecoverable API errors (404, 400 Context Exceeded) to prevent Hermes retries and crashes. Cleaned up Desktop UI error inspection. |
-| **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
-| **1.2.8** | Clean rotation UI | The spinner says 'rotating...' instead of spamming which key is being tested. |
-| **1.2.7** | Resilient 429 extraction | Fixes a bug where empty exception messages caused KAME to bench keys for 0 seconds on 429s. |
-| **1.2.6** | Header-based waiting | Wired `dispatch_binding.py` into the modern `core.classify` engine. |
-| **1.2.5** | Speed update - faster rotation during outages | Adaptive storm timeout slashes per-key wait from 20s to 5s after two consecutive timeouts; provider circuit breaker skips to recovery wait after 3; concurrent agents no longer block each other |
-| **1.2.4** | Full parity with Agent Zero on daily caps | Removed the US/Pacific midnight calculation that locked Google Gemini keys for 12-18h on burst errors. Daily quotas floor at 1 hour max (3600s), and per-minute RPM throttles keep standard short recovery |
-| **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker was the cause of the next one - a keyless list remounted the settings form mid-save; fixed structurally, with a test that renders the real panel and checks it |
+| **1.4.0** | The evidence was on the exception all along | The install can no longer claim to be running an engine it does not have; cooldowns are sized from the provider's own machine-readable fields instead of prose two providers share while meaning opposite things; Events says where every wait came from |
+| **1.2.9** | Provider names and inspectable payloads | The classifier stops calling every provider "gemini" — the hardcode that made NVIDIA's limits unreadable |
+| **1.2.8** | A quieter rotation | The spinner says `rotating…` instead of naming each key as it is tried |
+| **1.2.7** | 429s with nothing in them | An empty exception message no longer routes a throttle into a zero-second rest |
+| **1.2.6** | Header-based waiting | `dispatch_binding.py` wired into the modern `core.classify` engine |
+| **1.2.5** | Faster rotation during an outage | Adaptive storm timeout, a provider circuit breaker, and concurrent agents that stop blocking each other |
+| **1.2.4** | Daily caps, floored | The US/Pacific midnight calculation removed — it locked Google keys for 12–18 hours on a burst error |
+| **1.2.3** | The panel stopped rebuilding itself under the cursor | 1.2.2's own fix for the flicker caused the next one — a keyless list remounted the settings form mid-save |
 | **1.2.2** | The pool is a mirror, not an archive | The comma-joined list stopped being sent as a key of its own, a key deleted from the config stops being retried, and one save is one movement on screen |
 | **1.2.1** | Resilient Gemini streams | SDK-wrapped stream read timeouts are recognized as non-terminal and rotated transparently instead of ending the turn |
 | **1.2.0** | Settings you can read | Three labelled shelves, so the one optional extra can no longer be mistaken for something rotation needs |
@@ -495,7 +508,7 @@ Every release, newest first. The full entries — what broke, what the log said,
 | **1.0.0** | The carousel | A failed call moves to the next key instead of ending the turn |
 | **0.0.3** | No provider allowlist | Every decision moved onto evidence in the response — never on who the provider is |
 
-**Version parity with Agent Zero.** The same MAJOR.MINOR means the same generation of behaviour on both hosts; the patch number moves independently. 1.1.x and the 1.2.1–1.2.2 patch pair exist only here because they fixed stream and pool-mirroring issues that Agent Zero either owns itself or doesn't expose the same way — the two lines rejoin at each shared MAJOR.MINOR.
+**Version parity with Agent Zero.** The same MAJOR.MINOR means the same generation of behaviour on both hosts; the patch number moves independently. 1.1.x, the 1.2.1–1.2.9 patch run and 1.4.0 exist only here because they fixed stream and pool-mirroring issues that Agent Zero either owns itself or doesn't expose the same way — the two lines rejoin at each shared MAJOR.MINOR.
 
 ---
 
@@ -559,7 +572,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.2.9** — *because round-robin was never enough*
+🐢⚡ **KAME v1.4.0** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

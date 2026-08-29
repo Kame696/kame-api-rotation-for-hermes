@@ -144,10 +144,27 @@ INVALID_KEY_INDICATORS = (
     "invalid api key",
     "invalid_api_key",
     "please renew the api key",
-    "unauthorized",
     "invalid authentication",
     "incorrect api key",
+    # Anthropic sends "API key is invalid." and DeepSeek "Your api key:
+    # ****0000 is invalid" — the same fact with the words the other way round,
+    # which none of the phrases above reads. Bounded so the key and the verdict
+    # have to sit in one clause: a sentence merely mentioning a key somewhere
+    # and the word invalid somewhere else is not evidence.
+    "key is invalid",
+    "key is no longer valid",
 )
+# ``unauthorized`` was in that tuple until 1.4.0 and is the reason twenty-one
+# healthy keys were quarantined for an hour each. It is the HTTP reason phrase
+# for 401, so it arrives on every bare 401 a proxy, a gateway or an expired
+# OAuth token produces — and reading it as "this key is not a key" retires a
+# working credential over a refresh that was about to succeed.
+#
+# ``classify.py`` removed it for exactly this reason, with a comment saying
+# Hermes' own corpus fails on it (``test_401_classified_as_auth``: the host says
+# ``auth``, KAME said ``auth_permanent``). The legacy table kept it. A provider
+# that has genuinely retired a key always says more than "Unauthorized", and
+# every one of those sentences is matched above.
 
 #: Phrases that mean the account is refused rather than throttled. Same
 #: treatment as a daily cap: rest it long, keep using the others.
@@ -158,7 +175,15 @@ PERMANENT_DENIAL_INDICATORS = (
     "account has been suspended",
     "billing account",
     "has not been used in project",
-    "is disabled",
+    # 1.4.0: was the bare stem ``is disabled``, which reaches into any sentence
+    # about a feature rather than a credential — "streaming is disabled",
+    # "caching is disabled for this model", "thinking is disabled" are all
+    # ordinary configuration facts, and each of them benched a healthy key for
+    # an hour. The project clause is the part that actually means the
+    # credential is refused.
+    "is disabled for this project",
+    "service_disabled",
+    "api_key_service_blocked",
     "api has not been enabled",
     "quota exceeded for quota metric",
 )
@@ -186,10 +211,36 @@ DAILY_INDICATORS = (
     "free_tier_requests",
     "insufficient_quota",
     "insufficient quota",
-    "exceeded your current quota",
-    "billing",
     "credit balance",
 )
+# ``exceeded your current quota`` and ``billing`` were in that tuple until
+# 1.4.0, and between them they were the single most expensive line in this
+# plugin. Google's *per-minute* free-tier 429 reads, word for word:
+#
+#   "You exceeded your current quota, please check your plan and billing
+#    details. For more information on this error, head to: ..."
+#
+# One sentence, and it trips both markers. Every Gemini throttle — a limit that
+# clears in sixty seconds — was therefore read as a daily cap and benched for
+# ``daily_cooldown_s``, an hour, on key after key until the pool was empty. The
+# user's own telemetry: **1,088 occurrences of that exact message** in nine
+# days, and 79 log lines reading ``daily [429] — resting 1h 0m`` against a pool
+# of fourteen. It is also the mechanism behind "the pool ran out and never came
+# back", and behind the fifteen recorded times a human opened the panel and
+# pressed *clear pool* to get working again.
+#
+# ``classify.py`` already knew. Its ``_AMBIGUOUS_BILLING_PATTERNS`` matches this
+# exact sentence and refuses to read it as billing unless the payload *also*
+# fails to name a wait or a counter — and its comment says, in as many words,
+# that the sentence had already cost one version. That lesson was written down
+# in the module that declines most of the time and never carried across to the
+# module that decides when it does. Now it is in both.
+#
+# What replaces it is not another phrase: it is evidence. ``core.evidence``
+# harvests the status, the provider's own error code, ``RetryInfo.retryDelay``
+# and the quota metadata off the exception, so the ambiguous sentence is
+# settled by the payload that always accompanied it instead of by a guess about
+# which of its two meanings applies today.
 
 #: Phrases that mean a timeout or connection drop occurred.
 TIMEOUT_INDICATORS = (
@@ -725,12 +776,32 @@ class Carousel:
             grown = DAILY_BASE_S * (2 ** max(0, strikes - 1))
             return min(max(delay, grown), self.daily_cooldown_s)
 
-        if kind == "per_minute":
+        # ``rate_limit`` is the same family under the modern classifier's name
+        # for it. Until 1.4.0 it was in none of these branches and fell through
+        # to the flat rest at the bottom, which returns ``max(delay, 0.0)`` —
+        # and a throttle the payload could not size arrives here with
+        # ``delay = 0``. So the key was benched for **zero seconds**: twenty
+        # such lines in the user's log, reading
+        # ``rate_limit [429] — resting 0s, taking the next key``, which is a
+        # pool burning through every credential it has in a few hundred
+        # milliseconds and then declaring itself exhausted.
+        #
+        # The cause was never a missing number. It was two vocabularies:
+        # ``classify.Verdict.reason`` says ``rate_limit`` and this ladder
+        # spoke only ``per_minute``, so the two halves of the same plugin
+        # disagreed about the name of the commonest failure there is. A
+        # release note blamed an empty error string and added a fallback for
+        # it; the fallback was correct and the bench stayed at zero, because
+        # the string was never what routed the kind.
+        if kind in ("per_minute", "rate_limit"):
             state["consecutive_rl"] += 1
             strikes = state["consecutive_rl"]
             if strikes <= 1:
                 # First strike: the provider's own number is honest and
-                # obeying it is faster than any guess we could make.
+                # obeying it is faster than any guess we could make. The floor
+                # of one second is what makes an unsized throttle safe — it is
+                # not an invented cooldown, it is the smallest rest that
+                # cannot spin.
                 return max(delay, 1.0)
             grown = max(delay, 1.0) * (2 ** (strikes - 1))
             return min(grown, RL_BACKOFF_CAP_S)

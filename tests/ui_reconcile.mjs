@@ -36,10 +36,19 @@ const SNAPSHOT = {
   activity: { attempt: 1, healthy: 2, keys: 3, kind: 'calling', model: 'gemini-3.7-flash' },
   control: {},
   counters: { calls: 12, recovered: 1, rotations: 2, surfaced: 0 },
-  events: [{ at: 1787580000, code: 429, identity: 'gemini:gemini-3.7-flash', kind: 'rotation', seq: 1 }],
+  // Two rows on purpose: one carrying a redacted payload and a sizing source
+  // (1.4.0's expandable row), one without, so the keyed-list check sees the
+  // conditional children actually appear and disappear.
+  events: [
+    { at: 1787580000, code: 429, identity: 'gemini:gemini-3.7-flash', kind: 'rotation', seq: 1,
+      reason: 'rate_limit', seconds: 21, sized_by: 'retryinfo',
+      detail: 'Gemini HTTP 429 (RESOURCE_EXHAUSTED): quota exceeded' },
+    { at: 1787580005, code: 503, identity: 'gemini:gemini-3.7-flash', kind: 'rotation', seq: 2 }
+  ],
   first_run: false,
   gemini_tool_call_fix: { applied: true, reason: '', repaired: 0 },
   installed: true,
+  build: { complete: true, fingerprint: 'abc123def456', missing: [], guidance: 'host:2' },
   pid: 4242,
   pools: [
     {
@@ -56,7 +65,7 @@ const SNAPSHOT = {
     }
   ],
   reason: '',
-  schema: 4,
+  schema: 5,
   setting_groups: [
     { id: 'extra', note: 'Off until you turn it on.', title: 'Optional' },
     { id: 'off', note: 'Escape hatches.', title: 'Turn parts of KAME off' }

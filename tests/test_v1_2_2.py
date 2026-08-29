@@ -335,6 +335,13 @@ def test_the_manifest_the_core_and_the_changelog_agree():
 
 
 def test_the_snapshot_schema_and_the_panel_agree():
+    # The invariant is *agreement*, which is what the name says and what the
+    # panel's refuse-a-document-I-do-not-understand check depends on. Until
+    # 1.4.0 this asserted the literal 4 on both sides, so it also failed every
+    # time the schema legitimately moved — a test that has to be edited to
+    # allow a correct change teaches people to edit tests.
+    #
+    # The floor stays, because a schema going *backwards* is always a mistake.
     panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
-    assert state_mod.SCHEMA == 4
-    assert "const SCHEMA = 4" in panel
+    assert state_mod.SCHEMA >= 4
+    assert f"const SCHEMA = {state_mod.SCHEMA}" in panel

@@ -34,7 +34,14 @@ DIST = ROOT / "dist"
 
 #: Nothing generated, nothing editor-local. Anything not matched here ships, so
 #: a new source file is included by existing rather than by being listed.
-SKIP_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+#:
+#: ``graphify-out`` is here for the same reason as the caches: it is generated
+#: from the source beside it, it is 3.6 MB of it, and a knowledge graph of the
+#: plugin is a thing the plugin's author reads, not a thing the plugin needs to
+#: run. It appeared in the tree after 1.2.6 and would otherwise have shipped by
+#: the "anything not matched here ships" rule above — which is the rule working,
+#: and this is the answer it wanted.
+SKIP_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", "graphify-out"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".swp"}
 
 

@@ -18,6 +18,7 @@ import re
 import time
 from typing import Any, Optional
 
+from . import catalog
 from .quota import (
     DEFAULT_ACCOUNT_BENCH_SECONDS,
     DEFAULT_PER_DAY_BENCH_SECONDS,
@@ -213,37 +214,85 @@ _TYPE_BUSY = re.compile(r"overload|capacity|unavailable|server[_\s-]*error", re.
 #: deep that happens to contain "rate limit" is prose, and treating it as a
 #: structured field would give the override the very weakness it exists to
 #: correct.
-def structured_error_tokens(body: Any, error: Any = None) -> str:
-    """Collect the machine-readable type/code strings from a failure.
+def structured_error_values(body: Any, error: Any = None) -> list:
+    """Every machine-readable type/code string a failure carries.
 
-    Only strings are taken. OpenRouter's ``error.code`` is the integer 429
-    and says nothing a status code has not already said; Alibaba's is
+    **Ordered by specificity, not by where it was found**, because
+    :func:`catalog.look_up` takes the first row that matches and the same
+    payload routinely carries a precise field and a vague one that disagree.
+
+    The case that settles the order: Google's invalid-key body says
+    ``status: "INVALID_ARGUMENT"`` — which is true, and means "malformed
+    request", and would end the turn — while carrying
+    ``ErrorInfo.reason: "API_KEY_INVALID"``, which is the actual fact. OpenAI
+    does the same one level down: ``type: "invalid_request_error"`` with
+    ``code: "invalid_api_key"``. In both, the coarse field is a *family* and
+    the precise one is the *member*, so reading the family first retires a
+    turn over a key that simply needed replacing.
+
+    Only strings are taken. OpenRouter's ``error.code`` is the integer 429 and
+    says nothing a status code has not already said; Alibaba's is
     ``"Throttling.RateQuota"`` and says a great deal.
     """
-    found: list[str] = []
+    # Four buckets, most specific first, flattened at the end.
+    reason: list = []    # google.rpc.ErrorInfo.reason — names the exact fact
+    code: list = []      # error.code / exc.code — names the member
+    title: list = []     # RFC 7807 title — the only field some APIs fill in
+    family: list = []    # error.status / error.type — names the family
 
-    def take(value: Any) -> None:
+    def take(bucket: list, value: Any) -> None:
         if isinstance(value, str) and value.strip():
-            found.append(value)
+            bucket.append(value)
+
+    if error is not None:
+        try:
+            take(code, getattr(error, "code", None))
+        except Exception:  # pragma: no cover - hostile attribute access
+            pass
+        try:
+            take(family, getattr(error, "type", None))
+        except Exception:  # pragma: no cover - hostile attribute access
+            pass
 
     if isinstance(body, dict):
-        take(body.get("type"))
-        take(body.get("code"))
+        take(code, body.get("code"))
+        take(family, body.get("type"))
+        # RFC 7807 problem+json. NVIDIA NIM's entire 429 body is
+        # ``{"status": 429, "title": "Too Many Requests"}`` — ``title`` is the
+        # only structured field it fills in, and reading ``type``/``code``
+        # alone meant the one thing NVIDIA said was the one thing nobody
+        # looked at. Fifteen of thirty-eight recorded NVIDIA blocks arrived
+        # with no usable status either.
+        take(title, body.get("title"))
         inner = body.get("error")
         if isinstance(inner, dict):
-            take(inner.get("type"))
-            take(inner.get("code"))
+            take(code, inner.get("code"))
+            take(family, inner.get("type"))
+            # Google's canonical status string — ``RESOURCE_EXHAUSTED``,
+            # ``FAILED_PRECONDITION``, ``INVALID_ARGUMENT``. A family name, so
+            # it sits with the families rather than above them.
+            take(family, inner.get("status"))
             metadata = inner.get("metadata")
             if isinstance(metadata, dict):
-                take(metadata.get("error_type"))
-                take(metadata.get("provider_code"))
-    if error is not None:
-        for attribute in ("type", "code"):
-            try:
-                take(getattr(error, attribute, None))
-            except Exception:  # pragma: no cover - hostile attribute access
-                pass
-    return " ".join(found)
+                # An aggregator relaying the upstream's own code. As specific
+                # as a code gets, and the only evidence available when the
+                # normalised type is ``unmapped``.
+                take(code, metadata.get("provider_code"))
+                take(family, metadata.get("error_type"))
+            # ``google.rpc.ErrorInfo.reason`` — ``API_KEY_INVALID``,
+            # ``RATE_LIMIT_EXCEEDED``, ``SERVICE_DISABLED``.
+            for member in inner.get("details") or []:
+                if not isinstance(member, dict):
+                    continue
+                if str(member.get("@type") or "").endswith("/google.rpc.ErrorInfo"):
+                    take(reason, member.get("reason"))
+
+    return reason + code + title + family
+
+
+def structured_error_tokens(body: Any, error: Any = None) -> str:
+    """The same values, joined — for the regex contradiction check below."""
+    return " ".join(structured_error_values(body, error))
 
 # How long to bench a credential the provider is refusing outright. Long
 # enough that a dead key stops costing a round trip on every turn, short
@@ -437,6 +486,65 @@ def classify(
     if looks_like_upstream_wrapper(error_body):
         return None
 
+    # 0.5 What the provider said in a *field*, before anything reads a
+    #     sentence. This is the whole reason `catalog` exists: the sentence
+    #     Google sends for a twenty-one second throttle is, word for word, the
+    #     sentence OpenAI sends when the balance is empty, and no amount of
+    #     pattern work separates them. The fields never collide.
+    #
+    #     The catalogue answers for four families only — throttle, billing,
+    #     denial, dead credential — because those are the four this plugin acts
+    #     on. Server, timeout, terminal and "not actually a failure" are all
+    #     cases where the host is already right and KAME's job is to stay out
+    #     of the way, so a row of those kinds returns ``None`` here exactly as
+    #     the paths below would have.
+    catalog_reading = catalog.look_up(
+        *structured_error_values(error_body, error)
+    ) or catalog.look_up_status(status)
+
+    catalog_throttle = False
+    if catalog_reading is not None:
+        family = catalog_reading.family
+        if family in (catalog.SERVER, catalog.TIMEOUT, catalog.TERMINAL,
+                      catalog.NOT_A_FAILURE):
+            return None
+        if family == catalog.AUTH_DEAD:
+            return Verdict(
+                reason="auth_permanent",
+                retryable=False,
+                should_rotate_credential=True,
+                source="catalog",
+                rationale=catalog_reading.why or "the provider named the credential dead",
+            )
+        if family == catalog.BILLING:
+            return Verdict(
+                reason="billing",
+                retryable=False,
+                should_rotate_credential=True,
+                reset_at=now + DEFAULT_ACCOUNT_BENCH_SECONDS,
+                quota_window=catalog_reading.window or QuotaWindow.ACCOUNT,
+                quota_scope=catalog_reading.scope or QuotaScope.ACCOUNT,
+                source="catalog",
+                rationale=catalog_reading.why or "account-level limit — not a throttle",
+            )
+        if family == catalog.DENIAL:
+            return Verdict(
+                reason="auth",
+                retryable=False,
+                should_rotate_credential=True,
+                reset_at=now + DENIAL_BENCH_SECONDS,
+                quota_scope=catalog_reading.scope or QuotaScope.PER_MODEL,
+                source="catalog",
+                rationale=catalog_reading.why or "access denied for this key/model",
+            )
+        # A throttle does not return here. It still goes through the sizing
+        # cascade below, because *how long* is a separate question from *what*
+        # — and the cascade reads headers, RetryInfo and absolute anchors that
+        # no lookup table can hold. What the reading buys is the right to
+        # answer even when the sizing comes back empty, which is where this
+        # module used to fall silent and hand a spent key back to the host.
+        catalog_throttle = True
+
     # 1. A key the provider says is not a key. No timer fixes this.
     if _matches(_PERMANENT_AUTH_PATTERNS, message, body_text):
         return Verdict(
@@ -520,13 +628,21 @@ def classify(
     #    The status branch is *not* covered by it — a 5xx is the transport
     #    agreeing with the prose, and no field in the body outranks that.
     tokens = structured_error_tokens(error_body, error)
-    contradicted = bool(tokens) and (
+    busy_prose = _matches(_BUSY_PATTERNS, message, body_text)
+    #: A contradiction needs *both* halves. Until 1.4.0 this was computed from
+    #: the structured tokens alone, which was harmless while the only tokens
+    #: read were ``type`` and ``code`` — and stopped being harmless the moment
+    #: ``title`` joined them, because NVIDIA's ``"Too Many Requests"`` then
+    #: satisfied "the type names a throttle" with no prose disagreeing with
+    #: anything. The verdict was still *rotate*, so the behaviour was right by
+    #: luck, and the rationale it printed — "its message says overloaded" —
+    #: was a sentence about a message that did not exist. A reason a human
+    #: reads in the Events tab has to be true, or the tab is worse than empty.
+    contradicted = busy_prose and bool(tokens) and (
         _TYPE_THROTTLE.search(tokens) is not None
         and _TYPE_BUSY.search(tokens) is None
     )
-    if status in _SERVER_STATUSES or (
-        _matches(_BUSY_PATTERNS, message, body_text) and not contradicted
-    ):
+    if status in _SERVER_STATUSES or (busy_prose and not contradicted):
         return None
 
     if not (
@@ -571,6 +687,42 @@ def classify(
                 rationale=(
                     "provider's error type names a rate limit while its "
                     "message says overloaded — rotating, not waiting"
+                ),
+            )
+        if catalog_throttle:
+            # The provider named a throttle in a field and gave nothing to
+            # size it by. That is not a reason to stay silent — it is the
+            # commonest failure there is. NVIDIA NIM's whole 429 body is
+            # ``{"status": 429, "title": "Too Many Requests"}``: no
+            # ``Retry-After``, no ``X-RateLimit-*``, sometimes no body at all.
+            # Declining here handed a spent key straight back and the pool sat
+            # on it while healthy keys waited beside it.
+            #
+            # ``reset_at`` stays ``None`` on purpose, exactly as in the
+            # contradiction case above: nothing said how long, so nothing here
+            # says how long. Rotate off this credential, bench it for nothing,
+            # and let the ordinary escalation size the next refusal if there is
+            # one. That is also the right shape for NVIDIA specifically, whose
+            # burst limits clear in seconds — the escalating ladder that used
+            # to run instead spent 20s, then 40s, then 1m20s before answering
+            # on attempt six.
+            window, scope = catalog.read_quota_id(body_text)
+            return Verdict(
+                reason="rate_limit",
+                retryable=True,
+                should_rotate_credential=True,
+                quota_window=(
+                    window if window != QuotaWindow.UNKNOWN
+                    else catalog_reading.window
+                ),
+                quota_scope=(
+                    scope if scope != QuotaScope.UNKNOWN
+                    else catalog_reading.scope
+                ),
+                source="catalog",
+                rationale=(
+                    catalog_reading.why
+                    or "the provider named a throttle but nothing to size it by"
                 ),
             )
         return None

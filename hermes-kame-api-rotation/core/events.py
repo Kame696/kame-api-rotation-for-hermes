@@ -28,6 +28,8 @@ from __future__ import annotations
 import threading
 import time
 from typing import Any, Deque, Dict, List, Optional
+
+from .redact import redact
 from collections import deque
 
 #: How many entries are kept. Fifty is roughly one screen of a scrolling list
@@ -73,9 +75,27 @@ class Events:
         code: Optional[int] = None,
         seconds: Optional[float] = None,
         at: Optional[float] = None,
-        raw_error: str = "",
+        detail: str = "",
+        sized_by: str = "",
     ) -> Dict[str, Any]:
-        """Record one event. Never raises - a readout must not end a turn."""
+        """Record one event. Never raises — a readout must not end a turn.
+
+        ``detail`` is the provider's own payload, and it is **redacted here**
+        rather than trusted. 1.1.1 kept no provider text at all, because a
+        provider can quote the request back inside an error and the request can
+        be the user's prompt; 1.2.9 put it back under a click without meeting
+        that rule. Neither is right on its own — the rule protects something
+        real, and a person watching fourteen keys rotate needs to see *why*.
+        Scrubbing on the way in gives both: the secret is not in this file, so
+        it is not in a screenshot of the panel or in a support bundle either,
+        and the evidence is still there to read.
+
+        ``sized_by`` is where the cooldown came from — ``catalog``, ``header``,
+        ``retryinfo``, ``pattern``, ``table``, ``dropped``. It is stored
+        because the single most useful number in nine days of telemetry was the
+        proportion of decisions that were guesses (**67 %**), and nobody could
+        see it. Now it is one column in the Events tab.
+        """
         try:
             row = {
                 "seq": 0,
@@ -89,7 +109,8 @@ class Events:
                 "reason": str(reason or "")[:120],
                 "code": int(code) if isinstance(code, int) else None,
                 "seconds": round(float(seconds), 1) if seconds is not None else None,
-                "raw_error": str(raw_error or ""),
+                "detail": redact(detail) if detail else "",
+                "sized_by": str(sized_by or "")[:24],
             }
         except Exception:
             return {}

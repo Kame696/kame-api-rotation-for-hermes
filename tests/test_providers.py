@@ -327,11 +327,24 @@ class TestStillDeclined:
     somebody could reasonably have written a rule for.
     """
 
-    def test_nvidia_bare_429_stays_unsized(self):
+    def test_nvidia_bare_429_is_named_but_never_sized(self):
         # Observed, NVIDIA developer forums: `{"status": 429, "title": "Too
-        # Many Requests"}`, sometimes with no body at all. Nothing in it can
-        # size a wait. The reason is right and the timing is the host's, and
-        # this test exists so nobody closes the gap with an invented number.
+        # Many Requests"}`. `title` is the only structured field NVIDIA fills
+        # in, and until 1.4.0 nothing read it — so the one thing NVIDIA said
+        # was the one thing nobody looked at.
+        #
+        # This test used to assert `verdict is None`, on the reasoning that
+        # nothing in the payload can size a wait. The premise is right and the
+        # conclusion was wrong, and production said so: declining handed the
+        # decision to the table-driven fallback, which read the 429 as
+        # `per_minute` and ran the escalating ladder — 20s, then 40s, then
+        # 1m 20s, on burst limits that clear in seconds. 250 such lines in nine
+        # days, and the call would then answer on attempt six.
+        #
+        # So the verdict is named and deliberately left unsized: `reset_at`
+        # stays None, exactly as the original comment demanded. What that buys
+        # is the one-second floor in `_escalate` instead of a ladder built for
+        # a limit NVIDIA does not have.
         verdict = classify(
             provider="nvidia",
             status_code=429,
@@ -339,7 +352,12 @@ class TestStillDeclined:
             error_body={"status": 429, "title": "Too Many Requests"},
             now_epoch=NOW,
         )
-        assert verdict is None
+        assert verdict is not None
+        assert verdict.reason == "rate_limit"
+        assert verdict.source == "catalog"
+        # The whole point: a name, not a number.
+        assert verdict.reset_at is None
+        assert verdict.should_rotate_credential is True
 
     def test_nvidia_429_with_no_body_at_all(self):
         assert classify(

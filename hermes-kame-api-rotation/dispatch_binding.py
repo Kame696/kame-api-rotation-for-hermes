@@ -141,8 +141,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import settings
-from .core import multikey, stitch
+from . import host_text, settings
+from .core import evidence, multikey, stitch
 from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
 from .core.carousel import (
@@ -1492,7 +1492,7 @@ class DispatchBinding:
                 else status_line(
                     healthy,
                     len(keys),
-                    "rotating...",
+                    f"on key {attempt}",
                     subject=model_label(identity),
                     symbol="↻",
                 ),
@@ -1981,35 +1981,47 @@ class DispatchBinding:
         terminal error still tells us nothing bad about the key, and a
         mid-stream drop still does.
         """
-        message = str(getattr(exc, "message", "") or str(exc) or "")
-        # 1.2.6: Hermes appends a helpful footer to Gemini 429s containing the text
-        # "requests/day". If passed to the classifier, it falsely triggers the PER_DAY
-        # quota window and benches the key for an hour instead of 9 seconds.
-        _footer = "Your Google API key is on the free tier"
-        if _footer in message:
-            message = message.split(_footer)[0].strip()
-        exc_str = str(exc)
-        if _footer in exc_str:
-            if hasattr(exc, "message") and isinstance(exc.message, str):
-                exc.message = exc.message.split(_footer)[0].strip()
-            if hasattr(exc, "args") and exc.args and isinstance(exc.args[0], str):
-                exc.args = (exc.args[0].split(_footer)[0].strip(), *exc.args[1:])
-
-        provider_name = identity.split(":")[0] if ":" in identity else identity
-        error_body = getattr(exc, "body", None)
-        if error_body is None and hasattr(exc, "response"):
-            try:
-                error_body = exc.response.json()
-            except Exception:
-                error_body = getattr(exc.response, "text", None)
+        # 1.4.0: read the failure for everything it is willing to say, before
+        # anything decides anything.
+        #
+        # What was here until now was one line — `getattr(exc, "message", "")` —
+        # and it was the most expensive line in the plugin. The host's
+        # `GeminiAPIError` passes its text to `Exception.__init__` and defines
+        # no `message` attribute, so that read returned the empty string on
+        # every Gemini failure there has ever been. An empty message means the
+        # footer strip below it had nothing to strip, the classifier had no
+        # prose to match, and the sizing cascade in `quota` had nothing to size
+        # from. Nine days of the user's own telemetry, 276 recorded blocks:
+        # `reset_at` set 0 times, `sized_by: dropped` 184 times, and the header
+        # source never firing once.
+        #
+        # Everything the cascade wanted was on the exception the whole time —
+        # `status_code`, `code`, `retry_after`, `details`, and the response
+        # carrying the body and headers. `core.evidence` reads all of it,
+        # guarded field by field, and takes Hermes' own appended guidance back
+        # off the message so the classifier is never matching the host's
+        # handwriting.
+        ev = evidence.harvest(
+            exc,
+            message=str(exc),
+            guidance_blocks=host_text.guidance_blocks(),
+        )
+        message = ev.message
+        exc_str = ev.raw_message
 
         verdict = classify(
-            provider=provider_name,
+            # The provider's real name, from the identity this call is on.
+            # Until 1.2.9 this was the literal "gemini" for every provider on
+            # earth, which meant NVIDIA's refusals were sized with Google's
+            # rules. `identity` is `provider:model`, and the model half can
+            # itself contain colons (`nvidia:z-ai/glm-5.2`), so the split is
+            # bounded to one.
+            provider=identity.split(":", 1)[0] if ":" in identity else identity,
             model=identity,
-            status_code=getattr(exc, "status_code", None),
+            status_code=ev.status_code,
             error_message=message,
-            error_body=error_body,
-            headers=getattr(exc, "headers", None),
+            error_body=ev.body,
+            headers=ev.headers,
             error=exc,
             now_epoch=time.time(),
         )
@@ -2023,13 +2035,24 @@ class DispatchBinding:
             elif kind == "auth_permanent":
                 kind = "auth"
                 delay = self.engine.daily_cooldown_s
-            status = getattr(exc, "status_code", None)
+            status = ev.status_code
+            sized_by = verdict.source or "verdict"
         else:
-            # Fallback for old classify
+            # The evidence-first classifier declined, which is the common and
+            # the safe case: it answers only when the payload carries something
+            # Hermes' own classifier does not read. The table-driven reading
+            # below is the fallback, and it now gets the same evidence — the
+            # status the exception did not put where it was looked for, the
+            # headers, and a message with the host's guidance already off it.
             from .core.carousel import classify as legacy_classify
             delay, kind, status = legacy_classify(
-                exc, message, daily_cooldown_s=self.engine.daily_cooldown_s
+                exc,
+                message,
+                status_code=ev.status_code,
+                headers=ev.headers,
+                daily_cooldown_s=self.engine.daily_cooldown_s,
             )
+            sized_by = "table"
         if kind == "host_breaker":
             # Hermes' own cross-turn breaker. It raises before touching the
             # network, so rotating into it is free and useless in equal
@@ -2112,7 +2135,8 @@ class DispatchBinding:
                 key=fingerprint(key),
                 reason=f"{kind or 'the connection'} failed mid-answer",
                 code=status,
-                raw_error=exc_str,
+                detail=ev.raw_message,
+                sized_by=sized_by,
             )
             if can_stitch:
                 # Since 1.1.1: continue it on another key instead, prefilled
@@ -2145,7 +2169,10 @@ class DispatchBinding:
             reason=kind or "refused",
             code=status,
             seconds=applied,
-            raw_error=exc_str,
+            # Redacted inside `Events.add`, never here — the scrub belongs to
+            # the store, so no caller can forget it.
+            detail=ev.raw_message,
+            sized_by=sized_by,
         )
         return "rotate", kind, status
 

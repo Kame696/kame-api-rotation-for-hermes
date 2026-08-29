@@ -886,6 +886,87 @@ def a_refusal_still_arrives_with_the_provider_words_in_it(_=None):
     return True, True
 
 
+
+def the_host_still_appends_its_own_guidance_to_a_429(_=None):
+    """Why ``host_text`` exists, and why it imports rather than copies.
+
+    Hermes appends ``_FREE_TIER_GUIDANCE`` to every free-tier 429, and that
+    paragraph contains the words "requests/day". ``quota._PER_DAY_MARKERS``
+    matches "/day", so a sixty-second per-minute throttle arrived carrying, in
+    the host's own handwriting, the phrase that means "spent for the day" --
+    and was benched for an hour, on key after key. Seventy-nine such lines in
+    nine days against a pool of fourteen.
+
+    Two facts, and the second is the one that decays quietly: the block is
+    still appended, and it still contains the day phrase. The day Hermes
+    rewords it, a copied literal stops matching and the bug comes back
+    invisibly -- which is why ``host_text`` imports the constant and this
+    check fails loudly when the name moves.
+    """
+    path = AGENT / "agent/gemini_native_adapter.py"
+    if not path.is_file():
+        return "gemini_native_adapter.py not found", True
+    body = path.read_text(encoding="utf-8", errors="replace")
+    if "_FREE_TIER_GUIDANCE" not in body:
+        return "the free-tier guidance block is gone -- host_text may be dead code", True
+    if "requests/day" not in body:
+        return "the guidance no longer says requests/day -- re-check the day markers", True
+    if "message = message + _FREE_TIER_GUIDANCE" not in body.replace("  ", " "):
+        return "the guidance is no longer appended to the message", True
+    return True, True
+
+
+def the_provider_error_still_carries_its_evidence(_=None):
+    """The five fields ``core.evidence`` harvests off a failed call.
+
+    Until 1.4.0 the binding read ``getattr(exc, "message", "")`` -- an
+    attribute this class does not define -- and nothing else. The cascade in
+    ``quota`` therefore had nothing to size from: ``reset_at`` was set on 0 of
+    276 recorded blocks and 67 % of cooldowns were guesses. Every one of these
+    fields was on the exception the whole time.
+
+    If any of them is renamed, the harvest silently gets quieter rather than
+    failing, which is the failure mode this whole release exists to end.
+    """
+    path = AGENT / "agent/gemini_native_adapter.py"
+    if not path.is_file():
+        return "gemini_native_adapter.py not found", True
+    body = path.read_text(encoding="utf-8", errors="replace")
+    missing = [
+        name
+        for name in ("self.code", "self.status_code", "self.response",
+                     "self.retry_after", "self.details")
+        if name not in body
+    ]
+    if missing:
+        return "the error no longer carries " + ", ".join(missing), True
+    return True, True
+
+
+def the_host_still_discards_retry_info(_=None):
+    """Why ``evidence.retry_info_seconds`` reads the raw body.
+
+    The adapter walks ``error.details`` and harvests **only**
+    ``google.rpc.ErrorInfo``. ``google.rpc.RetryInfo`` -- the one member
+    carrying ``retryDelay`` -- is dropped, and ``retry_after`` is populated
+    only from a ``Retry-After`` header that Gemini does not send. That single
+    omission is why ``reset_at`` was null on all 276 recorded blocks.
+
+    The day the host harvests RetryInfo itself, reading the raw body becomes
+    redundant rather than wrong -- so this check exists to say so, not to
+    guard against breakage.
+    """
+    path = AGENT / "agent/gemini_native_adapter.py"
+    if not path.is_file():
+        return "gemini_native_adapter.py not found", True
+    body = path.read_text(encoding="utf-8", errors="replace")
+    if "google.rpc.ErrorInfo" not in body:
+        return "the details walk has changed shape entirely", True
+    if "google.rpc.RetryInfo" in body:
+        return "the host now reads RetryInfo itself -- evidence.retry_info_seconds may be redundant", True
+    return True, True
+
+
 CHECKS = (
     ("agent/conversation_loop.py", "an empty answer is retried on the same key", the_empty_retry_never_asks_the_pool),
     ("agent/agent_runtime_helpers.py", "the pool is asked once a turn, not once a call", the_only_outside_selection_is_per_turn),
@@ -912,6 +993,12 @@ CHECKS = (
     ("agent/chat_completion_helpers.py", "a mid-stream drop is returned, not raised", a_mid_stream_drop_is_returned_and_not_raised),
     ("agent/chat_completion_helpers.py", "a tool-argument drop is still tagged apart", a_tool_argument_drop_is_still_tagged_apart),
     ("agent/chat_completion_helpers.py", "the stream read timeout is read inside the call", the_stream_read_timeout_is_read_inside_the_call),
+    # v1.4.0. The three facts behind reading evidence off the exception: the
+    # guidance the host appends and KAME has to take back off, the fields the
+    # error carries, and the one member of `details` the host drops.
+    ("agent/gemini_native_adapter.py", "the host still appends its own guidance to a 429", the_host_still_appends_its_own_guidance_to_a_429),
+    ("agent/gemini_native_adapter.py", "the provider error still carries its evidence", the_provider_error_still_carries_its_evidence),
+    ("agent/gemini_native_adapter.py", "the host still discards RetryInfo", the_host_still_discards_retry_info),
 )
 
 

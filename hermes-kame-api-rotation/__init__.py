@@ -103,7 +103,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from . import runtime, settings
+from . import host_text, integrity, runtime, settings
 from .core import Verdict, answer, classify
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -117,6 +117,12 @@ logger = logging.getLogger(__name__)
 
 
 PLUGIN_NAME = "hermes-kame-api-rotation"
+
+#: What `integrity.verify()` said at register time, carried so every readout
+#: can repeat it. A dict rather than a flag because "incomplete" is only useful
+#: alongside *what* is missing — "KAME did not start" and "KAME started without
+#: its engine" look identical from a chat window and have opposite fixes.
+_INTEGRITY: Dict[str, Any] = {"complete": True, "fingerprint": "", "missing_required": []}
 
 # The live bindings, or None when the plugin is running with cooldown sizing
 # alone. Module-level so a reload or a test can tear them down; assigned in
@@ -479,6 +485,29 @@ def _on_session_reset(payload=None, **kwargs):
 
 
 def register(ctx) -> None:
+    # Before anything else, and loudly: is this a whole plugin?
+    #
+    # An install that lost `core/` to a non-recursive copy registers perfectly,
+    # publishes `installed: true, reason: "active"`, and rotates nothing — for
+    # nine days, in this user's Hermes, while the panel showed a version number
+    # taken from a manifest that the same partial copy had faithfully updated.
+    # The guards below are all `except Exception: log at debug`, which is right
+    # for a hook a host may not offer and exactly wrong for a package that is
+    # missing its own engine.
+    #
+    # So the check runs first, says what is absent, and the answer travels with
+    # every readout afterwards. It does not stop registration: the slash
+    # commands and the panel are how a person finds out what is wrong, and
+    # refusing to register would take away the screen that explains it.
+    try:
+        _INTEGRITY.update(integrity.verify())
+        if not _INTEGRITY.get("complete"):
+            logger.error("%s: %s", PLUGIN_NAME, integrity.describe(_INTEGRITY))
+        else:
+            logger.info("%s: %s", PLUGIN_NAME, integrity.describe(_INTEGRITY))
+    except Exception:  # pragma: no cover — verify() swallows its own failures
+        logger.debug("%s: could not verify the install", PLUGIN_NAME, exc_info=True)
+
     # First, because everything below asks whether it is switched off, and a
     # switch read after the thing it switches has already run is not a switch.
     try:

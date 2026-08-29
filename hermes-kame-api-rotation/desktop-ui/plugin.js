@@ -75,7 +75,7 @@ const PRODUCT = 'KAME API Rotation'
 
 /** Schema of `state.json` this UI understands. A document from a newer Python
  *  half is refused with a readable reason rather than half-rendered. */
-const SCHEMA = 4
+const SCHEMA = 5
 
 /** Schema of the `control.json` this UI writes. Read by `control.py`, which
  *  refuses a number it does not know rather than guessing. */
@@ -1270,24 +1270,54 @@ const EVENT_LABELS = {
   wait: ['Waited', 'warn']
 }
 
+// Where a cooldown came from, in one word, for the column that finally makes
+// the difference visible. Nine days of telemetry said 67% of every bench in
+// this pool was `dropped` — a guess — and nobody could see it, because the
+// panel showed the number and never where it came from. A wrong cooldown and a
+// well-sourced one look identical until this column exists.
+const SIZED_BY_LABELS = {
+  catalog: ['field', 'good'],
+  header: ['header', 'good'],
+  retryinfo: ['retryDelay', 'good'],
+  anchor: ['reset time', 'good'],
+  exception: ['sdk', 'good'],
+  type: ['field', 'good'],
+  verdict: ['evidence', 'good'],
+  pattern: ['text', 'weak'],
+  table: ['table', 'weak'],
+  dropped: ['guess', 'weak']
+}
+
 function EventRow({ event }) {
-  const [expanded, setExpanded] = useState(false)
   const [label, tone] = EVENT_LABELS[event.kind] ?? [event.kind, 'plain']
+  // 1.4.0: the payload expands *inline*, under the row that owns it.
+  //
+  // 1.2.9 shipped this as a `window.alert()`, which is a modal that stops the
+  // renderer, cannot be copied out of comfortably, and shows one payload at a
+  // time — and it arrived alongside a template-literal that had been mangled
+  // into three undefined identifiers, so the tab threw on the first event
+  // carrying a status code and took the whole panel with it. Whatever else is
+  // true, the row that explains a failure must not be able to cause one.
+  const [open, setOpen] = useState(false)
   const when = new Date((event.at ?? 0) * 1000)
+  const canExpand = Boolean(event.detail)
+  const sized = SIZED_BY_LABELS[event.sized_by] ?? null
 
   return h(
     'div',
     { className: 'border-b border-(--ui-stroke-tertiary)/60 py-2 last:border-b-0', key: event.seq },
     h(
       'div',
-      { 
-        className: cn('flex items-baseline gap-3 select-none', event.raw_error ? 'cursor-pointer hover:text-(--ui-text-primary)' : ''), 
-        onClick: () => { if (event.raw_error) setExpanded(!expanded) }
+      {
+        className: cn('flex items-baseline gap-3', canExpand && 'cursor-pointer'),
+        onClick: canExpand ? () => setOpen(value => !value) : undefined,
+        title: canExpand ? 'Show what the provider actually said' : undefined,
+        key: 'summary'
       },
       h(
         'span',
         { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', key: 'when' },
-        Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '-'
+        Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '—'
       ),
       h(
         'span',
@@ -1303,18 +1333,57 @@ function EventRow({ event }) {
       h(
         'span',
         { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)', key: 'detail' },
+        // Six of these come and go with what the provider said, so the row
+        // rebuilds its own tail on every event that carries a different set.
         h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)', key: 'identity' }, event.identity || ''),
         event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)', key: 'fingerprint' }, event.key) : null,
         event.reason ? h('span', { className: 'ml-2', key: 'reason' }, event.reason) : null,
-        event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, HTTP ) : null,
+        event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, `HTTP ${event.code}`) : null,
         event.seconds
-          ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, 
-ested )
+          ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, `rested ${duration(event.seconds)}`)
           : null,
-        event.raw_error ? h('span', { className: 'ml-2 text-[0.6rem] uppercase tracking-wide opacity-60' }, expanded ? '▼ hide payload' : '▶ inspect payload') : null
+        sized
+          ? h(
+              'span',
+              {
+                className: cn(
+                  'ml-2 rounded px-1 text-[0.625rem] uppercase tracking-wide',
+                  sized[1] === 'good' ? 'text-(--ui-text-quaternary)' : 'text-amber-500'
+                ),
+                title:
+                  sized[1] === 'good'
+                    ? 'The provider said how long. This wait is its number, not ours.'
+                    : 'Nothing in the response said how long. This wait is a fallback.',
+                key: 'sized'
+              },
+              sized[0]
+            )
+          : null,
+        canExpand
+          ? h(
+              'span',
+              { className: 'ml-2 text-[0.625rem] text-(--ui-text-quaternary)', key: 'chevron' },
+              open ? '▾' : '▸'
+            )
+          : null
       )
     ),
-    expanded && event.raw_error ? h('div', { className: 'mt-2 mb-1 rounded bg-(--ui-bg-secondary)/50 p-3 overflow-x-auto whitespace-pre-wrap text-[11px] font-mono text-(--ui-text-secondary)' }, event.raw_error) : null
+    // The payload, already scrubbed by `core.redact` before it was ever
+    // written to disk. Nothing is redacted here on the way to the screen —
+    // doing it at display time would leave the secret in the snapshot file, in
+    // a screenshot of this panel, and in any support bundle built from either.
+    open && canExpand
+      ? h(
+          'pre',
+          {
+            className:
+              'mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-(--ui-bg-secondary) p-2 ' +
+              'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary) select-text',
+            key: 'payload'
+          },
+          event.detail
+        )
+      : null
   )
 }
 
@@ -1453,7 +1522,24 @@ function KamePage() {
         { className: 'flex items-baseline gap-2', key: 'title' },
         h('h1', { className: 'text-lg font-medium text-(--ui-text-primary)', key: 'name' }, PRODUCT),
         snap?.version &&
-          h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'version' }, `v${snap.version}`)
+          h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'version' }, `v${snap.version}`),
+        // The build fingerprint, beside the version and deliberately not
+        // instead of it. A version string is written by whoever last edited
+        // the manifest and survives a copy that dropped half the package —
+        // that is exactly how an install claiming 1.3.3 ran for nine days with
+        // no engine. This number is computed from the bytes on disk, so it
+        // cannot describe a file that is not there, and it is the one a deploy
+        // compares against what it just built.
+        snap?.build?.fingerprint &&
+          h(
+            'span',
+            {
+              className: 'font-mono text-[0.625rem] text-(--ui-text-quaternary)',
+              title: 'Fingerprint of the source actually installed. Compare it with the build you deployed.',
+              key: 'build'
+            },
+            snap.build.fingerprint
+          )
       ),
       right
     )
@@ -1475,12 +1561,49 @@ function KamePage() {
   const counters = snap.counters ?? {}
   const repair = snap.gemini_tool_call_fix ?? {}
   const invalid = invalidCount(snap)
+  const build = snap.build ?? {}
 
   return h(
     'div',
     { className: 'flex h-full w-full flex-col gap-4 overflow-y-auto p-6' },
 
     header(h(HeaderStatus, { key: 'status', snap })),
+
+    // 1.4.0. The loudest thing on the page, and the only one that is allowed
+    // to be, because it is the failure that cost the most: an install whose
+    // `core/` package was not on disk registered cleanly, published
+    // `installed: true, reason: "active"`, rotated nothing for nine days, and
+    // showed a version number the whole time. Every counter on this page was
+    // zero and none of them said why.
+    //
+    // A plugin cannot fix its own missing files. What it can do is refuse to
+    // look healthy.
+    build.complete === false
+      ? h(
+          'div',
+          {
+            className:
+              'rounded border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive',
+            key: 'incomplete'
+          },
+          h(
+            'p',
+            { className: 'font-medium', key: 'headline' },
+            'This install is incomplete — KAME is not rotating.'
+          ),
+          h(
+            'p',
+            { className: 'mt-1 text-xs opacity-90', key: 'missing' },
+            `Missing: ${(build.missing ?? []).join(', ') || 'unknown'}`
+          ),
+          h(
+            'p',
+            { className: 'mt-1 text-xs opacity-90', key: 'fix' },
+            'Re-deploy the whole plugin directory. A copy that does not recurse drops core/ ' +
+              'and leaves a plugin that registers, reports itself active, and does nothing.'
+          )
+        )
+      : null,
 
     h(
       'nav',
