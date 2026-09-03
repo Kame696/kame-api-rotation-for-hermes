@@ -45,7 +45,7 @@ SCHEMA = 1
 
 #: Every action this module will carry out. Anything else is reported back as
 #: unknown — including, deliberately, anything to do with keys.
-ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events")
+ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events", "refresh")
 
 #: The request most recently applied, kept so the panel can tell "saved" from
 #: "still waiting" without polling anything else.
@@ -166,6 +166,32 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
             logger.debug("kame: could not clear the events", exc_info=True)
             return False, "the event list could not be cleared — see the log"
         return True, "the event list is empty"
+
+    if action == "refresh":
+        # 1.6.0.1. Reads the environment again and rebuilds the snapshot on the
+        # spot, so a change made outside this panel shows up without waiting
+        # for the heartbeat or restarting Hermes.
+        #
+        # It exists because the honest answer to "did my edit land?" was
+        # previously "wait and see". A key pasted into Hermes' own credential
+        # screen, a KAME_ line edited in the .env by hand, a second Hermes
+        # started beside this one — each changes what this page should say,
+        # and none of them is something the page could ask about. The caller
+        # that applied this request publishes immediately afterwards, so the
+        # answer arrives in the same read as the acknowledgement.
+        #
+        # Deliberately not a re-read of config.yaml: KAME reads that once, at
+        # start-up, and pretending otherwise here would make the
+        # "pending restart" notice on the same page a lie. The environment is
+        # what this plugin can honestly re-read, and it is where the panel's
+        # own writes go.
+        changed = settings.reread_environment()
+        if changed:
+            return True, (
+                f"re-read — {', '.join(changed)} "
+                f"{'has' if len(changed) == 1 else 'have'} changed since the last look"
+            )
+        return True, "re-read — nothing outside this panel had changed"
 
     if action == "reset_all":
         failures = []

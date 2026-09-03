@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -73,13 +74,29 @@ PLUGIN_ID = "hermes-kame-api-rotation"
 #: install missing its whole ``core/`` package reported ``installed: true,
 #: reason: "active"`` for nine days; the second because two thirds of every
 #: cooldown in that period was a guess and nothing said so.
-SCHEMA = 5
+#: 6 (1.6.0.1): the document gained ``processes`` — one section per Hermes
+#: that has this plugin loaded and shares this home. Until this schema the
+#: file described exactly one process and every process wrote the whole of
+#: it, so on a machine running both the Desktop and the gateway the two
+#: overwrote each other several times a second. Measured on the owner's own
+#: install: 40 reads in 20 seconds returned 26 documents from one process and
+#: 14 from the other, one of them a whole release behind. The panel re-reads
+#: once a second and re-renders whenever the bytes change, so the Settings
+#: form rebuilt itself under the cursor — the exact fault 1.2.3's byte
+#: comparison was written to stop, defeated by there being two writers.
+SCHEMA = 6
 
 #: Floor between two writes of an *unchanged* document. A changed document is
 #: always written immediately: the whole point is that the chip moves when the
 #: pool moves. This only stops a settled pool from rewriting the same bytes on
 #: every call.
 _MIN_INTERVAL_S = 1.0
+
+#: How long a process's section survives without being rewritten before it is
+#: dropped as dead. Comfortably longer than the heartbeat that rewrites an
+#: idle process's section, so a Hermes sitting still is never mistaken for a
+#: Hermes that exited; short enough that yesterday's crash is gone today.
+_PROCESS_STALE_S = 120.0
 
 _lock = threading.Lock()
 _last_written: Optional[str] = None
@@ -144,6 +161,49 @@ def state_path() -> Optional[Path]:
     return None if directory is None else directory / "state.json"
 
 
+def role() -> str:
+    """Which Hermes this process is, in one word.
+
+    A home can be served by more than one Hermes at a time and usually is:
+    the Desktop runs ``hermes_cli.main --profile <name> serve`` while the
+    gateway that the phone app talks to runs ``hermes_cli.main gateway run``.
+    Both load this plugin, both use the same credential pool, and until 1.6.0.1
+    neither knew the other existed.
+
+    Read off ``sys.argv`` because that is where the host itself decides which
+    it is, and because the alternative — asking the plugin context — answers
+    the same for both.
+    """
+    try:
+        argv = " ".join(sys.argv).lower()
+    except Exception:  # pragma: no cover — argv is always a list of strings
+        return "hermes"
+    if " gateway" in argv or argv.endswith("gateway"):
+        return "gateway"
+    if " serve" in argv or " --profile" in argv:
+        return "desktop"
+    return "hermes"
+
+
+def profile_name() -> str:
+    """The profile this process was started with, or an empty string.
+
+    ``--profile <name>`` is on the Desktop's command line and nowhere else, so
+    this is how the panel can say *which* profile the other Hermes is serving
+    rather than only that there is one.
+    """
+    try:
+        argv = list(sys.argv)
+    except Exception:  # pragma: no cover
+        return ""
+    for index, token in enumerate(argv):
+        if token == "--profile" and index + 1 < len(argv):
+            return str(argv[index + 1])
+        if token.startswith("--profile="):
+            return token.split("=", 1)[1]
+    return ""
+
+
 def disabled_reason() -> str:
     """Empty while publishing works; otherwise why it does not.
 
@@ -151,6 +211,18 @@ def disabled_reason() -> str:
     a guess.
     """
     return _disabled_reason
+
+
+def _outside_pool() -> Dict[str, List[str]]:
+    """Per identity, the fingerprints of keys the credential pool never held.
+
+    Read off the dispatch binding, which is the only place that sees the whole
+    candidate list for a call. Empty whenever the carousel is not installed,
+    which is the honest answer rather than a claim that there are none.
+    """
+    binding = globals().get("_binding")
+    found = getattr(binding, "keys_outside_the_pool", None)
+    return found if isinstance(found, dict) else {}
 
 
 def _pool_rows() -> List[Dict[str, Any]]:
@@ -184,6 +256,18 @@ def _pool_rows() -> List[Dict[str, Any]]:
                 # come back round for ever.
                 "invalid": int(row.get("invalid", 0)),
                 "invalid_keys": list(row.get("invalid_keys") or []),
+                # 1.6.0.1. Out of rotation, which is a different sentence from
+                # benched: one asks the reader to wait, the other asks them to
+                # replace a key. The panel could only say the first.
+                "retired": int(row.get("retired", 0)),
+                "retired_keys": list(row.get("retired_keys") or []),
+                # 1.6.0.1. Keys this identity is using that the credential pool
+                # has never held. Not a fault — the carousel adds the key the
+                # agent already carries when the pool does not know it, because
+                # dropping it would narrow what the host would have sent — but
+                # a fact nothing said out loud, and one worth saying: a key
+                # nobody remembers configuring is a key nobody can fix.
+                "outside_pool": list(_outside_pool().get(identity) or []),
                 # Seconds since this pool was last asked for a key, or null if
                 # it never has been. The status bar shows what is in use and
                 # leaves out what is not.
@@ -203,10 +287,32 @@ def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     keys = sum(r["keys"] for r in rows)
     healthy = sum(r["healthy"] for r in rows)
+    # Credentials the provider rejected outright. Counted apart because
+    # ``healthy`` cannot tell the truth about them: a rejected key is benched
+    # for an hour and no longer benched after it, so it goes back to counting
+    # as ready while the banner above it says, correctly, that waiting will
+    # not repair one. Two numbers on one screen contradicting each other, and
+    # the one in large type was the wrong one.
+    #
+    # The *behaviour* is deliberate and stays: since 1.4.0 KAME does not retire
+    # a key on a 401, because doing that quarantined twenty-one healthy keys on
+    # transient auth failures. It offers them again. It should not call them
+    # ready while it does.
+    rejected = sum(r.get("invalid", 0) for r in rows)
+    retired = sum(r.get("retired", 0) for r in rows)
     waiting = [r["soonest_s"] for r in rows if r["soonest_s"] is not None]
     return {
         "keys": keys,
         "healthy": healthy,
+        # What is actually available to serve a call, which is the number the
+        # header shows. Floored at zero: a pool where every key was rejected
+        # reports none ready, never a negative.
+        "ready": max(0, healthy - rejected),
+        "rejected": rejected,
+        # Of the rejected, the ones that have stopped being offered entirely.
+        # Never larger than ``rejected``, and the number the header uses to
+        # say "replace" rather than "waiting".
+        "retired": retired,
         "resting": keys - healthy,
         # The soonest across every pool that has nothing usable. A pool with a
         # healthy key reports null, so this is null whenever any lane can still
@@ -243,6 +349,15 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # "your previous tool call was too large — do NOT retry". A number
         # climbing here is a number *not* climbing above it.
         "tool_call_retries": int(getattr(binding, "tool_call_retries", 0) or 0),
+        # 1.6.0.0, and the only counter here that comes off the *pool*
+        # binding rather than the dispatch one. Benches written against a
+        # credential whose key is not the one the request carried. Zero is the
+        # only healthy value: anything else says the pool's pointer and the
+        # wire disagree about which credential is in use, which is the shape
+        # of every attribution bug this release fixed.
+        "blamed_another_key": int(
+            getattr(globals().get("_pool_binding"), "blamed_another_key", 0) or 0
+        ),
     }
     return {
         "schema": SCHEMA,
@@ -252,6 +367,14 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # a Hermes that died mid-turn leaves a snapshot that looks live.
         "updated_at": time.time(),
         "pid": os.getpid(),
+        # 1.6.0.1. Which Hermes wrote this, and for which profile. The
+        # top-level fields still describe one process — whichever wrote last —
+        # because an older panel reads them and must keep working. What is new
+        # is that the panel can now tell whether the document it is looking at
+        # came from the Hermes it is part of, or from the gateway serving the
+        # phone.
+        "role": role(),
+        "profile": profile_name(),
         "installed": binding is not None,
         "reason": str(getattr(binding, "reason", "not installed")),
         # 1.4.0. `installed` and `reason` describe *registration*, and for nine
@@ -497,6 +620,117 @@ def _gemini_fix_state() -> Dict[str, Any]:
         return {"applied": False, "reason": "unavailable", "repaired": 0}
 
 
+def neighbours(now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """The other live Hermes processes writing this file, newest first.
+
+    The panel works this out for itself, from the document it already read.
+    ``/kame doctor`` has no document — it builds its own section in memory —
+    so without this it would have said nothing about the neighbours at all,
+    which is the single most useful thing on the panel's own Overview: a
+    gateway on last month's build is why a fix that is definitely installed is
+    definitely not working on half the traffic.
+
+    Never raises. A doctor that cannot read the file reports one process,
+    which is what it can see.
+    """
+    now = time.time() if now is None else now
+    path = state_path()
+    if path is None:
+        return []
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(document, dict):
+        return []
+    sections = document.get("processes")
+    if not isinstance(sections, dict):
+        return []
+    mine = str(os.getpid())
+    out: List[Dict[str, Any]] = []
+    for pid, section in sections.items():
+        if str(pid) == mine or not isinstance(section, dict):
+            continue
+        try:
+            seen_at = float(section.get("updated_at"))
+        except (TypeError, ValueError):
+            continue
+        if now - seen_at > _PROCESS_STALE_S:
+            continue
+        out.append(section)
+    out.sort(key=lambda section: section.get("updated_at", 0.0), reverse=True)
+    return out
+
+
+def _merged(path: Path, mine: Dict[str, Any]) -> Dict[str, Any]:
+    """The file as it should stand once this process has had its say.
+
+    One section per Hermes, each holding that process's whole view. Nothing is
+    shared and nothing is duplicated: what a reader wants is *one* process's
+    picture — its pools, its events, the settings it resolved — and which one
+    depends on who is asking. The Desktop panel wants the Desktop's; a
+    diagnostic wants all of them.
+
+    The alternative, kept until 1.6.0.1, was one document per file with every
+    process writing all of it. That is correct on a machine running one
+    Hermes and silently wrong on a machine running two, which is the ordinary
+    shape here: the Desktop serves the app and the gateway serves the phone,
+    both load this plugin, both use the same keys.
+
+    Read-modify-write, which is neither free nor atomic across processes.
+    Both are acceptable and neither is an accident:
+
+    * The read is a few kilobytes, on a path already throttled to one write a
+      second and only when something changed.
+    * A lost update costs one section one heartbeat, because the process it
+      describes rewrites its own on the next one. What it buys is that no
+      process can erase another's news — which is what was happening on this
+      machine several times a second.
+
+    No compatibility copy is left at the top level. A panel older than this
+    schema refuses the document by its number and says so in a sentence, which
+    is a better failure than half-rendering somebody else's process.
+    """
+    now = time.time()
+    sections: Dict[str, Any] = {}
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict):
+        found = existing.get("processes")
+        if not isinstance(found, dict):
+            # Written by a KAME older than this schema. The document *is* one
+            # process's section — that is exactly what it was — so it is kept
+            # as one rather than thrown away, and it ages out like any other.
+            found = {str(existing.get("pid") or "?"): existing}
+        for pid, section in found.items():
+            if not isinstance(section, dict):
+                continue
+            if str(pid) == str(mine.get("pid")):
+                # Ours is written below. A stale copy of ourselves would be
+                # worse than none.
+                continue
+            try:
+                seen_at = float(section.get("updated_at"))
+            except (TypeError, ValueError):
+                continue
+            if now - seen_at > _PROCESS_STALE_S:
+                # That Hermes is gone. Keeping it would leave a dead process
+                # on the panel for ever, and the panel would be right to
+                # believe the file.
+                continue
+            sections[str(pid)] = section
+    sections[str(mine.get("pid"))] = mine
+    return {
+        "schema": SCHEMA,
+        # The freshest thing in the file, so a reader can age the whole
+        # document without walking it.
+        "updated_at": mine.get("updated_at", now),
+        "processes": sections,
+    }
+
+
 def publish(
     binding: Any = None,
     *,
@@ -520,7 +754,7 @@ def publish(
         _disabled_reason = "this Hermes exposes no home directory"
         return False
     try:
-        document = json.dumps(snapshot(binding, activity), sort_keys=True)
+        mine = snapshot(binding, activity)
     except Exception as exc:
         _disabled_reason = f"could not build the snapshot: {type(exc).__name__}"
         logger.debug("kame: could not build the snapshot", exc_info=True)
@@ -529,9 +763,23 @@ def publish(
     now = time.monotonic()
     with _lock:
         # `updated_at` changes on every build, so comparing whole documents
-        # would never match. Compare everything else.
-        comparable = _without_clock(document)
+        # would never match. Compare everything else — and compare *before*
+        # the other processes' sections are merged in, or a busy gateway would
+        # make this Hermes rewrite the file on every heartbeat to record
+        # somebody else's news.
+        try:
+            comparable = _without_clock(json.dumps(mine, sort_keys=True))
+        except Exception as exc:
+            _disabled_reason = f"could not build the snapshot: {type(exc).__name__}"
+            logger.debug("kame: could not serialise the snapshot", exc_info=True)
+            return False
         if not force and comparable == _last_written and (now - _last_write_at) < _MIN_INTERVAL_S:
+            return False
+        try:
+            document = json.dumps(_merged(path, mine), sort_keys=True)
+        except Exception as exc:
+            _disabled_reason = f"could not merge the snapshot: {type(exc).__name__}"
+            logger.debug("kame: could not merge the snapshot", exc_info=True)
             return False
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

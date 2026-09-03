@@ -388,6 +388,91 @@ def main() -> int:
                   leak_row.contradicted, False)
         runtime.forget_bench_model()
         runtime.forget_judgement()
+
+        print("\n[10d] a bench is checked against the key that actually went out")
+        # The carousel fingerprints the key it puts on the agent; the pool
+        # fingerprints the key it is about to bench. Every other count in the
+        # plugin names the credential the *pool* was pointing at, which is a
+        # different claim, and this release fixed two bugs that lived in the
+        # gap between them. Driven here against the real pool: same key, then
+        # a different one.
+        carousel_mod = importlib.import_module("kame_sandbox.core.carousel")
+        multikey_mod = importlib.import_module("kame_sandbox.core.multikey")
+        runtime.note_call("gemini", MAIN)
+
+        def fresh_pool(token):
+            """A pool of one, never reused.
+
+            ``_remember`` returns the moment the entry is not newly exhausted,
+            so a second bench on the same key writes nothing — and three cases
+            driven through one pool would leave two of them passing because
+            they never ran.
+            """
+            return cp.CredentialPool(
+                "gemini",
+                [
+                    cp.PooledCredential(
+                        provider="gemini",
+                        id=uuid.uuid4().hex[:6],
+                        label="blame-key",
+                        auth_type=cp.AUTH_TYPE_API_KEY,
+                        priority=0,
+                        source="manual",
+                        access_token=token,
+                    )
+                ],
+            )
+
+        before = binding.blamed_another_key
+        runtime.forget_sent()
+        quiet_pool = fresh_pool("AIza-sandbox-fake-blame-1")
+        quiet_pool.mark_exhausted_and_rotate(status_code=429, error_context={})
+        check(
+            "nothing recorded means nothing claimed",
+            binding.blamed_another_key,
+            before,
+        )
+        check(
+            "and the bench was really written, so the case ran",
+            quiet_pool.entries()[0].last_status,
+            cp.STATUS_EXHAUSTED,
+        )
+
+        # The key that actually went out is the one being benched.
+        same_pool = fresh_pool("AIza-sandbox-fake-blame-2")
+        same_entry = same_pool.entries()[0]
+        runtime.note_sent(
+            "gemini",
+            same_entry.id,
+            carousel_mod.fingerprint(multikey_mod.key_on(same_entry)),
+            now=binding._clock(),
+        )
+        same_pool.mark_exhausted_and_rotate(status_code=429, error_context={})
+        check("the right key benched raises nothing", binding.blamed_another_key, before)
+
+        # And now a bench against a key the request never carried.
+        wrong_pool = fresh_pool("AIza-sandbox-fake-blame-3")
+        runtime.note_sent(
+            "gemini",
+            "some-other-row",
+            carousel_mod.fingerprint("AIza-sandbox-a-different-key"),
+            now=binding._clock(),
+        )
+        wrong_pool.mark_exhausted_and_rotate(status_code=429, error_context={})
+        check("the wrong key benched is counted", binding.blamed_another_key, before + 1)
+
+        # Counted, never acted on: writing the cooldown is the host's job, and
+        # a plugin that overruled it on a fingerprint would be spending
+        # somebody else's quota on a guess.
+        check(
+            "and the bench itself is untouched",
+            wrong_pool.entries()[0].last_status,
+            cp.STATUS_EXHAUSTED,
+        )
+        runtime.forget_sent()
+
+        runtime.forget_bench_model()
+        runtime.forget_judgement()
         aux_bound.uninstall()
 
         print("\n[11] the journal recorded the real refusals")

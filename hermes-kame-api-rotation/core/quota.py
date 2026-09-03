@@ -69,6 +69,65 @@ DEFAULT_PER_DAY_BENCH_SECONDS = 60 * 60.0
 # than treated as permanently dead. Matches Agent Zero's _KAME_DAILY_COOLDOWN_S = 3600.
 DEFAULT_ACCOUNT_BENCH_SECONDS = 60 * 60.0
 
+# A credential the provider *refused* — a 401, or a key it named as revoked.
+# Not a clock, which is why it never used to have a number of its own: it
+# borrowed the daily hour, on the reasoning that waiting cannot repair a
+# rejected key so the exact wait hardly matters.
+#
+# It matters, because the two ways of being wrong are not the same size.
+# Wrong in the long direction — a key refused during a provider incident, or
+# a 401 that was really a transient edge failure — costs a healthy credential
+# an hour of the pool's capacity. Wrong in the short direction costs one
+# request that fails in milliseconds and never touches the quota, because a
+# 401 is refused before it is metered.
+#
+# **The second cut is the instructive one.** 1.6.0.1 first put this at five
+# minutes, which was a number invented here. Twenty is the number the ladder
+# in ``carousel._escalate`` applies to this kind anyway, and measuring the two
+# side by side showed the invented one was doing no work:
+#
+#     base  20s ->  20  40  80 160 320 640 1280 2560 3600 ...
+#     base 300s -> 300 300 300 300 320 640 1280 2560 3600 ...
+#
+# The ladder's own floor governs either way and both reach the hourly re-probe
+# at the same point. All the larger base bought was flattening the first four
+# strikes at five minutes — precisely the window in which a re-check is most
+# likely to find a transient refusal already cleared.
+#
+# What makes a short wait safe is not the wait. It is two things in
+# ``carousel``: refused keys are offered *last*, and a key refused
+# ``REFUSALS_BEFORE_RETIRING`` times in a row — or once, if the provider used
+# the words — stops being offered at all until something changes.
+#
+# Set to the ladder's own base rather than to a second constant beside it. A
+# number that differed from ``DAILY_BASE_S`` would be a claim that a refusal
+# needs a different opening rest, and that claim was measured and is false.
+#
+# This does **not** govern "this key may not use this model" — that is
+# ``DEFAULT_DENIAL_BENCH_SECONDS`` below, which happens to open on the same
+# step for its own reasons.
+DEFAULT_REJECTED_BENCH_SECONDS = 20.0
+
+# A 403 that says *this key may not use this model*: a suspended project, an
+# API never enabled, a model outside the tier the key pays for.
+#
+# 1.6.0.1 found two of these, disagreeing. ``classify`` benched a denial for
+# twenty seconds and ``carousel`` for an hour, so the same refusal cost the
+# same key two different amounts depending on which of the two classifiers
+# happened to answer first. Two constants describing one fact drift, and the
+# one nobody remembers is the one that goes stale, so there is now one.
+#
+# Twenty seconds is the survivor, and the hour is not lost: ``denied`` is on
+# the doubling ladder in ``Carousel._escalate``, so a refusal that really is
+# permanent reaches an hour on its own — 20, 40, 80 ... 3600 — while a plan
+# somebody upgrades comes back in the seconds it actually took, rather than
+# in the hour a constant guessed. What makes the short opening cheap is the
+# same pair that makes it cheap for a bare 401: ``denied`` is in
+# ``REJECTED_KINDS``, so the key is offered last, and the carousel's health
+# is per ``provider:model``, so the key goes on working everywhere else in
+# the same second.
+DEFAULT_DENIAL_BENCH_SECONDS = 20.0
+
 
 class QuotaScope:
     """How far a refusal reaches: one model, or every model on the key.

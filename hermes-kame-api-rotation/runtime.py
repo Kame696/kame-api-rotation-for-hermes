@@ -181,6 +181,65 @@ def forget_bench_model() -> None:
     _BENCH_MODEL.set(("", "", 0.0))
 
 
+# ── which key actually went out ───────────────────────────────────────────
+# Every count in this plugin is about a credential, and every one of them
+# names the credential the *pool* was pointing at. That is not the same fact
+# as the key the request carried, and the difference is the shape of two bugs
+# this release fixed: a parent row holding several keys handed out as one, and
+# a bench filed against a model that was not the one spending.
+#
+# So the key is fingerprinted at the moment it is put on the agent, and the
+# bench that follows can be asked whether it is blaming the same one. Never
+# the key — ``core.carousel.fingerprint`` is a truncated SHA-256 and not even
+# a prefix of the original.
+
+_SENT: ContextVar[Tuple[str, str, str, float]] = ContextVar(
+    "kame_sent", default=("", "", "", 0.0)
+)
+
+# Longer than a verdict's, and for the opposite reason. A verdict must not
+# outlive the bench it belongs to, which is microseconds away. This is
+# refreshed on every attempt of every call, so the only way it goes stale is
+# a whole call going out and nothing being benched for ten minutes — by which
+# time the next call has overwritten it anyway. Too short a life here would
+# silently blank the instrument on exactly the slow calls worth watching.
+SENT_TTL_SECONDS = 600.0
+
+
+def note_sent(
+    provider: object, credential_id: object, key_fingerprint: object, *, now: float
+) -> None:
+    """Record which credential, and which key, is going on the wire now."""
+    _SENT.set((
+        _norm(provider),
+        str(credential_id or "").strip(),
+        str(key_fingerprint or ""),
+        float(now),
+    ))
+
+
+def sent_for(pool_provider: object, *, now: float) -> Tuple[str, str]:
+    """``(credential_id, key fingerprint)`` for the call in flight, or two blanks.
+
+    Blank means "nothing was recorded", which is silence and not a
+    disagreement. Every reader has to treat it that way, or a provider whose
+    calls never reach the carousel would look like a permanent mismatch.
+    """
+    provider, credential_id, key_fingerprint, at = _SENT.get()
+    if not key_fingerprint:
+        return "", ""
+    if now - at > SENT_TTL_SECONDS:
+        _SENT.set(("", "", "", 0.0))
+        return "", ""
+    if not providers_match(pool_provider, provider):
+        return "", ""
+    return credential_id, key_fingerprint
+
+
+def forget_sent() -> None:
+    _SENT.set(("", "", "", 0.0))
+
+
 # ── the verdict that is about to become a bench ───────────────────────────
 # KAME classifies a failure roughly fifty lines before the pool writes the
 # cooldown that classification produced. The classifier knows *why* — which

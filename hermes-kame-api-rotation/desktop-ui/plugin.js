@@ -74,8 +74,14 @@ const ROUTE = '/kame'
 const PRODUCT = 'KAME API Rotation'
 
 /** Schema of `state.json` this UI understands. A document from a newer Python
- *  half is refused with a readable reason rather than half-rendered. */
-const SCHEMA = 5
+ *  half is refused with a readable reason rather than half-rendered.
+ *
+ *  6 (1.6.0.1): the document carries a `processes` section per Hermes sharing
+ *  this home. A machine running the Desktop and the gateway has two, they both
+ *  load this plugin, and until this schema they overwrote each other's whole
+ *  document several times a second — which defeated the byte comparison below
+ *  and rebuilt the Settings form under the cursor once a second. */
+const SCHEMA = 6
 
 /** Schema of the `control.json` this UI writes. Read by `control.py`, which
  *  refuses a number it does not know rather than guessing. */
@@ -210,9 +216,33 @@ function countdown(value, snap, now) {
   return Math.max(0, value - ageSeconds(snap, now))
 }
 
-/** How many keys the whole install has had refused as credentials. */
+/**
+ * How many keys the whole install has had refused as credentials.
+ *
+ * Mirrors `carousel.REFUSALS_BEFORE_RETIRING`, so the banner can say how many
+ * more refusals a key has before it leaves rotation. Checked by a test rather
+ * than trusted, because a number repeated in two languages drifts.
+ */
+const REFUSALS_BEFORE_RETIRING = 3
+
 function invalidCount(snap) {
   return (snap?.pools ?? []).reduce((total, pool) => total + (pool.invalid ?? 0), 0)
+}
+
+/** Of those, the ones KAME has stopped offering altogether. */
+function retiredCount(snap) {
+  return (snap?.pools ?? []).reduce((total, pool) => total + (pool.retired ?? 0), 0)
+}
+
+/**
+ * "1 key has" / "2 keys have".
+ *
+ * The rest of this file writes `key(s)`, which is fine in a tally line nobody
+ * reads twice. These two banners are the most-read sentences on the panel and
+ * are about somebody's own broken credential, so they get written properly.
+ */
+function count(n, one, many, verbOne = '', verbMany = '') {
+  return `${n} ${n === 1 ? one : many}${verbOne ? ' ' + (n === 1 ? verbOne : verbMany) : ''}`
 }
 
 function toneFor(snap, now) {
@@ -406,20 +436,16 @@ async function readSnapshot() {
     return
   }
 
-  if (text === lastText && $snapshot.get()) {
-    // Byte-identical to what is already on screen. Nothing is published, so
-    // nothing re-renders — but the pending request is still given its chance to
-    // time out, because a backend that has stopped writing is exactly the case
-    // where the file never changes and "Saving…" would otherwise stay for ever.
-    settle($snapshot.get())
-
-    return
-  }
-
-  let snap
+  // Deliberately *not* an early return on `text === lastText` any more. Since
+  // schema 6 the file holds a section per Hermes sharing this home, and on a
+  // machine running the Desktop and the gateway the bytes change every time
+  // either of them writes — so comparing the file would re-render this panel
+  // once a second over news that belongs to a different process. The
+  // comparison moved below, onto the one section this panel actually shows.
+  let document
 
   try {
-    snap = JSON.parse(text)
+    document = JSON.parse(text)
   } catch {
     // A torn read should be impossible (the writer is atomic), so this is a
     // real corruption — but it is also self-healing, so it stays quiet and
@@ -435,10 +461,10 @@ async function readSnapshot() {
     return
   }
 
-  if (snap?.schema !== SCHEMA) {
+  if (document?.schema !== SCHEMA) {
     $snapshot.set(null)
     $problem.set(
-      `The installed KAME writes snapshot schema ${snap?.schema ?? '?'}; this panel reads ${SCHEMA}. ` +
+      `The installed KAME writes snapshot schema ${document?.schema ?? '?'}; this panel reads ${SCHEMA}. ` +
         'The two halves ship together, so restarting Hermes usually settles it.'
     )
 
@@ -451,10 +477,74 @@ async function readSnapshot() {
     return
   }
 
-  lastText = text
-  $snapshot.set(snap)
+  const snap = ownSection(document)
+
+  if (!snap) {
+    $snapshot.set(null)
+    $problem.set('The snapshot names no Hermes process. Waiting for the next write.')
+    settle($snapshot.get())
+
+    return
+  }
+
+  // Everything below this panel renders comes from one process's section, so
+  // that is what is compared. Byte-identical to what is already on screen
+  // means nothing is published and nothing re-renders — but a pending request
+  // is still given its chance to time out, because a backend that has stopped
+  // writing is exactly the case where the section never changes and "Saving…"
+  // would otherwise stay for ever.
+  const mineText = JSON.stringify(snap)
+
+  if (mineText === lastText && $snapshot.get()) {
+    settle($snapshot.get())
+
+    return
+  }
+
+  lastText = mineText
+  $snapshot.set({ ...snap, neighbours: neighboursOf(document, snap) })
   $problem.set('')
   settle(snap)
+}
+
+/** The section this panel is a part of.
+ *
+ *  This code runs inside the Desktop, so the Desktop's own backend is the one
+ *  whose pools, events and settings belong on this screen — never the
+ *  gateway's, which serves the phone and has its own idea of what is in
+ *  flight. At most one section can be the Desktop's: a second Desktop would be
+ *  a second profile, and a profile has its own home and its own file.
+ *
+ *  Falling back to the freshest section rather than to nothing, because a
+ *  Hermes started in a way this cannot name is still a Hermes, and showing its
+ *  reading beats showing an empty page. */
+function ownSection(document) {
+  const sections = Object.values(document?.processes ?? {}).filter(
+    section => section && typeof section === 'object'
+  )
+
+  if (!sections.length) {
+    return null
+  }
+
+  return (
+    sections.find(section => section.role === 'desktop') ??
+    sections.reduce((best, section) =>
+      (section.updated_at ?? 0) > (best.updated_at ?? 0) ? section : best
+    )
+  )
+}
+
+/** The other Hermes processes using these same keys, newest first.
+ *
+ *  Not a diagnostic curiosity: they share the credential pool. A key the
+ *  gateway is resting is a key this Hermes cannot use either, and a gateway
+ *  running last month's build is why a fix that is definitely installed is
+ *  definitely not working on half the traffic. */
+function neighboursOf(document, mine) {
+  return Object.values(document?.processes ?? {})
+    .filter(section => section && typeof section === 'object' && section.pid !== mine.pid)
+    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
 }
 
 /** Close the loop on a request once the backend has reported what it did. */
@@ -639,7 +729,12 @@ function KameChip() {
   } else if (!totals.keys) {
     lines.push(`${PRODUCT} is running. No pooled key has been used yet.`)
   } else {
-    lines.push(`${totals.healthy} of ${totals.keys} keys ready, across every pool`)
+    lines.push(
+      totals.rejected
+        ? `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready, across every pool ` +
+            `(${totals.rejected} the provider rejected — replace them, waiting will not help)`
+        : `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready, across every pool`
+    )
 
     for (const pool of snap.pools ?? []) {
       const eta = countdown(pool.soonest_s, snap, now)
@@ -769,7 +864,12 @@ function Note(text, tone = 'plain', key = undefined) {
  *  countdown and not on the page that happens to contain one. */
 function PoolRow({ pool, snap }) {
   const now = useValue($now)
-  const ratio = pool.keys ? pool.healthy / pool.keys : 0
+  // A credential the provider rejected is not benched after its hour is up, so
+  // it counts as healthy again — while the line at the bottom of this very row
+  // says it has to be replaced. The bar and the count take the rejected ones
+  // out; the row still names them, which is the part that is actionable.
+  const ready = Math.max(0, pool.healthy - (pool.invalid ?? 0))
+  const ratio = pool.keys ? ready / pool.keys : 0
   const eta = countdown(pool.soonest_s, snap, now)
 
   return h(
@@ -782,7 +882,7 @@ function PoolRow({ pool, snap }) {
       h(
         'span',
         { className: 'shrink-0 text-xs tabular-nums text-(--ui-text-tertiary)', key: 'ready' },
-        `${pool.healthy}/${pool.keys} ready`,
+        `${ready}/${pool.keys} ready`,
         // Comes and goes with the cooldown, so it needs a key of its own.
         eta !== null &&
           h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'eta' }, `next in ${duration(eta)}`)
@@ -806,12 +906,44 @@ function PoolRow({ pool, snap }) {
         h('span', { key: 'counts' }, `${pool.successes} answered · ${pool.failures} refused`),
         pool.kinds?.length ? h('span', { key: 'kinds' }, pool.kinds.join(', ')) : null
       ),
-    pool.invalid
+    // Two sentences, because they ask the reader for different things. A key
+    // that is merely benched will be tried again on its own; a key that has
+    // left rotation will not, until it is replaced. Saying "refused, retry in
+    // 20s" about the second one is what had the owner watching the same error
+    // come round for an hour.
+    pool.retired
       ? h(
           'p',
-          { className: 'mt-1 text-[0.6875rem] text-destructive', key: 'invalid' },
-          `${pool.invalid} key(s) refused as credentials — replace ${pool.invalid === 1 ? 'it' : 'them'}: ` +
-            `${(pool.invalid_keys ?? []).join(', ')}`
+          { className: 'mt-1 text-[0.6875rem] text-destructive', key: 'retired' },
+          `${pool.retired} key(s) are out of rotation — the provider refused ${
+            pool.retired === 1 ? 'it' : 'them'
+          } as ${pool.retired === 1 ? 'a credential' : 'credentials'}. ` +
+            `Replace ${pool.retired === 1 ? 'it' : 'them'} in Settings and ${
+              pool.retired === 1 ? 'it comes' : 'they come'
+            } back on its own: ${(pool.retired_keys ?? []).join(', ')}`
+        )
+      : null,
+    pool.invalid > (pool.retired ?? 0)
+      ? h(
+          'p',
+          { className: 'mt-1 text-[0.6875rem] text-amber-500', key: 'invalid' },
+          `${pool.invalid - (pool.retired ?? 0)} more just refused — still being tried, ` +
+            'because one refusal can be a token that was a second from refreshing'
+        )
+      : null,
+    // Not a fault, and deliberately not styled as one. The carousel uses the
+    // key the agent already carries when the credential pool does not know it,
+    // because dropping it would narrow what Hermes would have sent. Saying so
+    // is the point: a key nobody remembers configuring is a key nobody can
+    // fix, and on this machine it was the only NVIDIA key that authenticated
+    // while the two in the pool were being refused.
+    pool.outside_pool?.length
+      ? h(
+          'p',
+          { className: 'mt-1 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'outside' },
+          `${pool.outside_pool.length} key(s) here are not in the credential pool — ` +
+            `Hermes resolved ${pool.outside_pool.length === 1 ? 'it' : 'them'} from this model's own ` +
+            `settings: ${pool.outside_pool.join(', ')}`
         )
       : null
   )
@@ -904,18 +1036,61 @@ function Source({ setting }) {
   )
 }
 
+/**
+ * One setting, as a row.
+ *
+ * 1.6.0.1 halved its height. Thirteen settings each carrying a title, a
+ * paragraph, two monospace names and a chip made a page that had to be
+ * scrolled past to reach the buttons at the bottom, and the density was doing
+ * nothing for anybody: the paragraph matters the first time and never again,
+ * and the names matter only to somebody typing `/kame set`.
+ *
+ * So the paragraph is clamped to two lines with the whole of it on hover, the
+ * names sit on one muted line beside the source chip, and a row whose value is
+ * not the default is marked in the margin — which is the one thing a person
+ * scanning this page is actually looking for.
+ */
 function SettingShell({ setting, control, error }) {
+  const changed = setting.source !== 'default'
+
   return h(
     'div',
-    { className: 'border-b border-(--ui-stroke-tertiary)/60 py-3 last:border-b-0', key: setting.key },
+    {
+      className: cn(
+        'border-l-2 py-2 pl-3 last:border-b-0',
+        changed ? 'border-(--ui-stroke-secondary)' : 'border-transparent'
+      ),
+      key: setting.key
+    },
     h(
       'div',
       { className: 'flex items-start justify-between gap-4' },
       h(
         'div',
         { className: 'min-w-0' },
-        h('p', { className: 'text-sm text-(--ui-text-primary)' }, setting.title),
-        h('p', { className: 'mt-0.5 text-xs leading-relaxed text-(--ui-text-tertiary)' }, setting.help),
+        h(
+          'p',
+          { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)' },
+          setting.title,
+          changed
+            ? h(
+                'span',
+                {
+                  className: 'rounded bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.625rem] text-(--ui-text-tertiary)',
+                  key: 'changed'
+                },
+                'changed'
+              )
+            : null
+        ),
+        h(
+          'p',
+          {
+            className: 'mt-0.5 line-clamp-2 text-xs leading-relaxed text-(--ui-text-tertiary)',
+            title: setting.help
+          },
+          setting.help
+        ),
         h(
           'p',
           { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)' },
@@ -1145,7 +1320,17 @@ function settingCards({ busy, groups, settings }) {
     const rows = settings.filter(setting => setting.group === group.id)
     if (!rows.length) continue
     rows.forEach(setting => claimed.add(setting.key))
-    cards.push(Card({ key: group.id, note: group.note, title: group.title }, rows.map(control)))
+    const changed = rows.filter(setting => setting.source !== 'default').length
+    cards.push(
+      Card(
+        {
+          key: group.id,
+          note: group.note,
+          title: changed ? `${group.title} · ${changed} changed` : group.title
+        },
+        rows.map(control)
+      )
+    )
   }
 
   const rest = settings.filter(setting => !claimed.has(setting.key))
@@ -1166,6 +1351,7 @@ function SettingsPage({ snap }) {
   const [confirming, setConfirming] = useState('')
 
   const settings = snap.settings ?? []
+  const changedCount = settings.filter(setting => setting.source !== 'default').length
   const busy = Boolean(pending)
   const writable = Boolean(window.hermesDesktop?.writeTextFile)
   const stale = snap.settings_pending_restart ?? []
@@ -1229,25 +1415,37 @@ function SettingsPage({ snap }) {
 
     pending && h('p', { className: 'text-xs text-(--ui-text-quaternary)', key: 'saving' }, 'Saving…'),
 
-    h(
-      'p',
-      { className: 'text-xs text-(--ui-text-quaternary)', key: 'preamble' },
-      'KAME works with none of these touched. A change takes effect on the next call, in every conversation this ' +
-        "Hermes is serving, and is written to Hermes' own .env so it survives a restart. Only KAME_ lines are " +
-        'touched; the rest of that file is left exactly as it is.'
-    ),
-
-    ...settingCards({ busy, groups: snap.setting_groups ?? [], settings }),
-
+    // The toolbar sits at the top from 1.6.0.1. It used to be a card at the
+    // bottom of thirteen settings, which put "Reset to defaults" and — worse —
+    // the only way to re-read the environment behind a full page of scrolling.
     Card(
       {
-        key: 'maintenance',
-        note: 'Neither of these can reach a key. KAME never reads, writes or deletes a credential.',
-        title: 'Maintenance'
+        key: 'toolbar',
+        note:
+          'KAME works with none of these touched. A change takes effect on the next call, in every ' +
+          "conversation this Hermes is serving, and is written to Hermes' own .env so it survives a " +
+          'restart — only KAME_ lines, the rest of that file is left exactly as it is. Nothing on this ' +
+          'page can reach a key: KAME never reads, writes or deletes a credential.',
+        title: changedCount
+          ? `Settings · ${changedCount} of ${settings.length} changed from default`
+          : `Settings · all ${settings.length} at their defaults`
       },
       h(
         'div',
         { className: 'flex flex-wrap gap-2' },
+        h(
+          Tip,
+          {
+            label:
+              "Reads Hermes' .env again and rebuilds this page on the spot. Use it after editing that " +
+              'file by hand, or after adding a key somewhere else, instead of restarting.'
+          },
+          h(
+            Button,
+            { disabled: busy || !writable, onClick: () => void request('refresh'), size: 'sm', variant: 'outline' },
+            'Refresh'
+          )
+        ),
         h(
           Tip,
           { label: 'Removes every KAME_ line from the .env and forgets the environment value, so every setting falls back to its built-in default.' },
@@ -1265,6 +1463,8 @@ function SettingsPage({ snap }) {
         )
       )
     ),
+
+    ...settingCards({ busy, groups: snap.setting_groups ?? [], settings }),
 
     h(ConfirmDialog, {
       confirmLabel: 'Reset everything',
@@ -1297,15 +1497,105 @@ function SettingsPage({ snap }) {
 
 /** How each kind of event is said, and how loudly. */
 const EVENT_LABELS = {
+  denied_model: ['Not this model', 'warn'],
   invalid_key: ['Invalid key', 'bad'],
   quarantine: ['Quarantined', 'bad'],
-  recovery: ['Recovered', 'good'],
-  rotation: ['Rotated', 'plain'],
+  recovery: ['Answered', 'good'],
+  rotation: ['Rested', 'plain'],
   stitch: ['Continued', 'good'],
   storm: ['Outage', 'warn'],
   stream_drop: ['Answer cut', 'warn'],
-  surfaced: ['Surfaced', 'bad'],
-  wait: ['Waited', 'warn']
+  surfaced: ['Handed over', 'bad'],
+  switch: ['Took over', 'good'],
+  wait: ['Waiting', 'warn']
+}
+
+/**
+ * What each kind means, in a sentence, for somebody who did not write this.
+ *
+ * The tab used to be a list of nine words with no glossary anywhere on the
+ * screen, which is a readout for the person who built it. These render as the
+ * row's tooltip and as the legend under the filters.
+ */
+const EVENT_MEANING = {
+  denied_model: 'The provider refused this key for THIS model only — a plan that does not include it, or an API not switched on. The key is fine everywhere else, and replacing it would change nothing.',
+  invalid_key: 'The provider said this is not a valid credential. Replace it — waiting will not repair one.',
+  quarantine: 'This key was rested for a minute or more before it will be offered again.',
+  recovery: 'A key answered after KAME had already rotated at least once. The rotation worked.',
+  rotation: 'This key was rested briefly and the next call went somewhere else.',
+  stitch: 'An answer that was cut short was continued on another key and joined back up.',
+  storm: 'A lot of keys refused at once, which is usually the provider rather than your keys.',
+  stream_drop: 'The provider stopped in the middle of an answer.',
+  surfaced: 'KAME ran out of things to try, so the error was handed to you rather than hidden.',
+  switch: 'KAME moved the call to this key.',
+  wait: 'Every key was resting, so KAME waited instead of spending a request it knew would be refused.'
+}
+
+/**
+ * The classifier's word for a refusal, in the reader's language.
+ *
+ * `reason` is written by `core.classify`, whose vocabulary is precise and
+ * internal — `per_minute`, `insufficient_quota`, `auth_permanent`. Printing it
+ * raw made the busiest column on the page the one nobody outside this codebase
+ * can read. Anything not in here falls through unchanged, so a reason a future
+ * release invents is still shown rather than swallowed.
+ */
+const REASON_WORDS = {
+  auth: 'the provider refused this credential',
+  auth_permanent: 'the provider says this is not a key',
+  billing: 'the account is out of credit',
+  daily: "today's quota is spent",
+  denied: 'this key may not use this model',
+  host_breaker: 'Hermes stopped the call itself',
+  insufficient_quota: 'the account is out of credit',
+  other: 'an error nothing recognised',
+  per_minute: 'a per-minute rate limit',
+  rate_limit: 'a rate limit',
+  refused: 'the provider refused the call',
+  server: 'the provider had a server error',
+  timeout: 'the provider did not answer in time'
+}
+
+/**
+ * The kinds that are KAME working, rather than a provider failing.
+ *
+ * Mirrors `core.events.GOOD_KINDS`, and the mirror is checked by a test. The
+ * split is the whole point of the 1.6.0.1 tab: until this release the buffer
+ * only ever recorded failures, so a rotation engine doing its job produced a
+ * screen that read like a fault report.
+ */
+const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait'])
+
+/** The three views. `id` is what the filter chip stores. */
+const EVENT_VIEWS = [
+  ['all', 'Everything', () => true],
+  ['did', 'What KAME did', event => GOOD_KINDS.has(event.kind)],
+  ['wrong', 'What went wrong', event => !GOOD_KINDS.has(event.kind)]
+]
+
+/**
+ * `nvidia:moonshotai/kimi-k3` -> `moonshotai/kimi-k3`.
+ *
+ * The provider is already the first half of every fingerprint's story and it
+ * repeats on every row of one incident; the model is what distinguishes two
+ * pools on the same provider. The whole identity stays on the hover.
+ */
+function modelOnly(identity) {
+  const text = String(identity ?? '')
+  const at = text.indexOf(':')
+
+  return at === -1 ? text : text.slice(at + 1)
+}
+
+/** "4m ago" — the form that is actually useful on a screen that updates itself. */
+function ago(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  if (seconds < 45) return 'just now'
+  if (seconds < 90) return 'a minute ago'
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`
+
+  return `${Math.round(seconds / 86400)}d ago`
 }
 
 // Where a cooldown came from, in one word, for the column that finally makes
@@ -1326,7 +1616,7 @@ const SIZED_BY_LABELS = {
   dropped: ['guess', 'weak']
 }
 
-function EventRow({ event }) {
+function EventRow({ event, now }) {
   const [label, tone] = EVENT_LABELS[event.kind] ?? [event.kind, 'plain']
   // 1.5.0: the payload opens in an inspector, and only for a failure.
   //
@@ -1345,52 +1635,103 @@ function EventRow({ event }) {
   const when = new Date((event.at ?? 0) * 1000)
   const canInspect = Boolean(event.detail) && tone !== 'good'
   const sized = SIZED_BY_LABELS[event.sized_by] ?? null
+  // Relative, because this list redraws itself once a second and "4m ago" is
+  // the question a person is actually asking of it. The wall clock stays, on
+  // the hover, for the one case relative time is no use: matching a row
+  // against a log line.
+  const elapsed = (now - (event.at ?? 0) * 1000) / 1000
+  const clock = Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : ''
+  const meaning = EVENT_MEANING[event.kind] ?? ''
 
   return h(
     'div',
-    { className: 'border-b border-(--ui-stroke-tertiary)/60 py-2 last:border-b-0', key: event.seq },
+    {
+      className: cn(
+        'group flex gap-3 border-l-2 py-1.5 pl-3 transition-colors',
+        tone === 'bad'
+          ? 'border-destructive/60'
+          : tone === 'warn'
+            ? 'border-amber-500/50'
+            : tone === 'good'
+              ? 'border-emerald-500/40'
+              : 'border-(--ui-stroke-tertiary)',
+        'hover:bg-(--ui-bg-quinary)/40'
+      ),
+      key: event.seq
+    },
     h(
       'div',
       {
-        className: cn('flex items-baseline gap-3', canInspect && 'cursor-pointer'),
+        className: cn('flex min-w-0 flex-1 items-baseline gap-3', canInspect && 'cursor-pointer'),
         onClick: canInspect ? () => $inspect.set(event) : undefined,
-        title: canInspect ? 'Show what the provider actually said' : undefined,
+        title: canInspect ? `${meaning}
+
+Click to see what the provider actually said.` : meaning,
         key: 'summary'
       },
       h(
         'span',
-        { className: 'w-16 shrink-0 font-mono text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', key: 'when' },
-        Number.isFinite(when.getTime()) ? when.toLocaleTimeString() : '—'
+        {
+          className: 'w-20 shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)',
+          key: 'when',
+          title: clock
+        },
+        ago(elapsed) || clock || '—'
       ),
       h(
         'span',
         {
           className: cn(
             'w-24 shrink-0 text-xs',
-            tone === 'bad' ? 'text-destructive' : tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-secondary)'
+            tone === 'bad'
+              ? 'text-destructive'
+              : tone === 'warn'
+                ? 'text-amber-500'
+                : tone === 'good'
+                  ? 'text-emerald-500'
+                  : 'text-(--ui-text-secondary)'
           ),
           key: 'label'
         },
         label
       ),
+      // The reason leads, because it is the sentence. Until 1.6.0.1 the row
+      // opened with `provider:model` and a fingerprint — two strings that are
+      // the same on every row of an incident — and the one part that differed
+      // was fourth. Everything that identifies rather than explains is now a
+      // muted tail, right of the sentence and truncated before it.
       h(
         'span',
-        { className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)', key: 'detail' },
-        // Six of these come and go with what the provider said, so the row
-        // rebuilds its own tail on every event that carries a different set.
-        h('span', { className: 'font-mono break-all text-(--ui-text-quaternary)', key: 'identity' }, event.identity || ''),
-        event.key ? h('span', { className: 'ml-2 font-mono text-(--ui-text-quaternary)', key: 'fingerprint' }, event.key) : null,
-        event.reason ? h('span', { className: 'ml-2', key: 'reason' }, event.reason) : null,
-        event.code ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'code' }, `HTTP ${event.code}`) : null,
+        { className: 'min-w-0 flex-1 truncate text-xs text-(--ui-text-secondary)', key: 'reason' },
+        REASON_WORDS[event.reason] ?? event.reason ?? EVENT_LABELS[event.kind]?.[0] ?? ''
+      ),
+      h(
+        'span',
+        { className: 'flex shrink-0 items-baseline gap-2 text-xs text-(--ui-text-quaternary)', key: 'detail' },
+        h(
+          'span',
+          { className: 'max-w-[14rem] truncate font-mono', key: 'identity', title: event.identity || '' },
+          modelOnly(event.identity)
+        ),
+        event.key ? h('span', { className: 'font-mono', key: 'fingerprint' }, event.key) : null,
+        event.code ? h('span', { key: 'code' }, `HTTP ${event.code}`) : null,
         event.seconds
-          ? h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'rested' }, `rested ${duration(event.seconds)}`)
+          ? h(
+              'span',
+              { key: 'rested' },
+              event.kind === 'recovery'
+                ? `after ${duration(event.seconds)}`
+                : event.kind === 'wait'
+                  ? `for ${duration(event.seconds)}`
+                  : `rested ${duration(event.seconds)}`
+            )
           : null,
         sized
           ? h(
               'span',
               {
                 className: cn(
-                  'ml-2 rounded px-1 text-[0.625rem] uppercase tracking-wide',
+                  'rounded px-1 text-[0.625rem] uppercase tracking-wide',
                   sized[1] === 'good' ? 'text-(--ui-text-quaternary)' : 'text-amber-500'
                 ),
                 title:
@@ -1407,7 +1748,7 @@ function EventRow({ event }) {
               'span',
               {
                 className:
-                  'ml-2 rounded px-1 text-[0.625rem] uppercase tracking-wide text-(--ui-text-quaternary) ' +
+                  'rounded px-1 text-[0.625rem] uppercase tracking-wide text-(--ui-text-quaternary) ' +
                   'underline decoration-dotted underline-offset-2',
                 key: 'inspect'
               },
@@ -1533,8 +1874,67 @@ function PayloadInspector() {
   )
 }
 
+/** One number and its word, for the strip above the list. */
+function Tally({ count, label, tone, active, onClick, title }) {
+  return h(
+    'button',
+    {
+      className: cn(
+        'flex min-w-0 flex-col items-start rounded-md border px-3 py-2 text-left transition-colors',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-quinary)'
+          : 'border-transparent hover:bg-(--ui-bg-quinary)/50'
+      ),
+      onClick,
+      title,
+      type: 'button'
+    },
+    h(
+      'span',
+      {
+        className: cn(
+          'text-lg leading-none font-medium tabular-nums',
+          tone === 'bad'
+            ? 'text-destructive'
+            : tone === 'good'
+              ? 'text-emerald-500'
+              : 'text-(--ui-text-primary)'
+        ),
+        key: 'n'
+      },
+      count
+    ),
+    h('span', { className: 'mt-1 text-[0.6875rem] text-(--ui-text-tertiary)', key: 'l' }, label)
+  )
+}
+
+/**
+ * What happened, newest first — and, since 1.6.0.1, what KAME *did* about it.
+ *
+ * The tab shipped as a list of failures. That is half a story: a rotation
+ * engine working perfectly produced a screen of red, because the rotation
+ * itself was never recorded. `switch`, `recovery` and `wait` were in the
+ * event vocabulary from 1.1.1 and not one of them was ever written.
+ *
+ * So the page is now built around the split rather than around the buffer:
+ * three tallies that are also the filter, a legend, and rows whose left rail
+ * says at a glance which half of the story they belong to.
+ */
 function EventsPage({ snap }) {
+  const now = useValue($now)
+  const [view, setView] = useState('all')
   const events = snap.events ?? []
+
+  const good = events.filter(event => GOOD_KINDS.has(event.kind))
+  const bad = events.length - good.length
+  const keep = EVENT_VIEWS.find(([id]) => id === view)?.[2] ?? (() => true)
+  const shown = events.filter(keep)
+
+  // The window the buffer actually covers, so the tallies are not read as
+  // "since Hermes started" — which they are not, and which would make a quiet
+  // afternoon look like a broken one.
+  const oldest = events.length ? events[events.length - 1].at : null
+  const covers = oldest ? ago((now - oldest * 1000) / 1000) : ''
 
   return h(
     'div',
@@ -1542,18 +1942,87 @@ function EventsPage({ snap }) {
     Card(
       {
         note:
-          'The last fifty decisions this Hermes process made about your keys, newest first. Keys appear as ' +
-          'fingerprints — a hash, never a prefix of the key itself — and no provider error text is kept, ' +
-          'because a provider can quote your prompt back inside one.',
+          'Every decision this Hermes process made about your keys, newest first — the failures and the ' +
+          'rotations that answered them. Keys appear as fingerprints: a hash, never a prefix of the key ' +
+          'itself. Provider error text is scrubbed before it is written down, because a provider can quote ' +
+          'your own prompt back inside an error.',
         title: 'Events'
       },
-      events.length
-        ? events.map(event => h(EventRow, { event, key: event.seq }))
+      h(
+        'div',
+        { className: 'flex flex-wrap items-stretch gap-1', key: 'tallies' },
+        h(Tally, {
+          active: view === 'all',
+          count: events.length,
+          key: 'all',
+          label: covers ? `in the last ${covers.replace(' ago', '')}` : 'recorded',
+          onClick: () => setView('all'),
+          title: 'Everything in the buffer, newest first.',
+          tone: 'plain'
+        }),
+        h(Tally, {
+          active: view === 'did',
+          count: good.length,
+          key: 'did',
+          label: 'KAME rotating',
+          onClick: () => setView('did'),
+          title: 'Rotations, recoveries, continued answers and waits — the plugin doing its job.',
+          tone: 'good'
+        }),
+        h(Tally, {
+          active: view === 'wrong',
+          count: bad,
+          key: 'wrong',
+          label: 'providers refusing',
+          onClick: () => setView('wrong'),
+          title: 'What the providers said. A refusal here is not a fault in KAME; it is what KAME is for.',
+          tone: bad ? 'bad' : 'plain'
+        })
+      ),
+      shown.length
+        ? h(
+            'div',
+            { className: 'mt-3 flex flex-col', key: 'rows' },
+            shown.map(event => h(EventRow, { event, key: event.seq, now }))
+          )
         : h(
             'p',
-            { className: 'text-sm text-(--ui-text-tertiary)' },
-            'Nothing recorded yet. Rotations, quarantines, cut answers and continuations appear here as they happen.'
+            { className: 'mt-3 text-sm text-(--ui-text-tertiary)', key: 'empty' },
+            events.length
+              ? 'Nothing of that kind yet.'
+              : 'Nothing recorded yet. Every rotation, refusal, cut answer and continuation appears here as it happens.'
           )
+    ),
+    Card(
+      { key: 'legend', note: 'Nine words, and what each one means.', title: 'Reading this list' },
+      h(
+        'div',
+        { className: 'grid gap-x-6 gap-y-2 sm:grid-cols-2' },
+        Object.entries(EVENT_LABELS).map(([kind, [label, tone]]) =>
+          h(
+            'div',
+            { className: 'flex gap-2 text-xs', key: kind },
+            h(
+              'span',
+              {
+                className: cn(
+                  'w-24 shrink-0',
+                  tone === 'bad'
+                    ? 'text-destructive'
+                    : tone === 'warn'
+                      ? 'text-amber-500'
+                      : tone === 'good'
+                        ? 'text-emerald-500'
+                        : 'text-(--ui-text-secondary)'
+                ),
+                key: 'l'
+              },
+              label
+            ),
+            h('span', { className: 'text-(--ui-text-tertiary)', key: 'm' }, EVENT_MEANING[kind] ?? '')
+          )
+        )
+      )
     )
   )
 }
@@ -1605,6 +2074,97 @@ function FirstRun() {
 //
 // Counts and origins only. The snapshot carries no key and no fragment of
 // one, so there is nothing here that could leak by being rendered.
+/** The other Hermes processes sharing this home, and this plugin.
+ *
+ *  A home is usually served by more than one: the Desktop you are looking at,
+ *  and the gateway the phone app talks to. They load this plugin separately
+ *  and they use the same credential pool — so a key the gateway is resting is
+ *  a key this Hermes cannot use either, and a gateway still running an older
+ *  build is why a fix that is definitely installed is definitely not working
+ *  on half the traffic.
+ *
+ *  Renders nothing when this is the only one, which is the common case and
+ *  should cost the page nothing. */
+function Neighbours({ snap }) {
+  const others = snap.neighbours ?? []
+
+  if (!others.length) {
+    return null
+  }
+
+  // `build` is an object — `{ version, fingerprint }` — so the fingerprint has
+  // to be reached into on both sides. Comparing the objects rendered the
+  // neighbour's build as "[object Object]" and made every neighbour look like
+  // it was on a different build, which is the opposite of a useful warning.
+  const mine = snap.build?.fingerprint
+  const buildOf = other => other.build?.fingerprint ?? ''
+  const behind = others.filter(other => buildOf(other) && mine && buildOf(other) !== mine)
+
+  return Card(
+    {
+      key: 'neighbours',
+      note:
+        'They load this plugin separately and share your keys. A key one of them is resting is ' +
+        'a key the others cannot use either.',
+      title: `Also using these keys (${others.length})`
+    },
+    h(
+      'div',
+      { className: 'flex flex-col gap-2', key: 'rows' },
+      ...others.map(other =>
+        h(
+          'div',
+          {
+            className:
+              'flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 ' +
+              'border-b border-(--ui-stroke-tertiary) pb-2 last:border-0 last:pb-0',
+            key: String(other.pid)
+          },
+          h(
+            'span',
+            { className: 'text-xs text-(--ui-text-primary)', key: 'who' },
+            other.role === 'gateway'
+              ? 'the gateway — what the phone app talks to'
+              : other.profile
+                ? `another Desktop — profile ${other.profile}`
+                : 'another Hermes'
+          ),
+          h(
+            'span',
+            { className: 'text-xs tabular-nums text-(--ui-text-tertiary)', key: 'keys' },
+            `${other.totals?.ready ?? other.totals?.healthy ?? '?'} of ${
+              other.totals?.keys ?? '?'
+            } ready`
+          ),
+          h(
+            'span',
+            {
+              className: cn(
+                'font-mono text-[0.6875rem]',
+                buildOf(other) && mine && buildOf(other) !== mine
+                  ? 'text-amber-500'
+                  : 'text-(--ui-text-quaternary)'
+              ),
+              key: 'build'
+            },
+            `v${other.build?.version ?? other.version ?? '?'} ${buildOf(other)}`
+          )
+        )
+      )
+    ),
+    behind.length
+      ? h(
+          'p',
+          { className: 'mt-2 text-xs text-amber-500', key: 'behind' },
+          `${behind.length === 1 ? 'One of them is' : `${behind.length} of them are`} running a ` +
+            'different build of KAME than this Hermes. They load the plugin at start-up, so the ' +
+            'one that is behind will stay behind until it is restarted — and it is handling its ' +
+            'own share of your traffic with the older code.'
+        )
+      : null
+  )
+}
+
 function WhatItSees({ snap }) {
   const seen = snap.credentials ?? {}
   const rows = seen.providers ?? []
@@ -1635,13 +2195,20 @@ function WhatItSees({ snap }) {
               h(
                 'div',
                 {
+                  // A grid rather than a flex row with `justify-between`.
+                  // The "resting" cell only exists on a provider that has one,
+                  // so with flex the two rows below it had their columns in
+                  // different places and the card read as a list of unrelated
+                  // facts. Four fixed tracks; an absent cell leaves a gap
+                  // instead of moving its neighbours.
                   className:
-                    'flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-(--ui-stroke-tertiary) pb-2 last:border-0 last:pb-0',
+                    'grid grid-cols-[8rem_1fr_6rem_5rem] items-baseline gap-x-3 border-b ' +
+                    'border-(--ui-stroke-tertiary) pb-2 last:border-0 last:pb-0',
                   key: row.provider
                 },
                 h(
                   'span',
-                  { className: 'font-mono text-xs text-(--ui-text-primary)', key: 'p' },
+                  { className: 'truncate font-mono text-xs text-(--ui-text-primary)', key: 'p' },
                   row.provider
                 ),
                 h(
@@ -1651,16 +2218,19 @@ function WhatItSees({ snap }) {
                     ? `${row.keys} key${row.keys === 1 ? '' : 's'}`
                     : `${row.rows} row${row.rows === 1 ? '' : 's'} → ${row.keys} keys`
                 ),
-                row.benched
-                  ? h(
-                      'span',
-                      { className: 'text-xs text-(--ui-text-tertiary)', key: 'b' },
-                      `${row.benched} resting`
-                    )
-                  : null,
                 h(
                   'span',
-                  { className: 'font-mono text-[0.6875rem] text-(--ui-text-quaternary)', key: 'o' },
+                  { className: 'text-xs text-(--ui-text-tertiary)', key: 'b' },
+                  row.benched ? `${row.benched} resting` : ''
+                ),
+                h(
+                  'span',
+                  {
+                    className:
+                      'truncate text-right font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
+                    key: 'o',
+                    title: `from ${row.origin || '?'}`
+                  },
                   `from ${row.origin || '?'}`
                 )
               )
@@ -1718,7 +2288,24 @@ function HeaderStatus({ snap }) {
     'div',
     { className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary)' },
     h(StatusDot, { key: 'dot', tone: toneFor(snap, now) }),
-    h('span', { key: 'ready' }, snap.installed ? `${totals.healthy} of ${totals.keys} keys ready` : 'not rotating'),
+    h(
+      'span',
+      { key: 'ready' },
+      // `ready`, not `healthy`. A credential the provider rejected stops being
+      // benched after an hour and went back to counting as ready — on the same
+      // screen as a banner saying waiting will not repair one. The two numbers
+      // contradicted each other and the large one was wrong.
+      snap.installed
+        ? `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready`
+        : 'not rotating'
+    ),
+    totals.rejected
+      ? h(
+          'span',
+          { className: 'text-(--ui-red)', key: 'rejected' },
+          `${totals.rejected} to replace`
+        )
+      : null,
     h(
       'span',
       { className: cn('text-(--ui-text-quaternary)', stale && 'text-(--ui-red)'), key: 'age' },
@@ -1797,6 +2384,7 @@ function KamePage() {
   const counters = snap.counters ?? {}
   const repair = snap.gemini_tool_call_fix ?? {}
   const invalid = invalidCount(snap)
+  const retired = retiredCount(snap)
   const build = snap.build ?? {}
 
   return h(
@@ -1864,11 +2452,30 @@ function KamePage() {
     // over the whole panel. It renders nothing until a row is opened.
     h(PayloadInspector, { key: 'inspector' }),
 
-    invalid > 0 &&
+    // 1.6.0.1 split this in two, because the old wording ("until then every
+    // turn spends an attempt discovering the same thing") stopped being true:
+    // a key that has left rotation is not spending anything. What it is doing
+    // is waiting for a person, and that is what the banner should say.
+    retired > 0 &&
       Note(
-        `${invalid} key(s) have been refused as credentials. Waiting will not repair one: replace ${invalid === 1 ? 'it' : 'them'} in ` +
-          'Settings, or remove them from the pool. Until then every turn spends an attempt discovering the same thing.',
+        `${count(retired, 'key', 'keys', 'has', 'have')} left rotation — the provider refused ` +
+          `${retired === 1 ? 'it' : 'them'} as ${retired === 1 ? 'a credential' : 'credentials'}, ` +
+          `so KAME no longer offers ${retired === 1 ? 'it' : 'them'} and nothing is being spent on ` +
+          `${retired === 1 ? 'it' : 'them'}. Nothing was deleted: paste the replacement over ` +
+          `${retired === 1 ? 'it' : 'them'} in Settings and ${retired === 1 ? 'it comes' : 'they come'} ` +
+          'back by itself. Your other keys are carrying every turn meanwhile.',
         'bad',
+        'retired'
+      ),
+
+    invalid > retired &&
+      Note(
+        `${count(invalid - retired, 'key was', 'keys were')} just refused and ${
+          invalid - retired === 1 ? 'is' : 'are'
+        } still being tried. ` +
+          'One refusal is not proof — an expired token a second from refreshing sends the same thing — ' +
+          `so it takes ${REFUSALS_BEFORE_RETIRING} in a row, with nothing working in between.`,
+        'plain',
         'invalid'
       ),
 
@@ -1883,6 +2490,8 @@ function KamePage() {
             snap.first_run ? h(FirstRun, { key: 'first-run' }) : null,
 
             Card({ key: 'right-now', title: 'Right now' }, h(RightNow, { snap })),
+
+            h(Neighbours, { key: 'neighbours', snap }),
 
             h(WhatItSees, { key: 'what-it-sees', snap }),
 
@@ -1928,6 +2537,13 @@ function KamePage() {
                 : null,
               counters.tool_call_cuts
                 ? Field('Cut in a tool call', counters.tool_call_cuts, 'a half-written call cannot be continued')
+                : null,
+              counters.blamed_another_key
+                ? Field(
+                    'Blamed another key',
+                    counters.blamed_another_key,
+                    'a cooldown was written against a key that was not the one the request carried — report this'
+                  )
                 : null
             ),
 

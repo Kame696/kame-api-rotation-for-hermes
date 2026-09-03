@@ -74,6 +74,7 @@ from .core import escalate
 from .core import journal as journal_module
 from .core import dispersion, multikey
 from .core import probe, reconcile
+from .core.carousel import fingerprint
 from .core.reconcile import EntryView
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,13 @@ class PoolBinding:
         # KAME touched it: rows, keys after splitting, how many are benched,
         # and where they came from. Numbers only — see ``_note_shape``.
         self.seen_pools: dict = {}
+        # 1.6.0.0. Benches written against a credential whose key is not the
+        # one the request carried. Counted, never acted on: the bench is the
+        # host's to write, and a plugin that started overruling it on a
+        # suspicion would be guessing with somebody's quota. A non-zero here
+        # says the pool's pointer and the wire disagree, which is the shape of
+        # every attribution bug this release fixed.
+        self.blamed_another_key = 0
         # Splitting a multi-key credential is only safe while the parts can be
         # kept off disk, so it is switched on by the persist guard and by
         # nothing else. See ``_guard_persist``.
@@ -610,6 +618,16 @@ class PoolBinding:
             str(getattr(parent, "source", "") or "?").split(":", 1)[0].split("#", 1)[0]
             for parent in parents
         })
+        if not parents and not usable:
+            # Hermes builds a ``CredentialPool`` for every provider it has ever
+            # heard of, and on this machine that is thirty-two of them with
+            # nothing in thirty-one. Recording those turned the panel's own
+            # card into a list of empty providers with the one real row lost
+            # somewhere inside it — the opposite of what a card called "what
+            # KAME can see" is for. A pool with nothing in it is not something
+            # KAME can see.
+            self.seen_pools.pop(provider, None)
+            return
         self.seen_pools[provider] = {
             "provider": provider,
             "rows": len(parents),
@@ -737,6 +755,7 @@ class PoolBinding:
         self.splitting_multikey = False
         self.spreading_load = False
         self.seen_pools = {}
+        self.blamed_another_key = 0
         self.reason = "uninstalled"
 
     # -- wrapper: recording ----------------------------------------------
@@ -847,6 +866,49 @@ class PoolBinding:
         hinted = runtime.bench_model_for(provider, now=now)
         return hinted or runtime.model_for(provider)
 
+    def _check_the_blame(self, provider: str, updated: Any, now: float) -> None:
+        """Is the key being benched the key that actually failed?
+
+        Every other count in this plugin names the credential the *pool* was
+        pointing at. That is a different claim from "the key the request
+        carried", and the two came apart twice in this release: a parent row
+        holding several keys was handed out as though it were one of them, and
+        a bench earned by a titling call was filed under the conversation's
+        model. Both were found by accident. This is the instrument that would
+        have found them on purpose.
+
+        Fingerprints, never keys — ``core.carousel.fingerprint`` is a
+        truncated SHA-256 and not even a prefix of the original. Derived the
+        same way on both sides, because comparing two different derivations of
+        the same credential would manufacture disagreements out of nothing.
+
+        Observes and counts. It does not move the bench: writing the cooldown
+        is the host's job, and a plugin that started overruling it on the
+        strength of a fingerprint mismatch would be spending somebody else's
+        quota on a guess.
+        """
+        try:
+            sent_id, sent_key = runtime.sent_for(provider, now=now)
+            if not sent_key:
+                # Nothing was recorded — an auxiliary call, a provider that
+                # never reaches the carousel, a call older than the memo.
+                # Silence is not disagreement.
+                return
+            blamed_key = fingerprint(multikey.key_on(updated))
+            if blamed_key == sent_key:
+                return
+            self.blamed_another_key += 1
+            logger.warning(
+                "kame: benching %s (%s) but the request carried %s (%s) — "
+                "the pool's pointer and the wire disagree",
+                str(getattr(updated, "id", "") or "?")[:8],
+                blamed_key,
+                (sent_id or "?")[:8],
+                sent_key,
+            )
+        except Exception:
+            logger.debug("kame: could not check the blame", exc_info=True)
+
     def _remember(self, pool: Any, updated: Any, *, status_code: Any = None) -> None:
         module = self._module
         if module is None or updated is None:
@@ -863,6 +925,8 @@ class PoolBinding:
 
         reset_at = getattr(updated, "last_error_reset_at", None)
         reason = str(getattr(updated, "last_error_reason", "") or "rate_limit")
+
+        self._check_the_blame(provider, updated, now)
 
         # Claimed once, here, and handed to both halves. The verdict is
         # single-use by design — it must not be raced for between the ledger

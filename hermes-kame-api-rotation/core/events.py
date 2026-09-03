@@ -32,17 +32,37 @@ from typing import Any, Deque, Dict, List, Optional
 from .redact import redact
 from collections import deque
 
-#: How many entries are kept. Fifty is roughly one screen of a scrolling list
-#: and a couple of minutes of a bad outage — long enough to explain a stall,
-#: short enough that the whole thing can be read.
-MAX_EVENTS = 50
+#: How many entries are kept.
+#:
+#: Fifty until 1.6.0.1, chosen when the buffer held failures only. It now
+#: holds the other half of each story — which key took over, and whether that
+#: key answered — so the same outage produces roughly three rows where it
+#: produced one, and fifty would have shown a third of the incident it was
+#: sized to explain. A hundred and fifty rows is about 25 KB inside a snapshot
+#: file the panel already re-reads every two seconds.
+MAX_EVENTS = 150
 
 #: The kinds. Named for what the user sees, not for the code path: "quarantine"
 #: rather than "mark(ok=False, kind=auth)", because the first is what the pool
 #: looks like from outside.
 ROTATION = "rotation"
+#: 1.6.0.1. The rotation itself, rather than the refusal that caused it: this
+#: key is the one that just took over. Until this release the Events tab was a
+#: list of things that went wrong with no record of what KAME did about them,
+#: which is the half the owner actually asked to see: every rotation, not
+#: only the errors. A ``switch`` is always preceded by the event that caused it
+#: and usually followed by the ``recovery`` that ends it.
+SWITCH = "switch"
 QUARANTINE = "quarantine"
 INVALID_KEY = "invalid_key"
+#: 1.6.0.1. A 403 that refused this key for *this model* — a suspended
+#: project, an API never enabled, a model outside the tier the key pays for.
+#: Kept apart from :data:`INVALID_KEY` because the two ask the reader for
+#: opposite things: one says replace the key, and this one says the key is
+#: fine and it is the pairing that is not. They were the same row until this
+#: release, so a model nobody was entitled to reported a healthy credential
+#: as dead.
+DENIED_MODEL = "denied_model"
 STORM = "storm"
 STREAM_DROP = "stream_drop"
 STITCH = "stitch"
@@ -51,8 +71,15 @@ RECOVERY = "recovery"
 SURFACED = "surfaced"
 
 _KINDS = frozenset(
-    {ROTATION, QUARANTINE, INVALID_KEY, STORM, STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED}
+    {ROTATION, SWITCH, QUARANTINE, INVALID_KEY, DENIED_MODEL, STORM,
+     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED}
 )
+
+#: The kinds that are KAME working rather than a provider failing. The panel
+#: colours and filters on this split, and the distinction is the point of the
+#: 1.6.0.1 Events tab: a screen that shows only refusals reads like a fault
+#: report, and a rotation engine that is doing its job is not a fault.
+GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT})
 
 
 class Events:

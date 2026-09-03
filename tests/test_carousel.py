@@ -297,7 +297,11 @@ class TestReadingAFailure:
         assert carousel.is_auth_failure(exc) is True
         assert carousel.is_terminal(exc) is False
         _, kind, _ = carousel.classify(exc)
-        assert kind == "auth"
+        # 1.6.0.1 splits the family in two. This wording is the provider
+        # saying the words, so it is ``revoked`` — the only kind that may
+        # take a key out of rotation on the first one. A *bare* 401, which
+        # says nothing about why, stays ``auth`` and needs three in a row.
+        assert kind == "revoked"
 
     def test_a_genuine_bad_request_is_terminal(self):
         assert carousel.is_terminal(Boom("400 unknown field 'foo'", status_code=400)) is True

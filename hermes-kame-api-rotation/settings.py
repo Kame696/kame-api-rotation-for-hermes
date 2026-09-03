@@ -380,6 +380,45 @@ def forget() -> None:
     _drift_checked_at = 0.0
 
 
+def reread_environment() -> Tuple[str, ...]:
+    """Pull Hermes' ``.env`` back into this process. Returns what changed.
+
+    Settings are read out of ``os.environ`` on every access, so the only way
+    the environment goes stale is when somebody edits the file directly — by
+    hand, from a second Hermes, or with a tool that is not this panel. Until
+    1.6.0.1 the answer to "did my edit land?" was to restart, and the panel
+    could not even say whether there was anything to land.
+
+    Only ``KAME_*`` names are touched, and only ones this build knows: a
+    variable belonging to another plugin, or a KAME name from a future
+    release, is left exactly where it is. A name that has been *deleted* from
+    the file is dropped from the environment too, so removing a line has the
+    same effect as pressing Reset — which is what a person deleting a line
+    plainly means.
+    """
+    from . import envfile
+
+    known_keys = list(ALL_FLAGS) + list(ALL_NUMBERS)
+    mine = {name for key in known_keys for name in _env_names(key)}
+    if not mine:
+        return ()
+    on_disk = {
+        name: value for name, value in envfile.read_kame().items() if name in mine
+    }
+    changed = []
+    for name in sorted(mine):
+        before = os.environ.get(name)
+        after = on_disk.get(name)
+        if before == after:
+            continue
+        if after is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = after
+        changed.append(name)
+    return tuple(changed)
+
+
 def _config_now(getter) -> Tuple[Dict[str, bool], Dict[str, float]]:
     """What ``config.yaml`` says right now, read the same way ``load`` reads it."""
     flags: Dict[str, bool] = {}
@@ -599,9 +638,13 @@ META = {
     ),
     DAILY_COOLDOWN: (
         "Daily quota cooldown",
-        "How long a key rests after a daily or account-level refusal. The "
-        "provider's own retry hint is ignored for these on purpose: it "
-        "routinely says a minute when the truth is midnight.",
+        "How long a key rests after a daily or account-level refusal — a "
+        "quota that is genuinely spent. The provider's own retry hint is "
+        "ignored for these on purpose: it routinely says a minute when the "
+        "truth is midnight. It does not govern a key the provider *refused* "
+        "(a 401, a revoked key): that rests twenty seconds and is then "
+        "offered last, because waiting is not what repairs one — and a "
+        "key the provider names dead leaves rotation instead of resting.",
     ),
     # 1.2.2 renames the *title* only. "Give up on a silent key after" named
     # the mechanism; this names the thing a person is deciding about, which is
@@ -613,9 +656,12 @@ META = {
         "For a provider that accepts a request and then sends nothing. KAME "
         "waits this long for the first character — and for every character "
         "after it — before dropping that key and asking the next one. Zero, "
-        "the default, means only Hermes' own 120s applies. Set it too low and "
-        "a model that thinks before it answers gets abandoned mid-thought, so "
-        "anything above zero is raised to at least 5s.",
+        "the default, means only Hermes' own 120s applies. Leave it at zero "
+        "unless you have a provider that accepts a request and then hangs: a "
+        "reasoning model can spend well over twenty seconds before its first "
+        "token, and a number that short would abandon it mid-thought and "
+        "rotate through the whole pool doing the same. Anything above zero is "
+        "raised to at least 5s for the same reason.",
     ),
     NO_MODEL_FALLBACK: (
         "Stay on this model, always",

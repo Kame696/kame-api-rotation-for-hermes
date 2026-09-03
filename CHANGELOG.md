@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.6.0.1** | Two Hermes, one file — and a refused key stopped coming back for ever | The Desktop and the gateway both write the plugin's status file and each overwrote the whole of the other's, so the panel flickered between two readings a release apart and the Settings form rebuilt itself under the cursor; the file now holds a section per process, and the panel names the others. A credential the provider refused rests twenty seconds instead of an hour and is offered last, and one the provider names dead leaves rotation altogether, because over-benching a healthy key costs an hour while under-benching a dead one costs a request that fails in milliseconds. Events finally records the rotations themselves, not only the failures. Settings is half the height, with a Refresh that re-reads the `.env` for real. And the diagnostic that reads a real run is `/kame doctor` inside the plugin instead of a script in the repo |
 | **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a whole day; the cooldown KAME works out finally reaches the pool instead of being dropped one hop short; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key before Hermes tells the model its call was too big; and the panel says, in one line per provider, what KAME can actually see |
 | **1.5.0** | The rest of the evidence, and the gate that was never run | The class of the exception is read at last, so a failure with no status and no body is sized instead of guessed; two payloads 1.4.0 wrongly claimed are given back to the host; the Settings panel can no longer freeze |
 | **1.4.0** | The evidence was on the exception all along | The installed plugin had no engine and nothing said so; cooldowns are sized from the provider's own fields instead of its prose; the Events tab says where every wait came from |
@@ -42,6 +43,302 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.6.0.1] — 2026-09-02
+
+**In short.** 1.6.0.0 was correct about one Hermes. This machine runs two.
+
+### Two processes, one file
+
+A Hermes home is served by more than one process and usually is: the Desktop
+runs `hermes_cli.main --profile <name> serve`, the gateway that the phone app
+talks to runs `hermes_cli.main gateway run`. Both load this plugin. Both use
+the same credential pool. Neither knew the other existed.
+
+The status file the panel reads was written as though one process owned it, so
+each wrote all of it and erased the other. Measured on the owner's install:
+**40 reads over 20 seconds returned 26 documents from one process and 14 from
+the other**, one of them a whole release behind. The panel re-reads once a
+second and re-renders whenever the bytes change, so it re-rendered *every
+second* — which is exactly the fault 1.2.3's byte comparison was written to
+prevent, defeated by there being two writers. On the Settings tab that is a
+form rebuilding itself under the cursor.
+
+The document now holds **one section per process**, each carrying that
+process's own view. The panel reads the section belonging to the Hermes it is
+part of, compares *that* rather than the file, and lists the others by role,
+version and build. Sections whose process stops writing age out.
+
+There is no compatibility copy at the top level. A panel older than this
+schema refuses the document by its number and says so in a sentence, which is
+a better failure than half-rendering somebody else's process.
+
+The neighbours are not a curiosity. They share the credential pool: a key the
+gateway is resting is a key the Desktop cannot use either, and a gateway still
+running last month's build is why a fix that is definitely installed is
+definitely not working on half the traffic.
+
+### Refusing a *model* is not refusing the key
+
+Found by reading the two classifiers side by side, not by any failing test.
+
+`core/classify.py` is the evidence-first classifier Hermes calls; `core/carousel.py`
+holds the table-driven fallback. Both had an opinion about a 403 that says *this
+key may not use this model* — a suspended project, an API never switched on, a
+model outside the tier the key pays for — and the two opinions disagreed:
+
+| | bench | may retire the key |
+|---|---|---|
+| `carousel.DENIED_REST_S` | an hour | no |
+| `classify.DENIAL_BENCH_SECONDS` | twenty seconds | — |
+
+So the same refusal cost the same key two different amounts depending on which
+classifier answered first. The test named for catching exactly this,
+`test_the_evidence_first_classifier_agrees_with_the_table`, was asserting one
+side against the other's *constant* and passing while they differed.
+
+The worse half was not the number. `Verdict.reason` is coerced to a
+`FailoverReason` member on the host side and the whole classification is dropped
+if it will not coerce, so a denial has to travel as `auth` on the wire — and
+`auth` is in `RETIRING_KINDS`. A denial therefore arrived at the dispatch loop
+indistinguishable from a bare 401, and **three refusals from one model the key
+was never entitled to retired a credential that worked everywhere else**.
+
+Measured, through the real dispatch translation, six denials on one key:
+
+    before   kind=auth     retired=True    <- a working key, gone
+    after    kind=denied   retired=False
+
+Fixed in four places:
+
+* One constant, `quota.DEFAULT_DENIAL_BENCH_SECONDS`, read by both classifiers.
+  Twenty seconds, and the hour is not lost — `denied` is on the doubling ladder,
+  so a permission that really is permanent reaches an hour by itself while a plan
+  somebody upgrades comes back in the seconds it actually took.
+* `Verdict.kind` carries KAME's own finer name beside the word Hermes accepts.
+  It never leaves the plugin.
+* `denied` joins `_NEVER_PROMOTED`, which *preserves* behaviour rather than
+  changing it: it used to be covered by the `auth` entry.
+* The log line and the Events row stopped calling it an invalid credential. That
+  gate was a second reading of the error text rather than the verdict already
+  decided one screen above, so a key that simply is not entitled to one model was
+  announced as "not a valid credential — replace it in Settings", which is false
+  twice over. It now says the key may not use this model and is untouched
+  everywhere else, under its own event kind.
+
+New gates: a denial run through the real `_on_failure` six times must not retire
+the key; the doctor's hand-written rest table must agree with the code; and the
+panel's event vocabulary is now derived from `events._KINDS` instead of a list
+of five names typed beside it — that list was passing for every kind it had not
+been told about, and `denied_model` was one.
+
+### Two texts still said five minutes
+
+The Settings help under **Daily quota cooldown** and a comment in
+`Carousel.select` both described the refusal bench as five minutes, left over
+from before that number was measured down to twenty seconds. The Settings one is
+read by a person deciding what to type.
+
+### A key the provider refuses leaves rotation
+
+The owner asked the question this release should have started from: *chave
+inválida não deveria ser retirada do pool?* — and then drew the distinction
+that makes the answer workable: *recusar para o modelo não significa que a API
+não funciona.*
+
+Both halves are right, and the classifier **already knew the difference**.
+`classify` reaches `auth_permanent` only when the provider used the words —
+"API key not valid", "invalid api key", "key is no longer valid" — and a bare
+401 lands on the ambiguous `auth` instead. That is the 1.4.0 fix, which took
+`"unauthorized"` out of the invalid-key vocabulary after twenty-one healthy
+keys were quarantined for an hour each on expired tokens a second from
+refreshing.
+
+`dispatch_binding` then flattened both into `"auth"` on the next line. The
+strongest evidence this plugin can gather was worked out and thrown away.
+
+Three kinds now, and each is handled as what it is:
+
+| Evidence | What it means | What happens |
+|---|---|---|
+| `revoked` — the provider used the words | This is not a key | **Out of rotation on the first one** |
+| `auth` — a bare 401, no explanation | Could be a token mid-refresh, a proxy, an incident | 20s, offered last, out after **3 in a row** |
+| `denied` — "this key may not use *this model*" | The **pairing** is refused, not the key | 1h, per-model, **never** retired |
+
+That last row is the owner's own distinction and it is the expensive one to
+get wrong: a key refused for one model may be the healthiest credential in the
+account on every other, and retiring it would throw away a working key over a
+permission that was never about the key. The hour is also the one refusal
+where a long wait is honest rather than a guess — nothing about an
+authorisation moves on its own — and it costs nothing, because the carousel's
+health is per `provider:model`.
+
+**Retiring is not deleting.** KAME does not write credentials, and that has
+not changed. A retired key keeps its row, keeps its place in your config, and
+comes back the instant a call on it succeeds, its value changes, or the pool
+is cleared. Three consecutive refusals with *no successful call in between* —
+any success, or any other kind of failure, resets the count to zero.
+
+**Retiring outranks being ready, and that is what makes it worth having.** The
+demotion added earlier in this release handles the easy case, where a working
+key is sitting there unused. The case it gets wrong is the one that actually
+happens: the working key is resting twenty seconds off a throttle, the refused
+key's own rest has lapsed, so the refused key is the only thing "ready" and
+the call goes to a credential we have already been told is dead. That spends a
+request and hands back an error where waiting twenty seconds would have handed
+back an answer. A retired key is now removed from consideration even when that
+leaves nothing ready. There is a test that fails without it.
+
+**The escape hatch is the whole safety argument.** The rule applies only while
+some key is *not* retired. If every key in a pool has been refused, every key
+is offered again — the request goes out and the provider's own error comes
+back, exactly as it would with no plugin installed. Retiring can never take a
+pool to zero, so the worst case of a wrong verdict is no worse than not having
+the rule at all.
+
+The panel and `/kame doctor` now say two different sentences, because they ask
+the reader for two different things: *"1 key has left rotation … nothing was
+deleted, paste the replacement over it and it comes back by itself"*, and
+*"1 key was just refused and is still being tried — one refusal is not proof."*
+The old banner said "until then every turn spends an attempt discovering the
+same thing", which stopped being true.
+
+### A refusal is not a clock
+
+The owner watched four keys sit out an hour each and said the useful thing:
+*não tem problema tentar novamente, então 1 hora é muito grande.* The instinct
+was right, and it generalises past the case that prompted it.
+
+KAME's cooldowns divide in two, and until now both got the same hour:
+
+* **Clocks** — a per-minute throttle, a daily cap, an account allowance. The
+  provider is metering time, and only time helps.
+* **Refusals** — a 401, a revoked key, a 403 saying this key may not have this
+  model. The provider is describing the credential. Waiting fixes nothing.
+
+The reasoning for giving a refusal the daily hour was that since waiting
+cannot repair a refused key, the length hardly matters. It matters, because
+the two ways of being wrong are not the same size:
+
+| Wrong in this direction | Costs |
+|---|---|
+| Too long — the provider had an incident, or the 401 was transient | a **healthy key, for an hour** |
+| Too short — the key really is dead | **one request**, refused in milliseconds, never metered |
+
+A refusal now rests **twenty seconds**, and it got there in two steps worth
+recording. The first cut was to five minutes — a number invented here. Twenty
+is the number the escalation ladder in `carousel._escalate` applies to this
+kind anyway, and measuring the two side by side showed the invented one was
+doing no work:
+
+```
+base  20s ->  20  40  80 160 320 640 1280 2560 3600 ...
+base 300s -> 300 300 300 300 320 640 1280 2560 3600 ...
+```
+
+The ladder's own floor governs either way and both reach the hourly re-probe
+at the same point. All the larger base bought was flattening the first four
+strikes at five minutes — precisely the window in which a re-check is most
+likely to find a transient refusal already cleared. The owner asked whether
+five minutes was "muita coisa ou pouco"; the honest answer was that it was a
+guess sitting on top of a rule that already had an answer.
+
+Without the demotion the shorter bench would have been *worse* than the hour
+it replaced: a key that answered 401 comes back with an empty request window
+and the oldest `last_used` in the pool, which is precisely the profile the
+least-loaded/least-recently-used rule reaches for. The one key known not to
+work would have been the first one tried, every five minutes. There is a test
+that fails when the demotion is removed.
+
+**The rest of the table was audited against Agent Zero's and is unchanged:**
+
+| Refusal | KAME for Hermes | Agent Zero |
+|---|---|---|
+| timeout | 3s, no ladder | 3s |
+| 5xx | 5s, doubling to 90s | 5s, doubling to 90s |
+| rate limit with a stated delay | the provider's number | the provider's number |
+| rate limit with none | 20s, doubling to 5m | 20s, doubling to 5m |
+| daily / out of credit | 1h | 1h |
+| a dropped stream | 30s | — |
+| bare 401, no explanation | **20s, offered last, out after 3** | 1h |
+| provider named the key dead | **out of rotation at once** | 1h |
+| this key may not use this model | 1h, per-model, never retired | 1h |
+
+Nothing rests an hour on a first refusal any more except a quota that is
+genuinely spent, and that is now a test rather than a claim.
+
+### Events shows the rotation, not only the failure
+
+`switch`, `recovery` and `wait` have been in the event vocabulary since 1.1.1
+and **not one of them was ever written**. The tab recorded failures only, so a
+rotation engine doing its job produced a screen of red with no record of
+anything working.
+
+All three are recorded now: which key took over, whether it answered and after
+how long, and every wait with the pool state that caused it. The buffer went
+from 50 rows to 150, because one incident is roughly three rows where it used
+to be one.
+
+The tab was rebuilt around that split. Three tallies — everything, KAME
+rotating, providers refusing — that are also the filter; a coloured rail per
+row saying which half a row belongs to; the classifier's vocabulary
+(`per_minute`, `auth_permanent`, `insufficient_quota`) rendered in words a
+reader who did not write this can read; relative times, with the wall clock on
+the hover; and a legend naming all nine kinds, because the tab used to be nine
+words with no glossary anywhere on screen.
+
+### Settings, and a Refresh that means something
+
+Thirteen settings, each with a title, a paragraph, two monospace names and a
+chip, made a page that had to be scrolled past to reach its own buttons. Rows
+are now half the height, with the help clamped and the whole of it on hover; a
+row whose value is not the default is marked in the margin and counted in its
+group's title; and the toolbar moved to the top.
+
+**Refresh** is new, and it is a real action rather than a redraw: it re-reads
+Hermes' own `.env` into this process and republishes, so a `KAME_` line edited
+by hand, or a change made from another window, takes effect without a restart.
+A deleted line is treated as a reset, which is what deleting a line means.
+Only `KAME_` names this build knows are touched — a variable belonging to
+another plugin, or to a future release, is left exactly where it is. It
+deliberately does *not* re-read `config.yaml`: KAME reads that once at
+start-up, and pretending otherwise would make the "restart pending" notice on
+the same page a lie.
+
+Two help texts were rewritten. **Wait for the first token** now says outright
+that zero is the right answer unless a provider hangs, and why a number like
+twenty seconds abandons a reasoning model mid-thought. **Daily quota cooldown**
+now says what it does *not* govern, which is the refused credential above.
+
+### `/kame doctor`
+
+The tool that reads a real run and says whether it looks right was a script in
+this repository. That is the one place a diagnostic is guaranteed not to be
+when it is wanted: a fresh install, another machine, a reinstall, an assistant
+that has never seen this code.
+
+It is a command now. `/kame doctor` answers, from inside the process it is
+describing: which build is actually running and whether the other Hermes
+processes agree; what each pool holds and what is ready right now; the whole
+kind-to-rest table beside how often each kind has actually happened; how many
+decisions were read off the payload rather than guessed; and a list of the
+things a person has to do something about — refused credentials by
+fingerprint, keys in use that the config does not hold, a neighbour on an
+older build.
+
+The rest table in it is written by hand on purpose. Derived from the code it
+would agree with the code by construction and prove nothing; written down, it
+is a second statement of intent, and a test holds the two together.
+
+### Verified
+
+* **1631 unit tests**, including a new `test_v1_6_0_1.py` with 72 checks: the
+  refusal bench, the demotion (proven to fail without it), the kind-to-rest
+  table against Agent Zero's, the per-process snapshot, the ready-versus-
+  healthy count, the empty-provider card, the unpooled-key surface, the
+  environment re-read, and the doctor.
+* The panel harness renders the real `plugin.js`, including a check that a
+  neighbour writing its own section does not re-render this panel.
 
 ## [1.6.0.0] — 2026-09-02
 
@@ -211,19 +508,67 @@ Rendered against the owner's own 295-block journal, which promptly found a
 bug in it: ordering rows by count alone printed `gemini` twice under two
 separate headings.
 
+### Sent, versus blamed
+
+Every count in this plugin names the credential the **pool** was pointing at.
+That is not the same claim as *the key the request carried*, and this release
+fixed two bugs that lived in the gap between them: a parent row holding
+several keys handed out as though it were one, and a bench filed under the
+model that was not spending. Both were found by accident.
+
+The carousel now fingerprints the key at the moment it puts it on the agent,
+and the bench that may follow is asked whether it is blaming that same key.
+Fingerprints only — a truncated SHA-256, never the key and never a prefix of
+it — and derived by one shared function on both sides, because comparing two
+slightly different readings of the same credential would manufacture
+disagreements out of nothing.
+
+Counted, never acted on. Writing the cooldown is the host's job, and a plugin
+that started overruling it on the strength of a fingerprint mismatch would be
+spending somebody else's quota on a guess. The number surfaces in the panel
+and in the snapshot; zero is the only healthy value.
+
+### And the screens the owner actually meets
+
+Rendered cold, from the installed build, with an empty state — the one state
+nothing else exercises, because every test sets something up before it looks.
+Three fixes came out of it:
+
+* **`/kame` prints the build fingerprint.** The panel has shown it since
+  1.4.0; the command had not, which left the one check worth making after an
+  upgrade available only to whoever opens the sidebar.
+* **`tools/deploy.py` now says that profiles exist** and that it does not
+  write them. That drift is silent and self-consistent by construction: the
+  default profile's panel shows the new version and agrees with every check
+  made from it. Caught by writing the tool below and running it once.
+* **`tools/fingerprints.py`** lists every copy on the machine — source, base
+  home, each profile — with the digest of the modules that actually loaded,
+  and says plainly whether they are one build. It found a real drift on its
+  first run.
+
+**`tools/live_setting.py`** joins the live harnesses and asks the host about
+every declared setting, not just the newest. Hermes serves a plugin only the
+names under `plugins.entries.<id>.settings` and refuses the rest outright, so
+a setting can be declared, read, and shown on a shelf while being completely
+decorative — and the owner finds out at the moment they type the command. 63
+checks: the host answers for all thirteen, refuses a name it should refuse,
+each has a shelf and help text, and a switch and a number survive set, read
+and reset. It also proves a value outside a setting's range changes nothing
+and says why, rather than being clamped in silence.
+
 ### Verified
 
-* 1553 unit tests.
+* 1558 unit tests.
 * The host's own error corpus, 87 cases, run clean and run again with KAME
   behind the real hook dispatch: identical both ways.
 * Every host fact the plugin reasons about, re-checked against the installed
   Hermes.
 * The full sandbox suite against the real `CredentialPool`,
   `PooledCredential`, `GeminiAPIError` and `extract_api_error_context`,
-  including the five sections written for this release — one of which now
+  including the six sections written for this release — one of which now
   follows a provider's own counter from the exception, through the real hook
   and the real pool, into the journal row.
-* **All five live harnesses, run for the first time.** Real sockets, the real
+* **All six live harnesses, five of them run for the first time.** Real sockets, the real
   OpenAI SDK, the real `classify_api_error`, the real pool. They found the
   bench-attribution bug above and three stale expectations of their own:
   `live_429` still asserted the US/Pacific midnight calculation that 1.2.4

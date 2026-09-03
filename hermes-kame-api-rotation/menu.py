@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame"
 COMMAND_DESCRIPTION = "KAME rotation status and settings (KAME)"
-COMMAND_ARGS_HINT = "[get | set <key> <value>]"
+COMMAND_ARGS_HINT = "[get | set <key> <value> | doctor]"
 
 #: Nominal label width. Kept as a parameter callers can pass so the intent of
 #: a wide label survives in the source, but ``_row`` no longer pads: see its
@@ -85,6 +85,7 @@ _HELP = """/kame — rotation status and settings
   /kame set <key> <v>    change one setting, now and after a restart
   /kame reset <key>      put one setting back to its default
   /kame events           the last rotations, quarantines and cut streams
+  /kame doctor           is it rotating correctly? build, pools, rests, trouble
   /kame help             this text
 
 `set` writes to the .env file Hermes reads on start, and the environment
@@ -371,6 +372,27 @@ class MenuCommand:
             lines.append(_row("snapshot", str(path)))
         return lines
 
+    @staticmethod
+    def _fingerprint() -> str:
+        """A digest of the modules that loaded, or a word saying why not.
+
+        Never raises. This is a line in a status screen, and a status screen
+        that cannot be printed is worse than one missing a line.
+        """
+        try:
+            from . import integrity
+
+            result = integrity.verify()
+            mark = str(result.get("fingerprint") or "")
+            if not mark:
+                return "unknown"
+            if not result.get("complete"):
+                missing = result.get("missing_required") or []
+                return f"{mark} — INCOMPLETE, {len(missing)} module(s) missing"
+            return mark
+        except Exception:  # pragma: no cover — a hash over files already read
+            return "unknown"
+
     def show(self) -> str:
         """The panel, as text.
 
@@ -382,6 +404,14 @@ class MenuCommand:
         head = f"KAME API Rotation {__version__}"
         out: List[str] = [f"{head} — {reason}" if reason else head, ""]
         out.append(f"  loaded from {Path(__file__).resolve().parent}")
+        # The build, not the version number. A version is what the manifest
+        # claims; the fingerprint is a digest of the code that actually
+        # loaded, so it is the only thing that can tell a deploy that landed
+        # from a deploy that was written somewhere else and verified there —
+        # which is how 1.0.8 was lost. The panel has shown it since 1.4.0;
+        # this command had not, which left the one check worth making after
+        # an upgrade available only to whoever opens the sidebar.
+        out.append(f"  build {self._fingerprint()}")
         out.append("")
         out.extend(self._desktop_lines())
         out.append("")
@@ -552,6 +582,79 @@ class MenuCommand:
             out.append(f"  {when}  " + "  ".join(parts))
         return "\n".join(out)
 
+    def doctor(self) -> str:
+        """The diagnostic, from inside the process it is diagnosing.
+
+        This used to be a script in the repository, which meant the one moment
+        it was needed — a fresh install, somebody else's machine, an assistant
+        that has never seen this codebase — was the one moment nobody had it.
+        The reading lives with the code now.
+
+        Everything it needs is already in memory: the snapshot this process
+        publishes for the panel, and the journal it has been keeping since
+        1.0.0. Nothing is read off disk and nothing is written.
+        """
+        import sys as _sys
+        import time as _time
+
+        from .core import doctor as doctor_mod
+
+        try:
+            from . import state
+
+            snapshot = state.snapshot(self._binding)
+            # `snapshot()` builds this process's own section and nothing else;
+            # the panel works the neighbours out from the document it read.
+            # The doctor has no document, so it asks for them — and they are
+            # the most useful thing on the panel's Overview, because a gateway
+            # on last month's build is why a fix that is definitely installed
+            # is definitely not working on half the traffic.
+            snapshot["neighbours"] = state.neighbours()
+            # The fingerprint is normally the one `register()` computed, and
+            # recomputing it on a heartbeat would be a lot of disk for an
+            # answer that cannot change without a restart. This is not a
+            # heartbeat: it is somebody typing `doctor` because they want to
+            # know which build this is, so when the registered value is
+            # missing — the plugin imported outside a running Hermes, which is
+            # exactly the reinstall case this command exists for — it is
+            # computed here rather than printed as a question mark.
+            build = snapshot.setdefault("build", {})
+            if not build.get("fingerprint"):
+                from . import integrity
+
+                report = integrity.verify()
+                build["fingerprint"] = report.get("fingerprint") or ""
+                build["complete"] = bool(report.get("complete", True))
+                build["missing"] = list(report.get("missing_required") or [])
+        except Exception:
+            logger.debug("kame: doctor could not read the snapshot", exc_info=True)
+            return (
+                "KAME doctor\n\n"
+                "  This process could not read its own state. That is itself\n"
+                "  the finding: see the Hermes log for the exception."
+            )
+
+        kinds = []
+        try:
+            from .core import journal as journal_mod
+
+            # The pool binding owns the journal store; the menu is handed the
+            # *dispatch* binding, which is a different object. Reached through
+            # the package rather than through a parameter so the doctor still
+            # works in a session where only one of the two installed.
+            package = _sys.modules.get(__name__.rsplit(".", 1)[0])
+            pool = getattr(package, "_binding", None)
+            store = getattr(pool, "_journal", None)
+            if store is not None:
+                kinds = journal_mod.count_kinds(store.load(), now=_time.time())
+        except Exception:
+            # A doctor that refuses to speak because one of its inputs is
+            # missing is worse than one that says less. The build, the pools
+            # and the trouble list do not need the journal.
+            logger.debug("kame: doctor could not read the journal", exc_info=True)
+
+        return doctor_mod.render(snapshot, kinds)
+
     # -- entry point ------------------------------------------------------
 
     def handle(self, raw_args: str = "") -> str:
@@ -579,6 +682,8 @@ class MenuCommand:
                 return self.reset(parts[1])
             if verb in {"events", "log", "history"}:
                 return self.events()
+            if verb in {"doctor", "check", "diagnose"}:
+                return self.doctor()
             return f"Unknown subcommand {verb}.\n\n{_HELP}"
         except Exception as exc:
             logger.debug("kame: /%s failed", COMMAND_NAME, exc_info=True)

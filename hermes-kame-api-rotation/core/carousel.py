@@ -71,6 +71,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # nothing from this package. The carousel reads the catalogue rather than
 # keeping a second copy of the same facts.
 from . import catalog
+from .quota import DEFAULT_DENIAL_BENCH_SECONDS, DEFAULT_REJECTED_BENCH_SECONDS
 
 # --- the numbers, all in one place ------------------------------------------
 #
@@ -114,6 +115,64 @@ DAILY_BASE_S = 20.0
 
 #: A read timeout is nearly always transient. Rest three seconds and rotate.
 TIMEOUT_S = 3.0
+
+#: A **bare** 401 or 403 — the provider refused the call and said nothing
+#: about why. Twenty seconds, which is :data:`DAILY_BASE_S`, the opening step
+#: of the ladder in :meth:`Carousel._escalate` that governs this kind anyway;
+#: a larger number here would only flatten the first few strikes and delay the
+#: re-check in the very case a re-check is most likely to help.
+#:
+#: Short is safe because of two things that are not the number: the demotion
+#: in :func:`Carousel.select`, and :data:`REFUSALS_BEFORE_RETIRING`. See
+#: :data:`~.quota.DEFAULT_REJECTED_BENCH_SECONDS` for the measurement.
+REJECTED_REST_S = DEFAULT_REJECTED_BENCH_SECONDS
+
+#: A 403 that says *this key may not use this model*. The opening rest only:
+#: ``denied`` is on the doubling ladder in :meth:`Carousel._escalate`, so a
+#: refusal that really is permanent reaches :data:`DAILY_COOLDOWN_S` by
+#: itself. See :data:`~.quota.DEFAULT_DENIAL_BENCH_SECONDS` for why the short
+#: opening is the safe one, and for the two disagreeing constants it replaced.
+#:
+#: This kind is deliberately **not** in :data:`RETIRING_KINDS`. A model the
+#: key may not use says nothing about the models it may — and the carousel's
+#: health is per ``provider:model``, so the key goes on working everywhere
+#: else in the same second.
+DENIED_REST_S = DEFAULT_DENIAL_BENCH_SECONDS
+
+#: How many **consecutive** bare refusals, with no successful call in between,
+#: before a key stops being offered at all.
+#:
+#: Three, and the shape is deliberately the one ``escalate.py`` already uses
+#: for widening a deadline: consecutive, same key, self-clearing. One 401 is a
+#: coincidence — an OAuth token a second from refreshing, a proxy, a provider
+#: incident. Three in a row on the same key with nothing working in between is
+#: not, and the cost of being wrong is three requests that fail in
+#: milliseconds and are never metered.
+#:
+#: This governs the **ambiguous** kind only. A provider that used the words —
+#: ``revoked`` below — is retired on the first one, because there is nothing
+#: ambiguous left to wait for.
+REFUSALS_BEFORE_RETIRING = 3
+
+#: The failure kinds that mean *this credential*, not *this moment*. A key
+#: resting on one of these is offered last, behind every other healthy key in
+#: the pool, until a call on it succeeds and clears ``state["kind"]``.
+#:
+#: ``daily`` and ``insufficient_quota`` are deliberately absent. Those are
+#: clocks: the key is fine and the allowance is not, and demoting it would
+#: still be demoting it an hour later when it is the healthiest thing there.
+REJECTED_KINDS = frozenset({"auth", "denied", "revoked"})
+
+#: The kinds that put a key out of rotation rather than merely behind the
+#: others. ``revoked`` on sight; ``auth`` only after
+#: :data:`REFUSALS_BEFORE_RETIRING` of them in a row.
+#:
+#: ``denied`` is **not** here, and that is the distinction this release exists
+#: to draw. "This key may not use this model" is a fact about the *pairing*.
+#: The key itself is untouched — it may be the healthiest credential in the
+#: account on every other model — so retiring it would throw away a working
+#: credential over a permission that was never about the credential.
+RETIRING_KINDS = frozenset({"auth", "revoked"})
 
 #: Anything unrecognised. Long enough that a broken key does not spin, short
 #: enough that a misclassification costs one turn and not one hour.
@@ -563,8 +622,18 @@ def classify(
     ):
         return SERVER_BASE_S, "server", (status or 503)
 
+    # The provider used the words. This is the only branch that may retire a
+    # key on sight, and the vocabulary it reads is deliberately narrow — see
+    # the note under INVALID_KEY_INDICATORS about ``unauthorized``, which was
+    # in that tuple until 1.4.0 and cost twenty-one healthy keys an hour each.
+    if _matches(text, INVALID_KEY_INDICATORS):
+        return REJECTED_REST_S, "revoked", (status or 401)
+
     if is_auth_failure(error, message, status_code):
-        return daily_cooldown_s, "auth", (status or 401)
+        # A bare 401 or 403: the provider refused and said nothing about why,
+        # so this is the *ambiguous* kind. Short rest, demoted, and retired
+        # only once REFUSALS_BEFORE_RETIRING of them arrive in a row.
+        return REJECTED_REST_S, "auth", (status or 401)
 
     if status == 429 or _matches(text, RATE_LIMIT_INDICATORS):
         if _matches(text, DAILY_INDICATORS):
@@ -577,7 +646,11 @@ def classify(
         return (parsed if parsed is not None else OTHER_S), "per_minute", (status or 429)
 
     if _matches(text, PERMANENT_DENIAL_INDICATORS):
-        return daily_cooldown_s, "denied", (status or 403)
+        # "This key may not use this model." The key is not the problem, the
+        # pairing is, so the hour is honest here — nothing about an
+        # authorisation moves on its own — and it costs nothing, because the
+        # carousel's health is per provider:model.
+        return DENIED_REST_S, "denied", (status or 403)
 
     return OTHER_S, "other", status
 
@@ -593,6 +666,14 @@ def _fresh(now: float) -> Dict[str, Any]:
         "request_log": [],
         "consecutive_rl": 0,
         "consecutive_server": 0,
+        # 1.6.0.1. Bare refusals in a row with no successful call between
+        # them. Reset by any success, which is what makes retiring on it
+        # self-clearing rather than a verdict nothing can appeal.
+        "consecutive_refusals": 0,
+        # Out of rotation until something changes: a call on it succeeds, the
+        # config stops declaring it, or the pool is cleared. Never means the
+        # key was deleted — this plugin does not write credentials.
+        "retired": False,
         "kind": "",
         "successes": 0,
         "failures": 0,
@@ -700,11 +781,63 @@ class Carousel:
                 pool[key]["request_log"] = [t for t in pool[key]["request_log"] if t > cutoff]
 
             healthy = [k for k in usable if pool[k]["sick_until"] < now]
+
+            # 1.6.0.1. A key the provider refused as a credential is not
+            # merely unlucky, and the demotion below — offering it last —
+            # still offers it. Three bare refusals in a row, or one where the
+            # provider used the words, and it stops being a candidate at all.
+            #
+            # **Retiring has to outrank being ready, or it buys nothing.** The
+            # demotion already handles the easy case, where a working key is
+            # sitting there unused. The case it gets wrong is the one that
+            # actually happens: the working key is resting off a throttle for
+            # twenty seconds, the refused key's own rest has lapsed, so the
+            # refused key is the only "healthy" one and the call goes to a
+            # credential we have already been told is dead. That spends a
+            # request and hands the user an error, where waiting twenty
+            # seconds would have handed them an answer. So a retired key is
+            # removed from consideration even when that leaves nothing ready,
+            # and the wait below is for a key that can actually serve.
+            #
+            # The escape hatch is the whole safety argument for retiring at
+            # all, and it is the condition rather than a comment: this only
+            # applies while some key is *not* retired. If every key has been
+            # refused, every key is offered again — the request goes out and
+            # the provider's own error comes back, exactly as it would with no
+            # plugin installed. Retiring can never take a pool to zero, so the
+            # worst case of a wrong verdict is no worse than not having the
+            # rule, and somebody who mistypes their only key gets an error
+            # from the provider rather than silence from a plugin that decided.
+            standing = [k for k in usable if not pool[k].get("retired")]
+            if standing:
+                healthy = [k for k in healthy if not pool[k].get("retired")]
+                usable = standing
+
             if not healthy:
                 soonest = min(usable, key=lambda k: pool[k]["sick_until"])
                 return soonest, "EXHAUSTED"
 
-            chosen = min(healthy, key=lambda k: (len(pool[k]["request_log"]), pool[k]["last_used"]))
+            # Refused credentials go last, and that ordering is what lets
+            # ``REJECTED_REST_S`` be twenty seconds instead of an hour.
+            #
+            # Without it the shorter bench would be actively worse than the
+            # long one. A key that answered 401 comes back with an empty
+            # request window and the oldest ``last_used`` in the pool, which
+            # is precisely the profile ``min`` below reaches for — so the one
+            # key known not to work would be the very first one tried, every
+            # time its bench lapsed. Demoted, it is reached only when every
+            # other healthy key is busier, which on any pool with a working
+            # key in it means "not until there is nothing better", and on a
+            # pool where every key was refused means "immediately", because
+            # then they are all equal and there is nothing to lose.
+            chosen = min(
+                healthy,
+                key=lambda k: (
+                    1 if pool[k].get("kind") in REJECTED_KINDS else 0,
+                    len(pool[k]["request_log"]),
+                    pool[k]["last_used"],
+                ),
+            )
             # Stamped under the lock. A concurrent turn entering select() a
             # microsecond later now sees this key as both busier and newer,
             # and picks a different one.
@@ -751,6 +884,13 @@ class Carousel:
                 state["sick_until"] = 0.0
                 state["consecutive_rl"] = 0
                 state["consecutive_server"] = 0
+                # One good answer is the whole appeal. A key retired on
+                # evidence that turns out to have been a provider incident
+                # comes back the moment it works — and it will be reached,
+                # because the escape hatch in select() offers retired keys
+                # whenever nothing else can serve.
+                state["consecutive_refusals"] = 0
+                state["retired"] = False
                 state["kind"] = ""
                 state["successes"] += 1
                 # A second stamp on success biases the next selection away from
@@ -763,6 +903,19 @@ class Carousel:
             state["failures"] += 1
             state["last_sick_at"] = now
             state["kind"] = kind
+            if kind in RETIRING_KINDS:
+                state["consecutive_refusals"] += 1
+                # ``revoked`` is the provider having said the words, so there
+                # is nothing left to accumulate evidence about. A bare refusal
+                # has to happen REFUSALS_BEFORE_RETIRING times in a row.
+                if kind == "revoked" or state["consecutive_refusals"] >= REFUSALS_BEFORE_RETIRING:
+                    state["retired"] = True
+            else:
+                # Any other kind of failure breaks the run. A key that is
+                # rate-limited between two 401s has not been refused three
+                # times in a row, and reading it that way would retire keys
+                # on a mixture of unrelated evidence.
+                state["consecutive_refusals"] = 0
             applied = self._escalate(state, delay, kind)
             applied = max(0.0, min(applied, HARD_DELAY_CAP_S))
             # There is deliberately no shorter cap for a pool of one here.
@@ -783,7 +936,7 @@ class Carousel:
 
     def _escalate(self, state: Dict[str, Any], delay: float, kind: str) -> float:
         """How long this key rests, given how many times it has said this lately."""
-        if kind in ("daily", "insufficient_quota", "denied", "auth"):
+        if kind in ("daily", "insufficient_quota", "denied", "auth", "revoked"):
             state["consecutive_rl"] += 1
             strikes = state["consecutive_rl"]
             grown = DAILY_BASE_S * (2 ** max(0, strikes - 1))
@@ -904,7 +1057,15 @@ class Carousel:
                 # apart from ``resting`` since 1.1.1 so a reader is told to
                 # replace it rather than to wait for it.
                 invalid = [
-                    fingerprint(k) for k, s in pool.items() if s["kind"] == "auth"
+                    fingerprint(k) for k, s in pool.items()
+                    if s["kind"] in REJECTED_KINDS
+                ]
+                # 1.6.0.1. Out of rotation, not merely benched. The two are
+                # different sentences on a screen — one asks the reader to
+                # wait, the other asks them to replace a key — and until this
+                # release the panel could only say the first.
+                retired = [
+                    fingerprint(k) for k, s in pool.items() if s.get("retired")
                 ]
                 out[identity] = {
                     "keys": len(pool),
@@ -916,6 +1077,8 @@ class Carousel:
                     "kinds": sorted({s["kind"] for s in pool.values() if s["kind"]}),
                     "invalid": len(invalid),
                     "invalid_keys": sorted(invalid),
+                    "retired": len(retired),
+                    "retired_keys": sorted(retired),
                     # Seconds since this pool was last asked for a key, so a
                     # status bar can show what is in use and leave out what was
                     # touched once an hour ago. ``None`` when it never has been.
@@ -926,6 +1089,21 @@ class Carousel:
                     ),
                 }
         return out
+
+    def is_retired(self, identity: str, key: str) -> bool:
+        """Whether this key has stopped being offered on this identity.
+
+        Read rather than inferred, because the two facts a caller wants to
+        tell apart — "resting, come back later" and "out until you replace
+        it" — look identical from the outside: both are a key that will not
+        be chosen. Only this says which sentence to put on the screen.
+        """
+        if not key:
+            return False
+        with self._lock:
+            pool = self._pools.get(identity) or {}
+            state = pool.get(key)
+            return bool(state and state.get("retired"))
 
     def forget(self, identity: Optional[str] = None) -> None:
         """Drop the bench. For tests, and for a pool that was replaced wholesale."""
@@ -982,6 +1160,11 @@ __all__ = [
     "OTHER_S",
     "EMPTY_RETRY_BUDGET",
     "EMPTY_REST_S",
+    "REJECTED_REST_S",
+    "REJECTED_KINDS",
+    "RETIRING_KINDS",
+    "REFUSALS_BEFORE_RETIRING",
+    "DENIED_REST_S",
     "INVALID_KEY_INDICATORS",
     "classify",
     "extract_delay",

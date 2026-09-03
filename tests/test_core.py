@@ -42,7 +42,11 @@ from core import (  # noqa: E402
     parse_absolute_timestamp,
     parse_duration_to_seconds,
 )
-from core.quota import SOURCE_ANCHOR, extract_from_body  # noqa: E402
+from core.quota import (  # noqa: E402
+    DEFAULT_REJECTED_BENCH_SECONDS as REJECTED_BENCH,
+    SOURCE_ANCHOR,
+    extract_from_body,
+)
 
 NOW = 1_000_000.0
 
@@ -755,7 +759,12 @@ class TestClassify:
             now_epoch=NOW,
         )
         assert verdict.reason == "auth"
-        assert verdict.reset_at == NOW + 3600
+        # 1.6.0.1: five minutes, not the daily hour. A refusal is a fact about
+        # the credential, not a clock, so the wait was never what protected the
+        # pool — select() offering a refused key last is. Being wrong long
+        # costs a healthy key an hour; being wrong short costs one request that
+        # is refused before it is metered.
+        assert verdict.reset_at == NOW + REJECTED_BENCH
 
     def test_a_bare_403_is_left_to_the_host(self):
         # Status alone is not evidence. Hermes checks content-policy blocks
@@ -934,7 +943,11 @@ class TestWhatHermesOwnCorpusSaid:
                                error_message=message, now_epoch=NOW)
             assert verdict is not None, message
             assert verdict.reason == "auth", message
-            assert verdict.reset_at == NOW + 3600, message
+            # Five minutes, not an hour: 1.6.0.1 made a refused credential a
+        # short bench plus a demotion in select(), because over-benching a key
+        # the provider was wrong about costs an hour and under-benching one it
+        # was right about costs a request that fails before it is metered.
+        assert verdict.reset_at == NOW + REJECTED_BENCH, message
 
 
 class TestTheSentenceGoogleSendsOnEveryThrottle:

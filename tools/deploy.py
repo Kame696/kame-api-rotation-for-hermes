@@ -273,6 +273,28 @@ def main() -> int:
             print(f"             {relative}")
         return 1
     print(f"verified   : {len(wanted)} file(s) match the source by digest")
+
+    # This script writes the base home and nothing else, which is the whole
+    # install on a machine with one profile and half of it on a machine with
+    # several: Hermes gives each profile its own ``plugins/`` and a profile
+    # runs whatever is in *its* directory. Saying so here because the drift is
+    # otherwise silent and self-consistent — the default profile's panel shows
+    # the new version and agrees with every check made from it.
+    profiles = home / "profiles"
+    also: list = []
+    if profiles.is_dir():
+        for entry in sorted(profiles.iterdir()):
+            if (entry / "plugins" / SOURCE.name).is_dir():
+                also.append(entry.name)
+    if also:
+        print()
+        print(f"NOTE       : {len(also)} profile(s) also carry this plugin "
+              f"({', '.join(also)})")
+        print("             and are NOT written by this script. Run:")
+        print("               python tools/deploy_profiles.py")
+        print("             then confirm with:")
+        print("               python tools/fingerprints.py")
+
     print()
     print("Restart Hermes for the new code to load. A deployed plugin that was")
     print("never restarted into is the same as a plugin that was never deployed.")

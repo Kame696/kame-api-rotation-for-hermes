@@ -28,7 +28,10 @@ What it proves, in order:
    exists for;
 5. Google's ``400 API key not valid`` quarantines that one key and the others
    carry the answer;
-6. a genuinely bad request still stops at once.
+6. the rotation itself reaches the Events buffer — the `switch` and
+   `recovery` rows 1.6.0.1 added, which no unit test can prove are written
+   because every one of them reads the module that only *declares* the kinds;
+7. a genuinely bad request still stops at once.
 """
 
 from __future__ import annotations
@@ -214,7 +217,37 @@ def main() -> int:
     check("the turn still finished", answer.choices[0].message.content, "carried by the others")
     check("the dead key was tried exactly once", tried.count(dead), 1)
 
-    print("\n[6] a genuinely bad request still stops at once")
+    print("\n[6] the rotation itself reaches the Events buffer")
+    # 1.6.0.1. `switch`, `recovery` and `wait` had been in the event
+    # vocabulary since 1.1.1 and not one of them was ever written, which no
+    # unit test could have caught: every one of them reads the module that
+    # *declares* the kinds. This runs the real dispatch loop against the real
+    # host and then reads what the buffer actually holds afterwards.
+    EVENTS = importlib.import_module("kame_live_carousel.core.events").EVENTS
+
+    EVENTS.clear()
+    turns = []
+
+    def one_bad_then_good(a, api_kwargs, **kwargs):
+        turns.append(a.api_key)
+        if len(turns) < 2:
+            raise Boom("503 Service Unavailable", status_code=503)
+        return Answer("answered on the second key")
+
+    fresh = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    fresh.run(one_bad_then_good, build_agent(), {}, (), {})
+    rows = EVENTS.recent()
+    kinds = [row.get("kind") for row in rows]
+    check("the refusal was recorded", "rotation" in kinds or "quarantine" in kinds, True)
+    check("so was the key that took over", "switch" in kinds, True)
+    check("and so was the answer that ended it", "recovery" in kinds, True)
+    took_over = next(r for r in rows if r.get("kind") == "switch")
+    check("the switch names a key", bool(took_over.get("key")), True)
+    check("as a fingerprint, not a key", took_over["key"].startswith("key:"), True)
+    answered = next(r for r in rows if r.get("kind") == "recovery")
+    check("the recovery says which attempt", "attempt" in (answered.get("reason") or ""), True)
+
+    print("\n[7] a genuinely bad request still stops at once")
     stops = []
 
     def bad_request(a, api_kwargs, **kwargs):

@@ -786,3 +786,93 @@ def test_the_section_carries_counts_and_never_provider_text():
     # cannot appear here even by accident.
     assert tag not in text
     assert FREE_TIER_SENTENCE not in text
+
+
+# --------------------------------------------------------------------------
+# Sent, versus blamed.
+#
+# Every other count in this plugin names the credential the *pool* was
+# pointing at. That is not the same claim as "the key the request carried",
+# and the two came apart twice in this release — a parent row handed out as
+# though it were one key, and a bench filed under the wrong model. Both were
+# found by accident. This is the instrument that finds them on purpose.
+# --------------------------------------------------------------------------
+
+multikey_mod = importlib.import_module("hermes-kame-api-rotation.core.multikey")
+carousel_mod = importlib.import_module("hermes-kame-api-rotation.core.carousel")
+
+
+class _Entry:
+    def __init__(self, **fields):
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+
+def test_the_key_an_entry_would_send_has_one_derivation():
+    # ``runtime_api_key`` wins, because that is what the pool puts on the wire
+    # when it is set — and on a parent row it is the whole comma-joined list,
+    # which is the fact that made splitting necessary.
+    both = _Entry(runtime_api_key="live-key", access_token="stored-key")
+    assert multikey_mod.key_on(both) == "live-key"
+    assert multikey_mod.key_on(_Entry(access_token="  stored-key  ")) == "stored-key"
+    assert multikey_mod.key_on(_Entry()) == ""
+    assert multikey_mod.key_on(None) == ""
+
+
+def test_a_fingerprint_is_never_the_key_nor_a_piece_of_it():
+    key = "AIzaSyA-not-a-real-key-0123456789"
+    mark = carousel_mod.fingerprint(key)
+    assert key not in mark
+    # Not a prefix either: eight real characters of a live credential in a log
+    # is a log nobody can paste into an issue.
+    assert key[:6] not in mark
+    assert mark == carousel_mod.fingerprint(key)
+    assert mark != carousel_mod.fingerprint(key + "x")
+
+
+def test_the_key_in_flight_is_remembered_for_its_own_provider_only():
+    runtime.forget_sent()
+    assert runtime.sent_for("gemini", now=NOW) == ("", "")
+
+    mark = carousel_mod.fingerprint("AIza-in-flight")
+    runtime.note_sent("gemini", "cred-1", mark, now=NOW)
+    assert runtime.sent_for("gemini", now=NOW) == ("cred-1", mark)
+    # Another pool's bench must never be measured against this call.
+    assert runtime.sent_for("nvidia", now=NOW) == ("", "")
+    # And it does lapse, so a bench ten minutes after an unrelated call cannot
+    # be judged against it.
+    assert runtime.sent_for(
+        "gemini", now=NOW + runtime.SENT_TTL_SECONDS + 1.0
+    ) == ("", "")
+    runtime.forget_sent()
+
+
+def test_nothing_recorded_is_silence_and_not_a_disagreement():
+    # An auxiliary call, a provider that never reaches the carousel, a call
+    # older than the memo. A reader that treated any of those as a mismatch
+    # would report a permanent fault on a healthy install.
+    runtime.forget_sent()
+    assert runtime.sent_for("gemini", now=NOW) == ("", "")
+
+
+# --------------------------------------------------------------------------
+# The one check worth making after an upgrade, available from the command.
+# --------------------------------------------------------------------------
+
+def test_the_command_prints_the_build_and_not_only_the_version():
+    menu_mod = importlib.import_module(f"{PACKAGE}.menu")
+    integrity_mod = importlib.import_module(f"{PACKAGE}.integrity")
+
+    mark = menu_mod.MenuCommand._fingerprint()
+    # A version string is written by whoever last edited the manifest and
+    # survives a copy that dropped half the package. This is computed from the
+    # files that actually loaded, which is why it is the check worth making
+    # after an upgrade — and why it now has to be reachable without the
+    # sidebar.
+    assert mark == integrity_mod.verify()["fingerprint"]
+    assert len(mark) == 12
+
+    rendered = menu_mod.MenuCommand(None).show()
+    assert f"build {mark}" in rendered
+    # The version is still there; the build is an addition, not a swap.
+    assert menu_mod.__version__ in rendered

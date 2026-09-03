@@ -141,12 +141,14 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import host_text, settings
+from . import host_text, runtime, settings
 from .core import evidence, multikey, stitch
 from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
 from .core.carousel import (
     EMPTY_REST_S,
+    DENIED_REST_S,
+    REJECTED_REST_S,
     EMPTY_RETRY_BUDGET,
     ENGINE,
     Carousel,
@@ -216,8 +218,24 @@ _HOST_BREAKER_THRESHOLD = 5
 #: the next time. Fifteen keys agreeing that the provider is down is fifteen
 #: keys being right, not evidence about the request -- and promoting it would
 #: throw away the single behaviour this plugin exists for.
+#: The refusals that are about the *credential*, as opposed to about the
+#: pairing of a credential with one model. Only these earn the "replace this
+#: key" sentence; ``denied`` gets its own, because replacing the key is not
+#: what fixes it.
+_CREDENTIAL_REFUSALS = frozenset({"auth", "revoked"})
+
 _NEVER_PROMOTED = frozenset(
-    {"server", "timeout", "per_minute", "daily", "insufficient_quota", "auth"}
+    {"server", "timeout", "per_minute", "daily", "insufficient_quota", "auth",
+     # 1.6.0.1. A pool where every key is a key the provider named dead is a
+     # pool that needs new keys, not a request that is malformed. Promoting it
+     # would end the turn with the wrong sentence on screen.
+     "revoked",
+     # Same round, same reasoning, and it is here to *preserve* behaviour
+     # rather than change it: a denial used to arrive as ``auth`` and was
+     # covered by the entry above. Now that it arrives under its own name it
+     # needs its own entry, or a pool where no key may use one model would
+     # end the turn instead of letting Hermes try another model.
+     "denied"}
 )
 
 VIGIL_FIRST_S = 90.0
@@ -262,11 +280,10 @@ def _entries_of(agent: Any) -> List[Any]:
 
 
 def _key_of(entry: Any) -> str:
-    try:
-        value = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    except Exception:
-        return ""
-    return str(value or "").strip()
+    # Shared with ``pool_binding``, which fingerprints the same value on the
+    # other side of the call to ask whether the bench is blaming the key that
+    # actually went out. See ``core.multikey.key_on``.
+    return multikey.key_on(entry)
 
 
 def candidates(agent: Any) -> Tuple[List[str], Dict[str, Any]]:
@@ -1262,6 +1279,18 @@ class DispatchBinding:
         # they now mean opposite things — this one is a cut the user never
         # saw, and the other is one that got through to Hermes.
         self.tool_call_retries = 0
+        # 1.6.0.1. Per identity, the keys the carousel is using that the
+        # credential pool has never heard of. ``candidates()`` adds the key the
+        # agent is already carrying when the pool does not know it, on purpose
+        # — it is a working credential and dropping it would narrow what the
+        # host would have sent. What was missing is anybody being told.
+        #
+        # It is worth telling. On this machine the pool held one NVIDIA row
+        # pointing at an environment variable with two keys in it, both of
+        # which the provider answered 401; the key that actually authenticated
+        # was a third one, resolved from somewhere else entirely, and nothing
+        # on any screen said it existed. Fingerprints and counts only.
+        self.keys_outside_the_pool: Dict[str, List[str]] = {}
         # Since 1.0.2. It lives on the binding rather than on a call because an
         # outage does not end when a turn does: the provider is still down on
         # the next message, and a filter that reset per call would print its
@@ -1385,6 +1414,19 @@ class DispatchBinding:
         label = identity
         started = time.monotonic()
         self.calls += 1
+
+        # Recorded once per call rather than per attempt: the answer is a
+        # property of how this agent was configured, not of how the call went.
+        try:
+            outside = sorted(
+                fingerprint(key) for key in keys if entry_by_key.get(key) is None
+            )
+            if outside:
+                self.keys_outside_the_pool[identity] = outside
+            else:
+                self.keys_outside_the_pool.pop(identity, None)
+        except Exception:  # pragma: no cover — a dict write and a hash
+            logger.debug("kame: could not note the keys outside the pool", exc_info=True)
 
         attempt = 0
         slept = False
@@ -1512,6 +1554,42 @@ class DispatchBinding:
                 continue
 
             _apply_key(agent, key, entry_by_key.get(key))
+
+            if attempt > 1:
+                # The other half of the story. Every event kind this buffer
+                # had recorded until 1.6.0.1 was something going wrong; what
+                # KAME *did* about it — which key it moved to — was in the log
+                # and nowhere on screen, so the Events tab read as a fault
+                # report rather than as a rotation engine working. The owner
+                # asked for exactly this: every rotation, not only the errors.
+                EVENTS.add(
+                    "switch",
+                    identity=identity,
+                    key=fingerprint(key),
+                    reason=(
+                        "waited for a key, then took this one"
+                        if slept
+                        else f"attempt {attempt} — this key took over"
+                    ),
+                )
+
+            # The one moment the plugin knows what is actually going out. The
+            # pool's pointer says which credential it believes is in use;
+            # this says which key the request will carry, and the two are not
+            # the same claim — a row holding several keys, or a pointer
+            # restored from disk, is exactly where they come apart. Recorded
+            # as a fingerprint so the bench that may follow can be asked
+            # whether it is blaming this key or another one.
+            try:
+                sent_entry = entry_by_key.get(key)
+                runtime.note_sent(
+                    getattr(agent, "provider", ""),
+                    getattr(sent_entry, "id", "") if sent_entry is not None else "",
+                    fingerprint(key),
+                    now=time.time(),
+                )
+            except Exception:  # pragma: no cover — a ContextVar set and a hash
+                logger.debug("kame: could not note the key in flight", exc_info=True)
 
             # Live UI feedback through the spinner, throttled so a rapid
             # rotation does not flood the thinking channel. Always shows pool
@@ -2012,12 +2090,25 @@ class DispatchBinding:
                     )
             if attempt > 1:
                 self.recovered += 1
+                elapsed = time.monotonic() - started
                 logger.info(
                     "kame: %s answered on attempt %d with %s after %s",
                     label,
                     attempt,
                     fingerprint(key),
-                    format_duration(time.monotonic() - started),
+                    format_duration(elapsed),
+                )
+                # The end of the story, and the only row in the buffer that
+                # says the rotation worked. ``recovery`` has been in the event
+                # vocabulary since 1.1.1 and was never once written, so the
+                # panel could show a turn falling apart and never show it
+                # being put back together.
+                EVENTS.add(
+                    "recovery",
+                    identity=identity,
+                    key=fingerprint(key),
+                    reason=f"answered on attempt {attempt}",
+                    seconds=elapsed,
                 )
             # Nothing is in flight any more. Clearing the activity is what
             # lets the chip fall back to plain pool health instead of leaving
@@ -2168,8 +2259,38 @@ class DispatchBinding:
                 kind = "insufficient_quota"
                 delay = self.engine.daily_cooldown_s
             elif kind == "auth_permanent":
-                kind = "auth"
-                delay = self.engine.daily_cooldown_s
+                # ``revoked``, not ``auth``, and the difference is the whole
+                # of what this branch is for. ``classify`` reaches
+                # ``auth_permanent`` only when the provider used the words —
+                # "API key not valid", "invalid api key" — and until 1.6.0.1
+                # that finding was flattened into the same kind as a bare 401
+                # one line later, which threw away the only evidence strong
+                # enough to act on. A bare 401 needs three in a row; this one
+                # leaves rotation immediately, because there is nothing
+                # ambiguous left to gather evidence about.
+                kind = "revoked"
+                delay = REJECTED_REST_S
+            elif getattr(verdict, "kind", "") == "denied":
+                # A 403 that named a *model*, not the key. It reaches here as
+                # ``auth`` because that is the only word Hermes has for it —
+                # ``reason`` is coerced to a ``FailoverReason`` member on the
+                # host side and an unknown one drops the whole classification
+                # — so the distinction rides on ``Verdict.kind`` instead.
+                #
+                # Keeping them apart is the point. ``auth`` is in
+                # ``RETIRING_KINDS``; ``denied`` is deliberately not. Three
+                # refusals from one model the key was never entitled to must
+                # not cost a credential that works everywhere else, and until
+                # 1.6.0.1 it did.
+                kind = "denied"
+                delay = DENIED_REST_S
+            elif kind == "auth":
+                # A bare refusal. Short rest, offered last, and out only after
+                # ``REFUSALS_BEFORE_RETIRING`` of them in a row — the shape
+                # that keeps an expired OAuth token, a proxy or a provider
+                # incident from retiring a working credential, which is
+                # exactly what cost 1.4.0 twenty-one healthy keys.
+                delay = REJECTED_REST_S
             status = ev.status_code
             sized_by = verdict.source or "verdict"
         else:
@@ -2242,21 +2363,66 @@ class DispatchBinding:
             )
         else:
             self.suppressed += 1
-        if is_auth_failure(exc, message):
-            # Actionable and permanent: this one is worth saying loudly, once
-            # per occurrence, because no amount of rotation repairs it.
-            logger.error(
-                "kame: %s %s is not a valid credential — quarantined for %s. "
-                "Replace it in Settings; the remaining keys are carrying this turn.",
+        if kind == "denied":
+            # A refusal of this *pairing*, and the sentence has to say so.
+            #
+            # This used to fall into the branch below, because the gate was
+            # ``is_auth_failure`` — a fresh look at the text, which answers
+            # yes for a 403 — rather than the verdict already decided above.
+            # So a key that simply is not entitled to one model was announced
+            # as "not a valid credential — replace it in Settings", which is
+            # false twice over: nothing is wrong with the key, and replacing
+            # it would change nothing. The owner's rule again: refusing a
+            # model does not mean the API does not work.
+            logger.warning(
+                "kame: %s %s may not use this model — rested %s. "
+                "The key is untouched everywhere else; another model or "
+                "another key answers this turn.",
                 label,
                 fingerprint(key),
                 format_duration(applied),
             )
             EVENTS.add(
+                "denied_model",
+                identity=identity,
+                key=fingerprint(key),
+                reason="this key may not use this model — it still works elsewhere",
+                code=status,
+                seconds=applied,
+            )
+        elif kind in _CREDENTIAL_REFUSALS:
+            # Actionable and permanent: this one is worth saying loudly, once
+            # per occurrence, because no amount of rotation repairs it.
+            #
+            # Gated on the kind decided above rather than on a second reading
+            # of the text. The two disagreed, and the disagreement is what
+            # put the wrong sentence on a denial.
+            #
+            # 1.6.0.1 stopped saying "quarantined for N" here for the kind
+            # that is not a quarantine. A key the provider named dead is out
+            # of rotation until somebody replaces it, and telling the reader
+            # a duration invites them to wait for a key that is not coming
+            # back — which is the sentence the owner objected to after
+            # watching four keys serve an hour and come round again.
+            out_for_good = self.engine.is_retired(identity, key)
+            logger.error(
+                "kame: %s %s is not a valid credential — %s. "
+                "Replace it in Settings; the remaining keys are carrying this turn.",
+                label,
+                fingerprint(key),
+                "out of rotation until it is replaced"
+                if out_for_good
+                else f"rested {format_duration(applied)}",
+            )
+            EVENTS.add(
                 "invalid_key",
                 identity=identity,
                 key=fingerprint(key),
-                reason="replace this key — it is not a valid credential",
+                reason=(
+                    "out of rotation — replace this key, it is not a valid credential"
+                    if out_for_good
+                    else "the provider refused this key as a credential"
+                ),
                 code=status,
                 seconds=applied,
             )
@@ -2364,6 +2530,17 @@ class DispatchBinding:
             "now" if eta is None else f"in {format_duration(eta)}",
         )
         self.waits += 1
+        if eta is not None:
+            # ``wait`` is also in the vocabulary since 1.1.1 and was never
+            # written either. It is the one event that explains a stall: the
+            # panel could show a pool with nothing healthy in it and give no
+            # sign that KAME was awake and counting down.
+            EVENTS.add(
+                "wait",
+                identity=identity,
+                reason=f"every key resting — {healthy} of {total} usable",
+                seconds=eta,
+            )
         slept = 0.0
         while slept < wait:
             if _interrupted(agent):

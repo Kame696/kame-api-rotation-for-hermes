@@ -628,7 +628,18 @@ class TestEverySettingIsEditableFromThePanel:
 
 class TestWhatThePanelIsAllowedToAskFor:
     def test_the_action_list_is_closed(self):
-        assert control.ACTIONS == ("set", "reset", "reset_all", "clear_pool", "clear_events")
+        # Written out in full rather than counted, so adding an action is a
+        # deliberate edit to this line. "refresh" joined in 1.6.0.1; it reads
+        # the .env again and republishes, and reaches no key either.
+        assert control.ACTIONS == (
+            "set", "reset", "reset_all", "clear_pool", "clear_events", "refresh",
+        )
+
+    def test_no_action_can_reach_a_key(self):
+        # The rule the list exists to keep. Restated as a check because a
+        # future action could be added without anybody re-reading the comment.
+        for action in control.ACTIONS:
+            assert "key" not in action or action in ("clear_pool",), action
 
     def test_a_request_naming_something_else_is_refused(self, home, monkeypatch):
         monkeypatch.setattr(envfile, "path", lambda: home / ".env")
@@ -735,7 +746,10 @@ class TestTheSecretsFileIsTouchedSurgically:
 
 class TestTheEventsScreen:
     def test_it_is_bounded(self):
-        for index in range(120):
+        # Sized off the constant rather than a literal, so raising the buffer
+        # (1.6.0.1 took it from 50 to 150) cannot turn this into a check that
+        # the ring never filled up.
+        for index in range(events_module.MAX_EVENTS + 20):
             EVENTS.add("rotation", identity="x", key=f"f{index}")
         assert len(EVENTS.recent()) == events_module.MAX_EVENTS
 
@@ -951,7 +965,14 @@ class TestTheFirstRunAndTheInvalidKey:
 
     def test_the_panel_tells_the_user_to_replace_it(self):
         assert "replace" in UI.lower()
-        assert "Waiting will not repair one" in UI
+        # 1.1.1 said "waiting will not repair one", which was true and was the
+        # whole message. 1.6.0.1 stopped merely saying so and acted on it: a
+        # key refused three times in a row, or once in the provider's own
+        # words, leaves rotation. So the banner now names the state rather
+        # than warning about a wait that no longer happens — and says the
+        # thing a reader needs next, which is that nothing was deleted.
+        assert "left rotation" in UI
+        assert "Nothing was deleted" in UI
 
 
 # --- 9. the release itself --------------------------------------------------

@@ -21,7 +21,9 @@ from typing import Any, Optional
 from . import catalog
 from .quota import (
     DEFAULT_ACCOUNT_BENCH_SECONDS,
+    DEFAULT_DENIAL_BENCH_SECONDS,
     DEFAULT_PER_DAY_BENCH_SECONDS,
+    DEFAULT_REJECTED_BENCH_SECONDS,
     QuotaScope,
     QuotaWindow,
     ResetDecision,
@@ -363,10 +365,14 @@ def structured_error_tokens(
         values = values + [host_class]
     return " ".join(values)
 
-# How long to bench a credential the provider is refusing outright. Long
-# enough that a dead key stops costing a round trip on every turn, short
-# enough that fixing the project brings it back within the hour.
-DENIAL_BENCH_SECONDS = DEFAULT_PER_DAY_BENCH_SECONDS
+# How long to bench a credential the provider is refusing outright.
+#
+# Aliased to the one constant rather than to the refusal bench it used to
+# borrow. The two were the same number, which is exactly why the drift was
+# invisible: ``carousel`` had moved its own denial rest to an hour and this
+# had not, so the bench a denial got depended on which classifier answered.
+# See ``quota.DEFAULT_DENIAL_BENCH_SECONDS``.
+DENIAL_BENCH_SECONDS = DEFAULT_DENIAL_BENCH_SECONDS
 
 _RATE_LIMIT_STATUSES = frozenset({429})
 _SERVER_STATUSES = frozenset({500, 502, 503, 504, 529})
@@ -534,6 +540,7 @@ class Verdict:
     __slots__ = (
         "reason", "retryable", "should_rotate_credential", "should_fallback",
         "reset_at", "quota_window", "quota_scope", "source", "rationale",
+        "kind",
     )
 
     def __init__(
@@ -548,6 +555,7 @@ class Verdict:
         quota_scope: str = QuotaScope.UNKNOWN,
         source: str = "",
         rationale: str = "",
+        kind: str = "",
     ) -> None:
         self.reason = reason
         self.retryable = retryable
@@ -560,6 +568,20 @@ class Verdict:
         self.quota_scope = quota_scope
         self.source = source
         self.rationale = rationale
+        # KAME's own name for this failure, when it is finer than the name
+        # Hermes has a word for. It never leaves the plugin: ``reason`` is
+        # coerced to a ``FailoverReason`` member on the host side and the
+        # whole classification is dropped if it will not coerce, so a denial
+        # has to travel as ``auth`` on the wire whatever else is true of it.
+        #
+        # 1.6.0.1. Without this the two facts were the same string, and the
+        # cost was not cosmetic: a 403 saying *this key may not use this
+        # model* arrived at the dispatch loop as a bare ``auth``, which is in
+        # ``RETIRING_KINDS`` — so three refusals from one model the key was
+        # never entitled to would retire a credential that works perfectly
+        # everywhere else. The owner named the rule this breaks: refusing a
+        # *model* does not mean the API does not work.
+        self.kind = kind or reason
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
@@ -739,6 +761,7 @@ def classify(
                 reason="auth",
                 retryable=False,
                 should_rotate_credential=True,
+                kind="denied",
                 reset_at=now + DENIAL_BENCH_SECONDS,
                 quota_scope=catalog_reading.scope or QuotaScope.PER_MODEL,
                 source="catalog",
@@ -816,12 +839,13 @@ def classify(
             reason="auth",
             retryable=False,
             should_rotate_credential=True,
+            kind="denied",
             reset_at=now + DENIAL_BENCH_SECONDS,
             # The refusal is about this pairing: a model outside the key's
             # tier says nothing about the models inside it.
             quota_scope=QuotaScope.PER_MODEL,
             source="pattern",
-            rationale="access denied for this key/model — re-probe hourly",
+            rationale="access denied for this key/model — re-probed shortly, offered last",
         )
 
     # 4. Authentication and authorization failures with nothing recognisable

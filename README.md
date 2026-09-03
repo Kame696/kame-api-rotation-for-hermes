@@ -4,7 +4,7 @@
 
 ### KAME API Rotation for Hermes — one API key per call, chosen for you
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
+[![Version](https://img.shields.io/badge/version-1.6.0.1-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Hermes](https://img.shields.io/badge/Hermes-v0.20.x-purple.svg)](https://github.com/NousResearch/hermes)
 [![Python](https://img.shields.io/badge/python-3.9%2B-yellow.svg)](https://www.python.org/)
@@ -221,14 +221,22 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.5.0            ● 14 of 15 keys ready   live
+KAME API Rotation  v1.6.0.1          ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
+ALSO USING     the gateway — what the phone app talks to   14 of 15 ready
 POOL HEALTH    gemini:gemini-3.7-flash   14/15 ready   next in 41s
                ██████████████████████████████████░░
 THIS PROCESS   Calls 214 · Rotations 9 · Recovered 7 · Continued 2
 ```
+
+Since 1.6.0.1 the Overview also names the **other Hermes processes sharing the
+same keys**. A Hermes home is usually served by more than one — the Desktop and
+the gateway the phone app talks to — and they share the credential pool, so a
+key one of them is resting is a key the others cannot use either. If one is on
+an older build it is shown in amber: it loaded the plugin at start-up, so it
+stays behind until it is restarted.
 
 *Settings* is described below. *Events* lists the last fifty decisions with the time, the key's fingerprint, the reason and the status code — fingerprints and counts only, never a key and never a line of provider text, so the screen is safe in a screenshot.
 
@@ -308,10 +316,11 @@ Every few minutes, `select()` also drops any pooled key the current candidate li
 
 ### 🟢 Optional — off until you turn it on
 
-The only setting here that *adds* a behaviour. Everything else either adjusts a default or takes something away.
+The settings here *add* a behaviour. Everything else either adjusts a default or takes something away.
 
 | Setting | What it does |
 |---|---|
+| `never_fall_back_to_another_model` | **Stay on the model you asked for.** Hermes' own answer to a spent key is to try a different *model*; KAME's is to try a different key. With this on, a refusal KAME can size never asks for the model swap, so a rotation the pool can still fix is not turned into an answer from a model you did not choose. New in 1.6.0.0. It cannot govern the auxiliary lane — titling and summarising fire no classification hook, so no verdict of KAME's reaches them. |
 | `stream_silence_timeout_seconds` | **Wait for the first token** this long. KAME waits that long for the first character of an answer, and that long again for every character after it; if nothing arrives, the key is rested and the next one takes over. `0`, the default, means never — Hermes' own 120-second read timeout is the only limit. Any other value is raised to at least 5 seconds, because anything shorter fires while a healthy provider is still connecting. Leave it off for a local endpoint, which can legitimately think for minutes. |
 
 ### 🔵 Tuning — already right for the providers this was built against
@@ -319,7 +328,7 @@ The only setting here that *adds* a behaviour. Everything else either adjusts a 
 | Setting | Default | What it does |
 |---|---|---|
 | `daily_quota_cooldown_seconds` | `3600` | How long a key rests after a daily or account-level refusal — the one case where the provider's own retry hint is ignored on purpose, because it reports seconds for a counter that does not roll until midnight. |
-| `stream_resume_limit` | `3` | How many times one request may continue an answer the provider cut off, before what arrived is handed back as it is. |
+| `stream_resume_limit` | `10` | A ceiling, not a rule. How many times one request may continue an answer the provider cut off. Raised from 3 in 1.6.0.0, because the real stop is "no key added a word" and the number was ending turns that were still making progress. |
 
 ### 🔴 Turn parts of KAME off — escape hatches, not preferences
 
@@ -337,11 +346,12 @@ Nine switches, each named for what it gives back to Hermes: `disabled`, `spread_
 
 | Command | What it answers |
 |---|---|
-| `/kame` | Everything at a glance: pool health, this process's counters, what is resting and until when |
+| `/kame` | Everything at a glance: pool health, this process's counters, what is resting and until when — and, since 1.6.0.0, the **build fingerprint**, which is the only way to tell that an upgrade actually loaded |
 | `/kame get` | Every setting, its value, and where that value came from |
 | `/kame set <key> <value>` | Change one, live and permanently |
 | `/kame reset <key>` | Put one setting back to its default |
 | `/kame events` | The last rotations, quarantines and cut streams |
+| `/kame doctor` | **New in 1.6.0.1.** Is it rotating correctly? Which build is actually running and whether the other Hermes processes agree; what each pool holds; every kind of refusal beside the rest it gets and how often it has happened; how many decisions were read off the payload rather than guessed; and a list of the things only a person can fix |
 | `/kame-quota` | The quota ledger, per key and per model |
 | `/kame-keys` | Add pooled keys in bulk (see above) |
 
@@ -360,7 +370,8 @@ Nine switches, each named for what it gives back to Hermes: `disabled`, `spread_
 
 **First, is the whole plugin actually there?** The panel header shows the
 version *and* a twelve-character **build fingerprint** — a hash of the files on
-disk. A version string is written by whoever last edited the manifest and
+disk. Since 1.6.0.0 `/kame` prints the same line, so the check no longer needs
+the sidebar. A version string is written by whoever last edited the manifest and
 survives a copy that dropped half the package; a fingerprint computed from the
 bytes cannot describe files that are not there. If a module is missing, the
 panel says so in the loudest thing on the page instead of showing a green tick,
@@ -379,6 +390,21 @@ Then, in order of effort:
 A column of `guess` is the number worth watching: it means the provider told
 KAME nothing it could size a cooldown from, and every wait on screen is an
 invention. Before 1.4.0 two thirds of them were, and nobody could see it.
+
+Two more readings arrived in 1.6.0.0, both about being wrong rather than being
+busy:
+
+* **`/kame-quota` now opens with what kept going wrong**, by kind and by
+  provider — a daily cap, a per-minute throttle and a rejected credential are
+  three different problems, and only one of them is a timer. Kinds that waiting
+  cannot fix are marked as such. Where the provider named its own counter and
+  KAME acted on a different window, the line says how often: that is a
+  misclassification, in the plugin's own report, instead of a confident verdict
+  with nothing able to argue with it.
+* **`Blamed another key`** in the panel counts cooldowns written against a key
+  that was not the one the request carried. Zero is the only healthy value. If
+  it is ever not zero, that is worth reporting — it means the pool's pointer and
+  the wire disagree about which credential is in use.
 
 If KAME is doing nothing, the counters say so plainly rather than looking like an install that went quiet.
 
@@ -485,6 +511,8 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
+| **1.6.0.1** | Two Hermes, one file — and a refusal stopped costing an hour | The Desktop and the gateway both wrote the whole of the plugin's status file and erased each other, so the panel flickered between two readings a release apart; it now holds a section per process and names the neighbours. A key the provider *names dead* leaves rotation on the first refusal and a bare 401 after three in a row — never deleted, back the instant it works again; while "this key may not use *this model*" never retires the key at all, because the pairing is refused and not the credential. Events records the rotations themselves, not only the failures. Settings is half the height with a Refresh that re-reads the `.env` for real. And `/kame doctor` puts the run diagnostic inside the plugin |
+| **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a day; the cooldown KAME works out finally reaches the pool; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key; and the panel says, per provider, what KAME can actually see |
 | **1.5.0** | The rest of the evidence, and the gate that was never run | The exception's own class is read at last, so a failure carrying no status and no body is sized instead of guessed, and a transport error rests three seconds rather than twenty; two payloads 1.4.0 wrongly claimed are handed back to the host; the Settings panel can no longer freeze with every control disabled |
 | **1.4.0** | The evidence was on the exception all along | The install can no longer claim to be running an engine it does not have; cooldowns are sized from the provider's own machine-readable fields instead of prose two providers share while meaning opposite things; Events says where every wait came from |
 | **1.2.9** | Provider names and inspectable payloads | The classifier stops calling every provider "gemini" — the hardcode that made NVIDIA's limits unreadable |
@@ -573,7 +601,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.5.0** — *because round-robin was never enough*
+🐢⚡ **KAME v1.6.0.1** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 

@@ -192,17 +192,27 @@ def test_no_variadic_child_list_in_the_panel_is_keyless():
 
 
 def test_the_panel_does_not_republish_an_unchanged_reading():
-    """The one-second read stops at the bytes when they have not changed.
+    """The one-second read stops when what this panel shows has not changed.
 
     Without this the panel hands every subscriber a new object once a second
     over a document the backend rewrites every twenty, and the Settings form
     rebuilds itself under whoever is typing into it.
+
+    From 1.6.0.1 the comparison is against *this process's section* rather than
+    the whole file, and the difference is not cosmetic: the file now holds a
+    section per Hermes sharing the home, so on a machine running the Desktop
+    and the gateway the bytes change every time either writes. Comparing the
+    file there is the same as not comparing at all — which is how the fault
+    this test was written for came back, with the test still passing.
     """
     source = UI.read_text(encoding="utf-8")
 
     assert "let lastText" in source
-    assert "if (text === lastText" in source
-    assert "lastText = text" in source
+    assert "if (mineText === lastText" in source
+    assert "lastText = mineText" in source
+    # And the thing compared is one section, not the document.
+    assert "const mineText = JSON.stringify(snap)" in source
+    assert "if (text === lastText" not in source
 
 
 def test_the_page_does_not_subscribe_to_the_clock():

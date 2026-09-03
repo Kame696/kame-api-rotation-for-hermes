@@ -175,6 +175,36 @@ def main() -> int:
             False,
         )
 
+    print(chr(10) + "[8] /kame doctor answers from the installed copy")
+    # 1.6.0.1. The diagnostic moved into the plugin precisely so it would
+    # survive a reinstall, and a diagnostic nobody has ever run against a real
+    # install is exactly the thing this project has been bitten by before.
+    # This calls it through the installed module and reads what comes back.
+    if module_name:
+        import importlib
+
+        try:
+            menu = importlib.import_module(f"{module_name}.menu")
+            report = menu.MenuCommand(None).handle("doctor")
+        except Exception as exc:
+            print(f"        {type(exc).__name__}: {exc}")
+            report = ""
+        check("it returned a report", bool(report), True)
+        check("it did not report its own failure", "/kame doctor failed" in report, False)
+        for heading in (
+            "Which KAME is running",
+            "What it can see",
+            "What each error costs a key",
+            "Worth a person's time",
+        ):
+            check(f"it has a section: {heading}", heading in report, True)
+        check("it names the running build", "1.6.0" in report, True)
+        # The rule every screen in this plugin follows. `key:` prefixes a
+        # fingerprint; a raw key never appears, so neither does any string
+        # long enough to be one.
+        longest = max((len(word) for word in report.split()), default=0)
+        check("nothing in it is long enough to be a key", longest < 40, True)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {', '.join(failures)}")

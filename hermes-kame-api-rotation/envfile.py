@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,43 @@ def write(name: str, value: str) -> Tuple[bool, str]:
     except Exception as exc:
         return False, f"could not write {target}: {type(exc).__name__}"
     return True, f"{'updated' if replaced else 'added'} in {target}"
+
+
+def read_kame() -> Dict[str, str]:
+    """Every ``KAME_*`` assignment in Hermes' ``.env``, as it stands right now.
+
+    Only this plugin's namespace, and only the last assignment of each name —
+    the same rule dotenv applies, so what this returns is what a restarted
+    Hermes would actually have in its environment.
+
+    Never raises, and returns nothing at all when there is no file to read:
+    the callers use this to *offer* a refresh, and a refresh that cannot see
+    the file is a refresh that changes nothing rather than an error.
+    """
+    target = path()
+    if target is None or not target.is_file():
+        return {}
+    found: Dict[str, str] = {}
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        logger.debug("kame: could not read the .env", exc_info=True)
+        return {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith(NAMESPACE) or "=" not in stripped:
+            continue
+        name, _, value = stripped.partition("=")
+        name = name.strip()
+        if not name.startswith(NAMESPACE):
+            continue
+        value = value.strip()
+        # dotenv strips one matched pair of quotes, so a value written by
+        # another tool reads the same here as it would after a restart.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        found[name] = value
+    return found
 
 
 def forget(name: str) -> Tuple[bool, str]:

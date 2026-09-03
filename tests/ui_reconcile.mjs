@@ -65,7 +65,10 @@ const SNAPSHOT = {
     }
   ],
   reason: '',
-  schema: 5,
+  role: 'desktop',
+  profile: 'default',
+  updated_at: 1787580010,
+  schema: 6,
   setting_groups: [
     { id: 'extra', note: 'Off until you turn it on.', title: 'Optional' },
     { id: 'off', note: 'Escape hatches.', title: 'Turn parts of KAME off' }
@@ -128,6 +131,29 @@ function atom(initial) {
 
 /** `jsx`/`jsxs` recording the tree instead of rendering it. The third argument
  *  is the key, which is where React's runtime takes it and where `h` puts it. */
+// Schema 6: the file holds one section per Hermes sharing the home. The panel
+// is rendered against the case that broke — the Desktop and the gateway side
+// by side, the gateway a whole release behind — because a single-process file
+// is the case that already worked.
+const DOCUMENT = {
+  schema: 6,
+  updated_at: 1787580010,
+  processes: {
+    4242: SNAPSHOT,
+    1717: {
+      build: { complete: true, fingerprint: '485bc4a5cf49', missing: [], guidance: 'host:2' },
+      installed: true,
+      pid: 1717,
+      profile: '',
+      reason: '',
+      role: 'gateway',
+      totals: { healthy: 3, keys: 3, resting: 0, soonest_s: null },
+      updated_at: 1787580008,
+      version: '1.5.0'
+    }
+  }
+}
+
 const jsx = (type, props, key) => ({ key: key === undefined ? null : key, props, type })
 const jsxs = jsx
 
@@ -195,17 +221,27 @@ async function loadPlugin() {
 let written = null
 const timers = new Set()
 
+// Swappable, so a check can change what the next poll reads. The panel is
+// a poller, and the only way to observe what it does with a changed file
+// is to change the file under it and let it read again.
+let served = null
+let poll = null
+
 globalThis.document = { visibilityState: 'visible' }
 globalThis.window = {
   clearInterval: id => timers.delete(id),
   hermesDesktop: {
     desktopPluginsRoot: async () => 'C:/fake/hermes/desktop-plugins',
-    readFileText: async () => ({ text: JSON.stringify(SNAPSHOT) }),
+    readFileText: async () => ({ text: JSON.stringify(served ?? DOCUMENT) }),
     writeTextFile: async (target, body) => {
       written = { body, target }
     }
   },
-  setInterval: () => {
+  setInterval: fn => {
+    // Kept rather than dropped: the reader installs itself here, and a
+    // check that wants to see the second read has to be able to cause one.
+    poll = fn
+
     const id = Symbol('timer')
     timers.add(id)
 
@@ -282,9 +318,9 @@ function walk(node, out = []) {
 
 const failures = []
 
-function check(name, run) {
+async function check(name, run) {
   try {
-    run()
+    await run()
     console.log(`ok   ${name}`)
   } catch (error) {
     failures.push(`${name}: ${error.message}`)
@@ -309,7 +345,7 @@ assert.ok(chip, 'the plugin registers a status-bar chip')
 // The reader ticks once on start; give the awaits in `readSnapshot` a turn.
 await new Promise(resolve => setTimeout(resolve, 20))
 
-check('the snapshot reached the page', () => {
+await check('the snapshot reached the page', () => {
   const tree = render(page.render())
   const text = JSON.stringify(tree)
 
@@ -317,7 +353,7 @@ check('the snapshot reached the page', () => {
   assert.ok(!text.includes('Reading the pool'), 'the page is past its empty state')
 })
 
-check('every variadic child list is keyed, on every tab', () => {
+await check('every variadic child list is keyed, on every tab', () => {
   const seen = new Set()
   const offenders = []
   const surfaces = [chip.render(), page.render()]
@@ -326,7 +362,14 @@ check('every variadic child list is keyed, on every tab', () => {
   // 1.2.2 was the one holding the inputs — so all three are walked. Each is
   // checked for a landmark first, because a walk over a tab that never opened
   // is a check that passes by seeing nothing.
-  const landmark = { Events: 'Rotated', Overview: 'Pool health', Settings: 'KAME works with none of these' }
+  // Landmarks are the tab's own furniture, not one row's label: 1.6.0.1
+  // renamed 'Rotated' to 'Rested' and this check silently stopped opening the
+  // Events tab, which is exactly the failure the assertion below exists for.
+  const landmark = {
+    Events: 'Reading this list',
+    Overview: 'Pool health',
+    Settings: 'KAME works with none of these'
+  }
 
   for (const label of ['Settings', 'Events', 'Overview']) {
     openTab(page, label)
@@ -370,7 +413,7 @@ check('every variadic child list is keyed, on every tab', () => {
   )
 })
 
-check('the settings tab renders an editable number field', () => {
+await check('the settings tab renders an editable number field', () => {
   openTab(page, 'Settings')
 
   const nodes = walk(render(page.render()))
@@ -378,19 +421,56 @@ check('the settings tab renders an editable number field', () => {
 
   assert.ok(inputs.length > 0, 'the number setting rendered an input')
   assert.ok(
-    nodes.some(node => node.key === 'preamble'),
+    nodes.some(node => node.key === 'toolbar'),
     'the settings body kept its stable slots'
   )
 })
 
-check('the fixes that made this version are still in place', () => {
+// 1.6.0.1. The fault the per-process schema exists for, reproduced rather
+// than asserted about: the Desktop and the gateway share a home, and the
+// gateway rewriting its own section must not disturb this panel. The old
+// code compared the whole file, so it republished on every neighbour write
+// and the Settings form rebuilt itself under the cursor once a second.
+await check('a neighbour writing its own section does not re-render this panel', async () => {
+  assert.ok(poll, 'the panel installed no reader, so nothing below proves anything')
+
+  const first = JSON.stringify(render(page.render()))
+
+  served = structuredClone(DOCUMENT)
+  served.processes[1717].updated_at += 5
+  served.processes[1717].totals.healthy = 1
+  served.updated_at += 5
+  await poll()
+
+  const second = JSON.stringify(render(page.render()))
+  // Compared as a boolean, not with assert.equal: these trees are tens of
+  // thousands of characters and a diff of two of them is not a failure
+  // message anybody can read.
+  assert.ok(second === first, 'the page changed because a different process wrote')
+
+  // And it does still follow its own process, or the assertion above would
+  // pass just as well on a panel that had stopped reading altogether.
+  served = structuredClone(served)
+  served.processes[4242].totals.healthy = 0
+  served.processes[4242].updated_at += 6
+  await poll()
+
+  const third = JSON.stringify(render(page.render()))
+  assert.ok(third !== second, 'the page ignored a change to its own process')
+  served = null
+})
+
+await check('the fixes that made this version are still in place', () => {
   // The structural guarantee, stated once more against the raw text: the two
   // lists that gained and lost siblings are the ones that regressed, so a
   // future edit that adds an unkeyed conditional child to either is caught
   // here even if the fixture stops reaching that branch.
   const source = fs.readFileSync(SOURCE, 'utf8')
 
-  for (const needle of ["key: 'saving'", "key: 'notice'", "key: 'preamble'", "key: 'body'", "key: 'stale'"]) {
+  // 'preamble' became 'toolbar' in 1.6.0.1 — the paragraph moved into the
+  // card that now carries the buttons. The name is not the point; every
+  // conditional sibling of that list carrying *a* key is.
+  for (const needle of ["key: 'saving'", "key: 'notice'", "key: 'toolbar'", "key: 'body'", "key: 'stale'"]) {
     assert.ok(source.includes(needle), `${needle} is missing — the settings page lost a stable slot`)
   }
 

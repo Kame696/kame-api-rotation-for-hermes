@@ -93,6 +93,28 @@ def child_id(parent_id: object, key: str) -> str:
     return f"{str(parent_id or 'k')}-{digest[:8]}"
 
 
+def key_on(entry: object) -> str:
+    """The key an entry would actually send, by the host's own precedence.
+
+    ``runtime_api_key`` first because that is what the pool puts on the wire
+    when it is set — on a parent row it is the whole comma-joined list, which
+    is the fact that made splitting necessary in the first place.
+
+    Lives here, and not in either binding, because two callers now compare its
+    result across a call boundary: the carousel fingerprints the key it puts
+    on the agent, and the pool fingerprints the key it is about to bench.
+    Deriving that value two slightly different ways would manufacture a
+    disagreement out of two correct readings.
+    """
+    try:
+        value = getattr(entry, "runtime_api_key", None) or getattr(
+            entry, "access_token", ""
+        )
+    except Exception:
+        return ""
+    return str(value or "").strip()
+
+
 def split_value(raw: object) -> Tuple[List[str], int]:
     """Split a stored credential value into the keys it holds.
 

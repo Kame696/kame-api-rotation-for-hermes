@@ -70,6 +70,10 @@ REQUIRED_MODULES: Tuple[str, ...] = (
 
 #: Reported but never fatal: the plugin works without them, less well.
 OPTIONAL_MODULES: Tuple[str, ...] = (
+    # 1.6.0.1. Optional rather than required, deliberately: an install that
+    # lost the diagnostic still rotates, and the report a missing diagnostic
+    # would produce is exactly the one nobody could read.
+    "core/doctor.py",
     "commands.py",
     "menu.py",
     "control.py",
