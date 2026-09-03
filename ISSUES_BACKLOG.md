@@ -5,7 +5,30 @@
 
 ## Open
 
-*(nothing tracked)*
+### 🔲 Aux lane não tenta de novo antes de cair pro fallback provider-wide — planejado pra 1.5.1
+- **Sintoma (visto em produção, 30/08/2026, `agent.log` 20:18:56):** pool
+  Gemini do aux (`skills_hub`, modelo `gemini-3.5-flash-lite`) ficou sem
+  nenhuma chave saudável no momento da chamada. `auxiliary_client` do próprio
+  Hermes caiu pro fallback provider-wide (OpenRouter → Nous) na hora, sem
+  tentar de novo dentro do pool Gemini. Os dois fallbacks também falharam
+  (OpenRouter com modelo fora de `:free`, Nous sem `hermes auth`), então a
+  chamada de aux morreu de vez — nesse caso específico, o roteador de skill
+  (`skills_hub`) não decidiu direito qual skill carregar, e a resposta saiu
+  sem o formato aprovado (`central-inteligencia`).
+- **Causa:** `aux_binding.py` só anuncia provider+model pro pool scope
+  (`runtime.scoped_call`) — quem decide desistir ou tentar de novo é o
+  `auxiliary_client` do host, chamando `mark_exhausted_and_rotate` uma vez e
+  seguindo pro fallback configurado. KAME não intercepta esse "desistiu cedo
+  demais".
+- **Proposta pra 1.5.1:** dentro do `scoped_call` do aux, se o pool anunciado
+  não tiver nenhuma chave saudável no instante da chamada, esperar o menor
+  cooldown do pool e tentar de novo (pelo menos 1 retry) antes de deixar a
+  chamada cair pro fallback provider-wide do host. Justamente o KAME existe
+  pra rotacionar em vez de desistir — o aux devia ganhar o mesmo tratamento
+  que o modelo principal já tem.
+- **Nenhum fix aplicado.** Usuário não usa OpenRouter (sem key configurada
+  pra esse provedor) — mexer no SKU do fallback não muda nada de verdade.
+  Fica só a proposta de retry acima pro 1.5.1.
 
 ---
 

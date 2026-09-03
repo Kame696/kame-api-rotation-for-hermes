@@ -142,10 +142,31 @@ class Block:
     reset_at: Optional[float] = None
     sized_by: str = SIZED_BY_HOST
     reason: str = "rate_limit"
+    #: The window the *provider's own* counter named, when it named one.
+    #: ``window`` above is what KAME acted on; this is what it was told, kept
+    #: separately so the two can be compared. A row written before 1.6.0.0 has
+    #: no such field and reads back as ``unknown``, which is exactly what it
+    #: means: nobody recorded what the provider said.
+    stated_window: str = "unknown"
 
     @property
     def key(self) -> Tuple[str, str]:
         return (self.credential_id, self.model)
+
+    @property
+    def contradicted(self) -> bool:
+        """The provider named a window and KAME acted on a different one.
+
+        Both have to be known for this to mean anything. An unread counter is
+        silence, not disagreement, and counting silence as a contradiction
+        would make every provider that states nothing look like a
+        misclassification.
+        """
+        stated = (self.stated_window or "unknown").strip().lower()
+        acted = (self.window or "unknown").strip().lower()
+        if stated in ("", "unknown") or acted in ("", "unknown"):
+            return False
+        return stated != acted
 
     @property
     def predicted_seconds(self) -> Optional[float]:
@@ -166,6 +187,7 @@ class Block:
             "reset_at": self.reset_at,
             "sized_by": self.sized_by,
             "reason": self.reason,
+            "stated_window": self.stated_window,
         }
 
     @classmethod
@@ -190,6 +212,7 @@ class Block:
             reset_at=_coerce_float(payload.get("reset_at")),
             sized_by=_sized_by(payload.get("sized_by")),
             reason=str(payload.get("reason") or "rate_limit"),
+            stated_window=_clean(payload.get("stated_window")) or "unknown",
         )
 
 
@@ -310,6 +333,7 @@ class Journal:
         reset_at: Optional[float] = None,
         sized_by: str = SIZED_BY_HOST,
         reason: str = "rate_limit",
+        stated_window: str = "unknown",
     ) -> Optional[Block]:
         """File one refusal. Returns the stored row, or ``None`` if unusable.
 
@@ -332,6 +356,7 @@ class Journal:
             reset_at=_coerce_float(reset_at),
             sized_by=_sized_by(sized_by),
             reason=str(reason or "rate_limit"),
+            stated_window=_clean(stated_window) or "unknown",
         )
         self._blocks.append(block)
         # A block that arrives out of order — a clock adjustment, a record
@@ -700,4 +725,120 @@ def summarize(journal: Journal, *, now: float) -> List[WindowStat]:
             )
         )
     stats.sort(key=lambda stat: (-stat.last_seen, stat.provider, stat.model))
+    return stats
+
+
+# ── what kind of refusal, not just how many ──────────────────────────────
+# The tally above answers "is KAME reading these", grouped by the window it
+# concluded. It cannot answer the question an owner actually asks first —
+# *what keeps going wrong* — because a daily cap, a per-minute throttle and a
+# rejected credential are three different problems with three different
+# answers, and only one of them is a timer.
+#
+# Written in KAME's own vocabulary, never the provider's. Nothing here touches
+# error text.
+
+#: Reasons where waiting changes nothing. Matched as substrings because the
+#: host stores whatever its classifier produced and the spelling varies —
+#: the same reasoning, and the same list, as ``core/probe.py``.
+_PERSON_REASONS = ("auth", "invalid", "revoked", "permission", "suspend")
+_MONEY_REASONS = ("billing", "credit", "payment", "insufficient")
+
+_WINDOW_PHRASES: Dict[str, str] = {
+    "per_minute": "per-minute throttle",
+    "per_hour": "hourly cap",
+    "per_day": "daily cap",
+    "per_week": "weekly cap",
+    "per_month": "monthly cap",
+    "account": "account-wide limit",
+}
+
+
+def describe_kind(block: Block) -> str:
+    """A readable name for what went wrong, from the two fields that say so.
+
+    The reason decides first. A 429 wearing an auth failure is still an auth
+    failure, and calling it a throttle because it arrived on that status is
+    the mistake this whole plugin exists to stop making.
+    """
+    reason = (block.reason or "").strip().lower()
+    if any(marker in reason for marker in _PERSON_REASONS):
+        return "credential rejected"
+    if any(marker in reason for marker in _MONEY_REASONS):
+        return "out of credits"
+    window = (block.window or "unknown").strip().lower()
+    return _WINDOW_PHRASES.get(window, "rate limit, window unread")
+
+
+@dataclass(frozen=True)
+class KindStat:
+    """How often one kind of refusal happened to one provider."""
+
+    provider: str
+    kind: str
+    blocks: int = 0
+    kame_sized: int = 0
+    #: Rows where the provider's own counter named a different window than the
+    #: one KAME acted on. The misclassification signal, counted rather than
+    #: argued about.
+    contradicted: int = 0
+    #: Rows where the provider named a counter at all. Without it a zero in
+    #: the column above is unreadable: no disagreement and nothing to disagree
+    #: with look identical.
+    stated: int = 0
+    last_seen: float = 0.0
+
+    @property
+    def needs_a_person(self) -> bool:
+        """No timer fixes this one."""
+        return self.kind in ("credential rejected", "out of credits")
+
+
+def count_kinds(journal: Journal, *, now: float) -> List[KindStat]:
+    """One row per provider and kind, over the same fortnight as ``summarize``."""
+    horizon = now - MAX_AGE_SECONDS
+    buckets: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for block in journal.blocks():
+        if block.at < horizon:
+            continue
+        key = (block.provider, describe_kind(block))
+        bucket = buckets.setdefault(
+            key,
+            {"blocks": 0, "kame_sized": 0, "contradicted": 0, "stated": 0, "last_seen": 0.0},
+        )
+        bucket["blocks"] += 1
+        if block.sized_by == SIZED_BY_KAME:
+            bucket["kame_sized"] += 1
+        stated = (block.stated_window or "unknown").strip().lower()
+        if stated not in ("", "unknown"):
+            bucket["stated"] += 1
+        if block.contradicted:
+            bucket["contradicted"] += 1
+        bucket["last_seen"] = max(bucket["last_seen"], block.at)
+
+    stats = [
+        KindStat(
+            provider=provider,
+            kind=kind,
+            blocks=bucket["blocks"],
+            kame_sized=bucket["kame_sized"],
+            contradicted=bucket["contradicted"],
+            stated=bucket["stated"],
+            last_seen=bucket["last_seen"],
+        )
+        for (provider, kind), bucket in buckets.items()
+    ]
+    # Grouped by provider, and the groups ordered by how much trouble each
+    # provider is in. Sorting on the row count alone reads well in a list and
+    # renders wrong under a heading: one provider's busiest kind can outrank
+    # another's while its quieter kinds fall below, and the report then prints
+    # the same provider twice. Caught rendering the owner's own journal.
+    totals: Dict[str, int] = {}
+    for stat in stats:
+        totals[stat.provider] = totals.get(stat.provider, 0) + stat.blocks
+    stats.sort(
+        key=lambda stat: (
+            -totals[stat.provider], stat.provider, -stat.blocks, stat.kind,
+        )
+    )
     return stats

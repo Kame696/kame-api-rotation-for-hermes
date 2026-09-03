@@ -1256,6 +1256,12 @@ class DispatchBinding:
         # cannot hold a long stream, and the only way anyone finds that out is
         # by seeing the number climb.
         self.tool_call_cuts = 0
+        # 1.6.0.0. The same event, caught one step earlier: a tool call the
+        # stream dropped before anything reached the screen, asked for again
+        # on another key. Counted separately from ``tool_call_cuts`` because
+        # they now mean opposite things — this one is a cut the user never
+        # saw, and the other is one that got through to Hermes.
+        self.tool_call_retries = 0
         # Since 1.0.2. It lives on the binding rather than on a call because an
         # outage does not end when a turn does: the provider is still down on
         # the next message, and a filter that reset per call would print its
@@ -1394,6 +1400,33 @@ class DispatchBinding:
         seen = ""
         resumes = 0
         resume_budget = self._resume_budget(agent, api_kwargs)
+        # 1.6.0.0. Which keys have been asked to continue this answer and
+        # added nothing to it. This, and not the count above, is what ends the
+        # stitching loop.
+        #
+        # A number was the wrong shape for the question. Three resumes is
+        # generous for a provider that hiccupped once and far too few for one
+        # having a bad ten minutes — and whichever number is chosen, the turn
+        # it ends is the turn the answer was still growing. That is the
+        # ceiling this plugin's own ADR 0002 rejects, and the owner's contract
+        # rejects it in one sentence: *the agent should not stop because of
+        # errors*.
+        #
+        # So the loop asks for proof instead, in the shape
+        # ``_pool_agrees_it_is_the_request`` already uses for rotation:
+        # unanimity. Continue while any key is still adding words to the
+        # answer; stop only once every key in the pool has been asked and not
+        # one of them contributed anything. With fifteen keys that is fifteen
+        # empty continuations. With one key it is one, which is right — a
+        # single-key pool that returned nothing has already asked everyone
+        # there is to ask.
+        #
+        # Progress clears the set, because a key that answers proves the pool
+        # is not out of answers, whatever the others did before it.
+        stalled: set = set()
+        #: Keys that stopped mid-tool-call this run. Same rule as ``stalled``:
+        #: ask each key once, and stop when the pool starts repeating itself.
+        tool_cut_keys: set = set()
         #: The cut response the last resume was launched from. Kept because a
         #: continuation can fail in a way that ends the call, and the answer the
         #: user has already read needs a response object to travel home in.
@@ -1669,14 +1702,39 @@ class DispatchBinding:
             partial = _partial_text(result)
             if partial is not None:
                 self.stream_drops += 1
+                before = len(seen)
                 seen += _contribution(delivery, seen, partial, stitcher is not None)
+                # Measured on the answer itself rather than on what the
+                # response object claims: a continuation that returns text the
+                # stitcher recognises as a repeat has added nothing, and is
+                # exactly the case a length check catches and a truthiness
+                # check does not.
+                if len(seen) > before:
+                    # This key added words, so the pool is not out of answers
+                    # — whatever the ones before it did.
+                    stalled.clear()
+                    going_in_circles = False
+                else:
+                    # Asked twice, silent twice, with nothing having changed
+                    # in between: the loop has come back round to a key that
+                    # already proved it had nothing to add. That, and not a
+                    # count, is the end of the road.
+                    #
+                    # Stated this way rather than as "every key has stalled"
+                    # because the two are not the same and the difference is
+                    # a hang: a key rested by an earlier drop is still in
+                    # ``keys`` and will not be handed out again for thirty
+                    # seconds, so waiting for it to stall too is waiting for
+                    # an attempt that is never going to be made.
+                    going_in_circles = key in stalled
+                    stalled.add(key)
                 EVENTS.add(
                     "stream_drop",
                     identity=identity,
                     key=fingerprint(key),
                     reason="the provider closed the stream mid-answer",
                 )
-                if seen and resumes < resume_budget:
+                if seen and not going_in_circles and resumes < resume_budget:
                     resumes += 1
                     self.resumes += 1
                     cut_result = result
@@ -1725,16 +1783,21 @@ class DispatchBinding:
                     _clear_host_stale_streak(agent)
                     self.rotations += 1
                     continue
-                # Out of budget, or nothing was ever shown. Everything that did
-                # arrive goes back in one piece, and Hermes' own continuation
-                # takes it from there — which is the 1.1.0 behaviour, reached
-                # only after trying not to need it.
+                # Nothing was ever shown, or the whole pool has now been asked
+                # and none of it added a word. Everything that did arrive goes
+                # back in one piece, and Hermes' own continuation takes it from
+                # there — which is the 1.1.0 behaviour, reached only after
+                # trying not to need it.
                 self.mid_stream_cuts += 1
                 logger.info(
-                    "kame: %s answer still cut after %d resume(s) — handing "
+                    "kame: %s answer still cut after %d resume(s) — %s, handing "
                     "what arrived back to Hermes",
                     label,
                     resumes,
+                    "nothing was shown to continue from" if not seen
+                    else f"{len(stalled)} key(s) continued it and added nothing"
+                    if going_in_circles
+                    else f"the resume ceiling of {resume_budget} was reached",
                 )
                 self.engine.mark(identity, key, True)
                 _publish(self, None)
@@ -1757,6 +1820,72 @@ class DispatchBinding:
             # rests only when there is another one to route to.
             if getattr(result, "id", "") == PARTIAL_STUB_ID:
                 self.stream_drops += 1
+                # 1.6.0.0. Half a tool call cannot be *continued* — that has
+                # not changed, and is why ``_partial_text`` returns ``None``
+                # for this shape. But it can be asked for again, from the
+                # start, on a different key: the request is unchanged and,
+                # when nothing has reached the screen, a fresh attempt cannot
+                # print anything twice. Nothing was risked by giving up here
+                # and something real was lost.
+                #
+                # What the user sees when this reaches Hermes is the reason
+                # it matters. The host reads the stub, decides the call was
+                # oversized, and writes into the conversation:
+                #
+                #     your previous tool call was too large ...
+                #     Do NOT retry ... break it into smaller calls
+                #
+                # That instruction is addressed to the model and it is often
+                # simply false — the cause was a key that timed out
+                # mid-argument, and the identical call on the next key
+                # succeeds. Left in place it teaches the model to avoid a
+                # tool that was never the problem.
+                #
+                # Bounded the same way the empty-answer branch below is
+                # bounded, and by the same rule the resume loop uses: walk
+                # the pool once. Coming back to a key that already did this
+                # is the proof that it is the request, and then the stub goes
+                # home exactly as it did before.
+                # ``seen`` is not the whole question here. It is filled by the
+                # partial-text branch above, and ``_partial_text`` returns
+                # ``None`` for this stub on purpose — so a first attempt that
+                # streamed a sentence and *then* dropped inside a tool call
+                # arrives with ``seen`` still empty and the sentence sitting
+                # in the delivery. Retrying on that would print it twice.
+                shown = seen or getattr(delivery, "text", "")
+                first_time = key not in tool_cut_keys
+                tool_cut_keys.add(key)
+                # Walk the pool once and stop: another key left to ask, and
+                # this key not already having been asked. The second half is
+                # what makes it terminate when the engine hands back a key it
+                # has already tried — with every key rested there is nothing
+                # left for it to hand back but a repeat.
+                unasked = any(k and k not in tool_cut_keys for k in keys)
+                if not shown and first_time and unasked:
+                    self.tool_call_retries += 1
+                    rested = _rest_unless_it_is_the_only_one(
+                        self.engine, identity, keys, key, DROP_REST_S, "timeout"
+                    )
+                    logger.info(
+                        "kame: %s %s stopped inside a tool call before anything "
+                        "was shown — asking another key for the same call "
+                        "rather than telling the model its call was too big; %s",
+                        label,
+                        fingerprint(key),
+                        f"the key rests {format_duration(rested)}"
+                        if rested
+                        else "the key is not rested, it is the only one that is well",
+                    )
+                    EVENTS.add(
+                        "stream_drop",
+                        identity=identity,
+                        key=fingerprint(key),
+                        reason="the stream stopped inside a tool call — retrying on another key",
+                        seconds=rested or None,
+                    )
+                    _clear_host_stale_streak(agent)
+                    self.rotations += 1
+                    continue
                 self.tool_call_cuts += 1
                 if seen:
                     content = ""
@@ -1916,10 +2045,16 @@ class DispatchBinding:
             # the user has seen, and a continuation without that record is the
             # answer printed twice.
             return 0
+        # The default is read from ``settings.ALL_NUMBERS`` rather than
+        # written here. It was a literal ``3.0``, which meant the table said
+        # one thing and the only code that reads the value said another —
+        # raising the documented default in 1.6.0.0 would have changed the
+        # panel and nothing else.
+        fallback = settings.ALL_NUMBERS.get(settings.STREAM_RESUME_LIMIT, 10.0)
         try:
-            return max(0, int(settings.number(settings.STREAM_RESUME_LIMIT, 3.0)))
+            return max(0, int(settings.number(settings.STREAM_RESUME_LIMIT, fallback)))
         except Exception:  # pragma: no cover — settings clamps before this
-            return 3
+            return int(fallback)
 
     @staticmethod
     def _pool_agrees_it_is_the_request(

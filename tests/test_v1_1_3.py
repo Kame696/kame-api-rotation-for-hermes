@@ -303,8 +303,13 @@ class TestAStreamThatStoppedInsideAToolCall:
         agent = Agent()
         binding = _binding()
         binding.run(lambda *a, **k: cut_in_a_tool_call(), agent, conversation(), (), {})
+        # 1.6.0.0: every key in the pool is asked for the call before the
+        # stub goes home, so there is one drop per key — and exactly one
+        # "handed back", at the end, when the pool started repeating itself.
+        assert binding.stream_drops == len(KEYS)
+        assert binding.tool_call_retries == len(KEYS) - 1
+        assert binding.engine.snapshot()["google:gemini-3.7-flash"]["failures"] == len(KEYS)
         assert binding.tool_call_cuts == 1
-        assert binding.stream_drops == 1
         # Not a continuation and not a completed answer.
         assert binding.resumes == 0
         assert binding.stitched == 0
@@ -316,8 +321,49 @@ class TestAStreamThatStoppedInsideAToolCall:
         binding = _binding()
         binding.run(lambda *a, **k: cut_in_a_tool_call(), agent, conversation(), (), {})
         rows = binding.engine.snapshot()["google:gemini-3.7-flash"]
-        assert rows["failures"] == 1
+        assert rows["failures"] == len(KEYS)
         assert rows["successes"] == 0
+
+    def test_the_call_is_asked_of_another_key_before_hermes_is_told_it_was_too_big(self):
+        # 1.6.0.0, and the reason it is worth the extra request. Hermes reads
+        # this stub as an oversized call and writes "your previous tool call
+        # was too large ... Do NOT retry" into the conversation. When the
+        # cause was a key that timed out mid-argument that instruction is
+        # false, and it teaches the model to stop using a working tool.
+        agent = Agent()
+        calls = []
+
+        def host(agent_, api_kwargs, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return cut_in_a_tool_call()
+            return answer("done")
+
+        binding = _binding()
+        result = binding.run(host, agent, conversation(), (), {})
+        assert len(calls) == 2
+        assert content_of(result) == "done"
+        # Nothing was handed back, so Hermes never invents the nudge.
+        assert binding.tool_call_cuts == 0
+        assert binding.tool_call_retries == 1
+
+    def test_a_call_cut_after_text_was_shown_is_still_never_retried(self):
+        # The boundary. A plain retry reprints whatever the user already read,
+        # and half a JSON payload still cannot be continued — so this case
+        # keeps the 1.1.3 behaviour exactly.
+        agent = Agent()
+        calls = []
+
+        def host(agent_, api_kwargs, **kwargs):
+            calls.append(1)
+            agent_._fire_stream_delta("Reading ")
+            return cut_in_a_tool_call()
+
+        binding = _binding()
+        binding.run(host, agent, conversation(), (), {})
+        assert len(calls) == 1
+        assert binding.tool_call_retries == 0
+        assert binding.tool_call_cuts == 1
 
     def test_the_events_screen_names_the_tool(self):
         agent = Agent()
@@ -337,7 +383,10 @@ class TestAStreamThatStoppedInsideAToolCall:
         agent = Agent()
         binding = _binding()
         binding.run(lambda *a, **k: cut_in_a_tool_call(), agent, conversation(), (), {})
-        assert binding.engine.healthy_count("google:gemini-3.7-flash", KEYS) == len(KEYS) - 1
+        # Each key that dropped the call is rested as it is passed over. The
+        # last one is not: by then it is the only one that is well, and
+        # resting it would leave the pool with nothing.
+        assert binding.engine.healthy_count("google:gemini-3.7-flash", KEYS) == 1
 
     def test_the_only_key_is_not_rested(self):
         only = [KEYS[0]]
@@ -409,7 +458,11 @@ class TestThePanelOrder:
     def test_the_numbers_come_before_the_switches(self):
         rows = [row["key"] for row in settings.describe_all()]
         last_number = max(rows.index(key) for key in settings.ALL_NUMBERS)
-        first_flag = min(rows.index(key) for key in settings.ALL_FLAGS)
+        # The escape hatches, which is what this order was about: the numbers
+        # somebody might reasonably change come before the switches that take
+        # a behaviour away. A switch that *adds* one is not in that set and
+        # sits on the optional shelf, above both.
+        first_flag = min(rows.index(key) for key in settings.DISABLE_FLAGS)
         assert last_number < first_flag
 
     def test_nothing_is_lost_by_the_ordering(self):

@@ -382,6 +382,85 @@ class TestWhatIsNeverStitched:
         assert binding.mid_stream_cuts == 1
         assert result.choices[0].message.content == "half "
 
+    # -- 1.6.0.0: the ceiling stopped being the rule ---------------------
+    #
+    # Three was a number somebody chose, and the turn it ended was the turn
+    # the answer was still growing. The loop now asks for proof instead —
+    # every key in the pool asked to continue, and not one of them adding a
+    # word — which is the shape ``_pool_agrees_it_is_the_request`` already
+    # uses for rotation. The owner stated the requirement in one sentence:
+    # *the agent should not stop because of errors.*
+
+    def test_an_answer_that_keeps_growing_is_never_cut_off_by_a_count(self):
+        agent = Agent()
+        attempts = []
+
+        def host(agent_, api_kwargs, **kwargs):
+            attempts.append(1)
+            word = f"part{len(attempts)} "
+            agent_._fire_stream_delta(word)
+            if len(attempts) <= 6:
+                return cut(word)
+            return answer(word)
+
+        binding = _binding()
+        result = binding.run(host, agent, conversation(), (), {})
+        # Six resumes, on a pool of four keys, with the old default at three.
+        assert binding.resumes == 6
+        assert binding.mid_stream_cuts == 0
+        assert result.choices[0].message.content.endswith("part7 ")
+
+    def test_it_stops_once_every_key_has_continued_it_and_added_nothing(self):
+        # The other half. Without an ending condition of its own the loop
+        # would now run to the guard rail, which is ten requests to prove
+        # what the fourth one already proved.
+        agent = Agent()
+        attempts = []
+
+        def host(agent_, api_kwargs, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                agent_._fire_stream_delta("half ")
+                return cut("half ")
+            # Every continuation comes back with nothing in it.
+            return cut("")
+
+        binding = _binding()
+        result = binding.run(host, agent, conversation(), (), {})
+        # One attempt per key, and not one more: four keys, so the first call
+        # plus four continuations that each proved a key had nothing to add.
+        assert len(attempts) == len(KEYS) + 1
+        assert binding.resumes == len(KEYS)
+        assert binding.mid_stream_cuts == 1
+        # And what the user did read still comes back in one piece.
+        assert result.choices[0].message.content == "half "
+
+    def test_a_key_that_answers_clears_the_evidence_against_the_pool(self):
+        # A pool is not out of answers because two keys in a row had nothing
+        # to say. Progress resets the count, or a long answer with an
+        # occasional empty continuation would be abandoned mid-sentence.
+        agent = Agent()
+        attempts = []
+
+        def host(agent_, api_kwargs, **kwargs):
+            attempts.append(1)
+            index = len(attempts)
+            if index == 1:
+                agent_._fire_stream_delta("one ")
+                return cut("one ")
+            if index in (2, 3):
+                return cut("")
+            if index == 4:
+                agent_._fire_stream_delta("two ")
+                return cut("two ")
+            agent_._fire_stream_delta("three.")
+            return answer("three.")
+
+        binding = _binding()
+        result = binding.run(host, agent, conversation(), (), {})
+        assert binding.mid_stream_cuts == 0
+        assert result.choices[0].message.content.endswith("three.")
+
     def test_the_budget_is_a_ceiling_and_the_rest_goes_back_in_one_piece(
         self, monkeypatch
     ):

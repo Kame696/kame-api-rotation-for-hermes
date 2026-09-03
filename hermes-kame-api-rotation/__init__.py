@@ -104,7 +104,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from . import host_text, integrity, runtime, settings
-from .core import Verdict, answer, classify
+from .core import Verdict, answer, classify, stated_window
 
 if TYPE_CHECKING:  # pragma: no cover
     from .aux_binding import AuxBinding
@@ -158,11 +158,22 @@ def _to_hook_result(verdict: Verdict) -> Dict[str, Any]:
     own defaults are ``False`` — an omitted hint is a disabled one, not an
     inherited one.
     """
+    # 1.6.0.0. The one place a user can say "do not switch models on me".
+    #
+    # Hermes reads ``should_fallback`` as permission to answer a spent
+    # credential with a different model, and then a different provider. That
+    # is a sensible default and a wrong one for a pool whose whole purpose is
+    # to wait out a quota and come back on the model that was asked for. The
+    # switch is off unless the user turns it on, because the behaviour it
+    # overrides is the host's own.
+    fallback = verdict.should_fallback
+    if fallback and settings.is_on(settings.NO_MODEL_FALLBACK):
+        fallback = False
     result: Dict[str, Any] = {
         "reason": verdict.reason,
         "retryable": verdict.retryable,
         "should_rotate_credential": verdict.should_rotate_credential,
-        "should_fallback": verdict.should_fallback,
+        "should_fallback": fallback,
     }
     if verdict.reset_at is not None:
         result["error_context"] = {"reset_at": verdict.reset_at}
@@ -258,6 +269,27 @@ def _on_api_error_classification(
     if _is_disabled():
         return None
 
+    # A refusal on *this* lane ends any note the auxiliary lane left behind.
+    #
+    # ``aux_binding._read_refusal`` records which model an auxiliary call was
+    # spending when it failed, because the host benches after that call has
+    # unwound and the announcement has already gone back to the conversation's
+    # model. The note is right until the next refusal and no longer, and this
+    # hook fires for main-lane refusals only — ``agent/auxiliary_client.py``
+    # never calls ``classify_api_error`` — so arriving here is proof that the
+    # bench about to be written belongs to the model in flight.
+    #
+    # Without this, a titling call that fails moments before the conversation's
+    # own 429 makes KAME file the conversation's bench under the auxiliary
+    # model, and per-model release then hands the key straight back to the
+    # model that just spent it. Measured on a live 429 through the installed
+    # plugin: a sole key benched for a daily cap was offered again the instant
+    # its bench was written.
+    try:
+        runtime.forget_bench_model()
+    except Exception:  # pragma: no cover — a ContextVar set does not fail
+        logger.debug("%s: could not clear the bench model", PLUGIN_NAME, exc_info=True)
+
     try:
         verdict = classify(
             provider=provider,
@@ -289,6 +321,17 @@ def _on_api_error_classification(
     # Hand the reasoning forward to whoever writes the bench. The pool is
     # about fifty lines away in the same call stack and knows the deadline
     # that actually got stored; this is the only place that knows why.
+    # What the provider's own counter named, read on its own. Not evidence
+    # for the verdict — the verdict is already made — but the only thing that
+    # can later contradict it. Wrapped separately from the note below so a
+    # failure to read it cannot cost the deadline, which is the half that
+    # changes behaviour.
+    try:
+        stated = stated_window(error_body=error_body, error=error)
+    except Exception:  # pragma: no cover — two pure functions and a regex
+        logger.debug("%s: could not read the stated window", PLUGIN_NAME, exc_info=True)
+        stated = "unknown"
+
     try:
         runtime.note_judgement(
             provider,
@@ -298,6 +341,7 @@ def _on_api_error_classification(
             reset_at=verdict.reset_at,
             now=time.time(),
             scope=verdict.quota_scope,
+            stated=stated,
         )
     except Exception:  # pragma: no cover — a ContextVar set does not fail
         logger.debug("%s: could not stage the verdict", PLUGIN_NAME, exc_info=True)
@@ -558,6 +602,15 @@ def register(ctx) -> None:
         )
     else:
         globals()["_binding"] = _install_pool_binding(ctx)
+        # The snapshot needs the pool binding too, and it is a different
+        # object from the dispatch binding ``state.attach`` holds: the
+        # counters come from one, the credential picture from the other.
+        try:
+            from . import state as _state
+
+            _state.set_pool_binding(globals()["_binding"])
+        except Exception:  # pragma: no cover - an assignment does not fail
+            logger.debug("%s: could not hand the pool binding to the panel", PLUGIN_NAME, exc_info=True)
         # Only worth wiring once the pool can act on it: an announcement with
         # nothing reading it changes nothing, and the auxiliary lane is the
         # place the per-model gap hurts most — it runs a smaller model on the

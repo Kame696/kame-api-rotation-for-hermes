@@ -269,6 +269,7 @@ def _clean_context():
 def _reset_runtime() -> None:
     runtime.forget_call()
     runtime.forget_judgement()
+    runtime.forget_bench_model()
     # These two are module-level dicts rather than ContextVars, so without an
     # explicit reset one test's selection would answer another test's question.
     runtime.forget_selections()
@@ -815,6 +816,81 @@ class TestWritingDownWhatHappened:
         pool._mark_exhausted(pool.by_id("k0"), 429, {"reset_at": clock.now + HOUR})
 
         assert journal_of(binding).blocks()[0].window == "unknown"
+
+    # -- 1.6.0.0: the deadline the host never asked for ------------------
+    #
+    # Every test above hands ``_mark_exhausted`` a context that already
+    # carries a deadline. The real caller never does: the host discards
+    # ``ClassifiedError.error_context`` and passes its own extraction from
+    # the raw exception instead (``agent/conversation_loop.py:4280``), which
+    # on the owner's traffic produced a deadline 0 times in 295 benches.
+
+    def test_kames_deadline_is_carried_when_the_host_derived_none(self, journaling):
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", MAIN, window="per_minute", source="catalog",
+            reset_at=clock.now + 21.0, now=clock.now,
+        )
+        # An empty context. This is what the host actually passes.
+        updated = pool._mark_exhausted(pool.by_id("k0"), 429, {})
+
+        assert updated.last_error_reset_at == clock.now + 21.0
+        block = journal_of(binding).blocks()[0]
+        assert block.sized_by == journal_module.SIZED_BY_KAME
+        # And the ledger claims it, which it can only do when the number it
+        # proposed is the number that got stored.
+        assert binding._store.load(force=True).find("k0", MAIN).reset_at == clock.now + 21.0
+
+    def test_a_deadline_the_host_did_derive_is_never_overwritten(self, journaling):
+        # A ``Retry-After`` header is the provider's own number. KAME adds
+        # where the host found nothing; it does not argue with what it found.
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", MAIN, window="per_minute", source="catalog",
+            reset_at=clock.now + 21.0, now=clock.now,
+        )
+        updated = pool._mark_exhausted(
+            pool.by_id("k0"), 429, {"reset_at": clock.now + 90.0}
+        )
+
+        assert updated.last_error_reset_at == clock.now + 90.0
+        assert journal_of(binding).blocks()[0].sized_by == journal_module.SIZED_BY_DROPPED
+
+    def test_a_verdict_for_another_call_cannot_size_this_bench(self, journaling):
+        # A wrong deadline is worse than none: the ledger would claim it.
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", AUX, window="per_minute", source="catalog",
+            reset_at=clock.now + 21.0, now=clock.now,
+        )
+        updated = pool._mark_exhausted(pool.by_id("k0"), 429, {})
+
+        assert updated.last_error_reset_at is None
+
+    def test_a_lane_that_benches_after_its_call_says_which_model_it_was(
+        self, journaling
+    ):
+        # The auxiliary lane. ``scoped_call`` has already restored the
+        # conversation's model by the time ``_recover_provider_pool`` runs,
+        # so without the hint the bench earned by a titling call on a small
+        # model lands on the model that answers the user.
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        runtime.note_bench_model("gemini", AUX, now=clock.now)
+        runtime.note_judgement(
+            "gemini", AUX, window="per_minute", source="catalog",
+            reset_at=clock.now + 21.0, now=clock.now,
+        )
+        updated = pool._mark_exhausted(pool.by_id("k0"), 429, {})
+
+        assert updated.last_error_reset_at == clock.now + 21.0
+        block = journal_of(binding).blocks()[0]
+        assert block.model == AUX
+        assert block.sized_by == journal_module.SIZED_BY_KAME
+        runtime.forget_bench_model()
 
     def test_a_verdict_about_another_model_is_not_attached(self, journaling):
         binding, pool, _state, clock = journaling

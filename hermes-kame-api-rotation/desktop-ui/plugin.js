@@ -1467,9 +1467,23 @@ function PayloadInspector() {
     h(
       'div',
       {
+        // `--ui-bg-elevated` and not `--ui-bg-primary`. The fill ladder
+        // (`--ui-bg-primary`, `-secondary`, `-tertiary` ...) is built for
+        // tinting a surface that already exists: every rung ends in
+        // `color-mix(in srgb, var(--ui-base) 10%, transparent)`, so it is a
+        // 90%-transparent wash, not a background. Painted onto a floating
+        // card it let the whole page through and the payload was read over
+        // the events list behind it.
+        //
+        // `--ui-bg-elevated` is the one token in the family with no
+        // `transparent` in it — `color-mix(in srgb, var(--theme-elevated-seed)
+        // var(--theme-mix-elevated), var(--theme-neutral-card))` — and it is
+        // what Hermes' own popovers use for exactly this job. Following the
+        // host's recipe also means the card keeps tracking the user's theme
+        // instead of hard-coding a colour that breaks on the next one.
         className:
-          'flex max-h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-lg border border-(--ui-stroke-tertiary) ' +
-          'bg-(--ui-bg-primary) p-4 shadow-xl',
+          'flex max-h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-lg border border-(--ui-stroke-secondary) ' +
+          'bg-(--ui-bg-elevated) p-4 shadow-xl',
         onClick: codes => codes.stopPropagation()
       },
       h(
@@ -1502,9 +1516,15 @@ function PayloadInspector() {
       h(
         'pre',
         {
+          // `--ui-bg-editor` for the same reason as the card above, and
+          // because it is the token Hermes uses for a code surface. The
+          // payload is the one thing in this dialog the user opened it to
+          // read, so it gets the opaque one rather than a 93%-transparent
+          // wash over it. `--ui-text-secondary` for the same reason:
+          // `-tertiary` is the shade for labels nobody has to read closely.
           className:
-            'min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded bg-(--ui-bg-secondary) p-3 ' +
-            'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary) select-text',
+            'min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded bg-(--ui-bg-editor) p-3 ' +
+            'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-secondary) select-text',
           key: 'payload'
         },
         event.detail
@@ -1571,6 +1591,90 @@ function FirstRun() {
           'actually said, and a failure that waits instead of ending the turn — still works.'
       )
     )
+  )
+}
+
+// 1.6.0.0. The card that answers "is it even seeing my keys?".
+//
+// Every other card on this page describes what KAME *did*. None of them said
+// what it is looking at, and that turned out to be the question behind every
+// report: a profile where the key separation "doesn't seem to work", a
+// provider that intermittently says the API key is wrong. Both are one line
+// each — rows stored, keys after splitting, where they came from — and
+// neither was anywhere on screen.
+//
+// Counts and origins only. The snapshot carries no key and no fragment of
+// one, so there is nothing here that could leak by being rendered.
+function WhatItSees({ snap }) {
+  const seen = snap.credentials ?? {}
+  const rows = seen.providers ?? []
+  return Card(
+    {
+      key: 'what-it-sees',
+      note:
+        'Rows are what Hermes stored; keys are what they turned out to be. More keys than rows means a field ' +
+        'holding several keys was read as several keys.',
+      title: 'What KAME can see'
+    },
+    !seen.readable
+      ? h(
+          'p',
+          { className: 'text-sm text-(--ui-text-tertiary)', key: 'why' },
+          seen.reason || 'The credential pool has not been read yet.'
+        )
+      : rows.length === 0
+        ? h(
+            'p',
+            { className: 'text-sm text-(--ui-text-tertiary)', key: 'empty' },
+            'No pool has been used yet this session. This fills in on the first call.'
+          )
+        : h(
+            'div',
+            { className: 'flex flex-col gap-2', key: 'rows' },
+            rows.map(row =>
+              h(
+                'div',
+                {
+                  className:
+                    'flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-(--ui-stroke-tertiary) pb-2 last:border-0 last:pb-0',
+                  key: row.provider
+                },
+                h(
+                  'span',
+                  { className: 'font-mono text-xs text-(--ui-text-primary)', key: 'p' },
+                  row.provider
+                ),
+                h(
+                  'span',
+                  { className: 'text-xs text-(--ui-text-secondary)', key: 'n' },
+                  row.rows === row.keys
+                    ? `${row.keys} key${row.keys === 1 ? '' : 's'}`
+                    : `${row.rows} row${row.rows === 1 ? '' : 's'} → ${row.keys} keys`
+                ),
+                row.benched
+                  ? h(
+                      'span',
+                      { className: 'text-xs text-(--ui-text-tertiary)', key: 'b' },
+                      `${row.benched} resting`
+                    )
+                  : null,
+                h(
+                  'span',
+                  { className: 'font-mono text-[0.6875rem] text-(--ui-text-quaternary)', key: 'o' },
+                  `from ${row.origin || '?'}`
+                )
+              )
+            )
+          ),
+    seen.readable && rows.length
+      ? h(
+          'p',
+          { className: 'text-xs text-(--ui-text-quaternary)', key: 'note' },
+          seen.splitting
+            ? 'Splitting is on: a field holding a comma-separated list is read as the several keys it is.'
+            : 'Splitting is off, so a field holding several keys is sent to the provider whole and refused.'
+        )
+      : null
   )
 }
 
@@ -1780,6 +1884,8 @@ function KamePage() {
 
             Card({ key: 'right-now', title: 'Right now' }, h(RightNow, { snap })),
 
+            h(WhatItSees, { key: 'what-it-sees', snap }),
+
             Card(
               {
                 key: 'pool-health',
@@ -1812,6 +1918,13 @@ function KamePage() {
               counters.stitched ? Field('Continued', counters.stitched, 'finished on another key, as one reply') : null,
               counters.mid_stream_cuts
                 ? Field('Handed back', counters.mid_stream_cuts, 'could not be continued')
+                : null,
+              counters.tool_call_retries
+                ? Field(
+                    'Tool call re-asked',
+                    counters.tool_call_retries,
+                    'the call was dropped before anything was shown, so another key was asked for it'
+                  )
                 : null,
               counters.tool_call_cuts
                 ? Field('Cut in a tool call', counters.tool_call_cuts, 'a half-written call cannot be continued')

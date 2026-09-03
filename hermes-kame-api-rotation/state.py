@@ -92,6 +92,8 @@ _disabled_reason = ""
 #: binding to hand published ``installed: false`` over a perfectly healthy
 #: snapshot, and the panel showed the plugin as missing until the next call.
 _binding: Any = None
+#: The pool binding, for the credential picture. See ``set_pool_binding``.
+_pool_binding: Any = None
 
 
 def attach(binding: Any) -> None:
@@ -237,6 +239,10 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # that end a turn whatever KAME does, so a pool where this number
         # climbs is a pool with a key that cannot hold a long stream.
         "tool_call_cuts": int(getattr(binding, "tool_call_cuts", 0) or 0),
+        # 1.6.0.0. The same drop caught before it reached Hermes and became
+        # "your previous tool call was too large — do NOT retry". A number
+        # climbing here is a number *not* climbing above it.
+        "tool_call_retries": int(getattr(binding, "tool_call_retries", 0) or 0),
     }
     return {
         "schema": SCHEMA,
@@ -264,6 +270,18 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # health when nothing is in flight.
         "activity": activity,
         "gemini_tool_call_fix": _gemini_fix_state(),
+        # 1.6.0.0. The panel's answer to "is it even seeing my keys?".
+        #
+        # Everything above describes what KAME *did*. Nothing described what
+        # it is looking at, and that is the question every report about this
+        # plugin has actually been: a profile where the key separation
+        # "doesn't seem to work", a provider that says the API key is wrong.
+        # Both are answerable in one line each — how many rows the pool has,
+        # how many keys those rows turned out to be, and where they came
+        # from — and neither was anywhere on screen.
+        #
+        # Counts and origins only. Never a key, never a prefix of one.
+        "credentials": _credential_rows(),
         "settings": _settings_rows(),
         # 1.2.0. The shelves the rows above are sorted onto, titled and
         # explained here rather than in the panel: the reason one setting is
@@ -287,6 +305,75 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # "how to start" page instead of a wall of zeroes.
         "first_run": not rows,
     }
+
+
+def _credential_rows() -> Dict[str, Any]:
+    """What KAME can see of the pool, per provider, without reading a key.
+
+    Three numbers per provider and one word about where they came from:
+
+    ``rows``
+        What the host stored — one per credential *entry*, which for a
+        multi-key environment variable is one row holding several keys.
+    ``keys``
+        What those rows are after KAME splits them. ``keys > rows`` is the
+        splitter working; ``keys == rows`` on a provider whose variable holds
+        a comma list is the report that started this, visible instead of
+        inferred.
+    ``benched``
+        How many of those the host currently considers spent.
+
+    ``origin`` names the source vocabulary the host used — ``env``,
+    ``config``, ``manual``, ``gh_cli`` — because "I put my keys in the new
+    profile" and "the new profile has a stored row from somewhere else" look
+    identical from the outside and are different problems.
+
+    Read from what the pool binding recorded the last time it touched each
+    pool, because there is nothing to enumerate at snapshot time:
+    ``load_pool()`` builds a new object per call and Hermes keeps no registry
+    of them. Numbers only — no entry is held and no key is stored.
+    """
+    binding = globals().get("_pool_binding")
+    installed = binding is not None and getattr(binding, "installed", False)
+    out: Dict[str, Any] = {
+        "readable": False,
+        "reason": "the pool binding is not installed",
+        "splitting": bool(getattr(binding, "splitting_multikey", False)),
+        "guarding_container": bool(getattr(binding, "guarding_current", False)),
+        "providers": [],
+    }
+    if not installed:
+        return out
+    try:
+        seen = dict(getattr(binding, "seen_pools", {}) or {})
+        out["providers"] = [
+            {
+                "provider": str(row.get("provider", "")),
+                "rows": int(row.get("rows", 0) or 0),
+                "keys": int(row.get("keys", 0) or 0),
+                "benched": int(row.get("benched", 0) or 0),
+                "origin": str(row.get("origin", "") or ""),
+                "split": bool(row.get("split", False)),
+            }
+            for row in sorted(seen.values(), key=lambda r: str(r.get("provider", "")))
+        ]
+        out["readable"] = True
+        out["reason"] = "" if out["providers"] else "no pool has been used yet"
+    except Exception:
+        logger.debug("kame: could not read the credential pools", exc_info=True)
+        out["reason"] = "the pool could not be read"
+    return out
+
+
+def set_pool_binding(binding: Any) -> None:
+    """Remember the pool binding, so the snapshot can ask it what it sees.
+
+    Separate from ``remember`` above, which holds the dispatch binding: the
+    two are different objects with different jobs, and the counters come from
+    one while the credential picture comes from the other.
+    """
+    global _pool_binding
+    _pool_binding = binding
 
 
 def _settings_rows() -> List[Dict[str, Any]]:
@@ -468,7 +555,53 @@ def publish(
         _last_written = comparable
         _last_write_at = now
         _disabled_reason = ""
-        return True
+    _sweep_once(path.parent)
+    return True
+
+
+# Stale temporary files are swept at most once per process. Orphans only ever
+# accumulate across restarts, so a scan per publish would be a directory
+# listing on the rotation path in exchange for nothing.
+_swept = False
+
+
+def _sweep_once(directory: Any) -> None:
+    """Remove temporary files a previous run never got to rename.
+
+    The write above is atomic and cleans up after itself on every exception.
+    What it cannot clean up after is not running: ``os.replace`` is the last
+    statement, and a process killed between ``mkstemp`` and that line leaves
+    the temporary behind with nobody left to unlink it.
+
+    That is not hypothetical. The owner's own plugin-data directory holds six
+    of them — three empty, three with a snapshot in them, 40 KB in total —
+    one per time Hermes Desktop was closed or restarted mid-write. Nothing
+    ever removed them and nothing ever would have.
+
+    Two rules keep this from touching a file that is still in use:
+
+    * only names ``mkstemp`` produces, in KAME's own state directory;
+    * only files older than a minute, which is far longer than the gap this
+      leaks in and means a second Hermes process writing right now is safe.
+
+    Failures are ignored on purpose. This runs after the snapshot has already
+    been written, and tidying is never worth a raised exception on the
+    rotation path.
+    """
+    global _swept
+    if _swept:
+        return
+    _swept = True
+    try:
+        cutoff = time.time() - 60.0
+        for candidate in directory.glob("tmp*.tmp"):
+            try:
+                if candidate.is_file() and candidate.stat().st_mtime < cutoff:
+                    candidate.unlink()
+            except OSError:
+                continue
+    except Exception:  # pragma: no cover - a listing that cannot be done
+        logger.debug("kame: could not sweep stale snapshot temporaries", exc_info=True)
 
 
 def _without_clock(document: str) -> str:

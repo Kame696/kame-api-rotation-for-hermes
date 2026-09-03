@@ -215,6 +215,179 @@ def main() -> int:
         )
         check("aux call sees its own model", seen, [AUX])
         check("main announcement restored", runtime.model_for("gemini"), MAIN)
+
+        print("\n[10b] an auxiliary refusal is read, and benched on its own model")
+        # The lane that fires no hooks. Its refusals reached `core.classify`
+        # nowhere, and `_recover_provider_pool` benches *after* the relay has
+        # unwound — so the cooldown earned by a titling call on a small model
+        # was written against the conversation's model, with the host's fixed
+        # TTL, on a key the small model had barely touched.
+        from agent.gemini_native_adapter import GeminiAPIError as _AuxError
+
+        aux_pool = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id=uuid.uuid4().hex[:6],
+                    label="aux-key",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-aux",
+                )
+            ],
+        )
+        aux_entry = aux_pool.entries()[0]
+        runtime.forget_judgement()
+        runtime.forget_bench_model()
+        runtime.note_call("gemini", MAIN)
+
+        def _refuse(_request):
+            raise _AuxError(
+                "Gemini HTTP 429 (RESOURCE_EXHAUSTED): quota exceeded",
+                code="gemini_rate_limited",
+                status_code=429,
+                details={
+                    "status": "RESOURCE_EXHAUSTED",
+                    "reason": "RATE_LIMIT_EXCEEDED",
+                    "metadata": {
+                        "quota_limit":
+                            "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+                    },
+                    "message": "quota exceeded",
+                },
+            )
+
+        try:
+            aux._relay_sync_completion(
+                None, {"model": AUX}, provider="gemini", create=_refuse
+            )
+            check("the refusal still reaches the caller", "swallowed", "raised")
+        except Exception:
+            check("the refusal still reaches the caller", "raised", "raised")
+
+        # `scoped_call` has unwound; the conversation's model is announced
+        # again, exactly as the host left it.
+        check("the announcement is back on the main model", runtime.model_for("gemini"), MAIN)
+
+        # This is what `_recover_provider_pool` does next, in the same stack.
+        aux_pool.mark_exhausted_and_rotate(status_code=429, error_context={})
+        benched = next(e for e in aux_pool.entries() if e.id == aux_entry.id)
+        check("the key was benched", benched.last_status, cp.STATUS_EXHAUSTED)
+        check(
+            "and with a deadline, where the host had none",
+            benched.last_error_reset_at is not None,
+            True,
+        )
+        aux_row = binding._journal.load(force=True).last_block(aux_entry.id, AUX)
+        check("recorded against the auxiliary model", aux_row is not None, True)
+        if aux_row is not None:
+            check("sized by KAME", aux_row.sized_by, "kame")
+            check("as a per-minute counter", aux_row.window, "per_minute")
+        check(
+            "and never against the conversation's model",
+            binding._journal.load(force=True).last_block(aux_entry.id, MAIN),
+            None,
+        )
+        runtime.forget_bench_model()
+        runtime.forget_judgement()
+
+        print("\n[10c] and that note stops being true at the next main-lane refusal")
+        # Found by ``tools/live_429.py`` against the installed build. The note
+        # above is how an auxiliary bench finds its model, and it outlives the
+        # call that wrote it by design — the host benches after the relay has
+        # unwound. What it must not outlive is the *next* refusal: a titling
+        # call that fails seconds before the conversation's own 429 would
+        # otherwise make KAME file the conversation's bench under the
+        # auxiliary model, and per-model release would then hand the key
+        # straight back to the model that had just spent it.
+        #
+        # ``agent/auxiliary_client.py`` never calls ``classify_api_error``, so
+        # reaching the classification hook is proof the refusal is the main
+        # lane's.
+        kame = importlib.import_module("kame_sandbox")
+        leak_pool = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id=uuid.uuid4().hex[:6],
+                    label="leak-key",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-leak",
+                )
+            ],
+        )
+        leak_entry = leak_pool.entries()[0]
+        runtime.note_call("gemini", MAIN)
+        runtime.note_bench_model("gemini", AUX, now=binding._clock())
+        check(
+            "the auxiliary note is standing",
+            runtime.bench_model_for("gemini", now=binding._clock()),
+            AUX,
+        )
+
+        main_error = _AuxError(
+            "Gemini HTTP 429 (RESOURCE_EXHAUSTED): quota exceeded",
+            code="gemini_rate_limited",
+            status_code=429,
+            details={
+                "status": "RESOURCE_EXHAUSTED",
+                "reason": "RATE_LIMIT_EXCEEDED",
+                "metadata": {
+                    "quota_limit":
+                        "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+                },
+                "message": "quota exceeded",
+            },
+        )
+        sized = kame._on_api_error_classification(
+            provider="gemini",
+            model=MAIN,
+            status_code=429,
+            error_message=str(main_error),
+            error_body=None,
+            error=main_error,
+            error_type="GeminiAPIError",
+            error_code="gemini_rate_limited",
+        )
+        check("the main lane's refusal was sized", sized is not None, True)
+        check(
+            "and the auxiliary note is gone",
+            runtime.bench_model_for("gemini", now=binding._clock()),
+            "",
+        )
+
+        leak_pool.mark_exhausted_and_rotate(status_code=429, error_context={})
+        book = binding._journal.load(force=True)
+        leak_row = book.last_block(leak_entry.id, MAIN)
+        check(
+            "so the bench is filed under the conversation's model",
+            leak_row is not None,
+            True,
+        )
+        check(
+            "and not under the auxiliary one",
+            book.last_block(leak_entry.id, AUX),
+            None,
+        )
+        # 1.6.0.0, gap 12. The refusal above named
+        # ``GenerateRequestsPerMinutePerProjectPerModel-FreeTier`` in its
+        # metadata, so the provider's own counter said per-minute. The row has
+        # to carry that beside KAME's conclusion, or the journal holds a
+        # verdict with nothing able to contradict it — which is what it held
+        # for every one of the 295 blocks that produced this release.
+        if leak_row is not None:
+            check("the provider's own counter reached the row",
+                  leak_row.stated_window, "per_minute")
+            check("beside the window KAME acted on", leak_row.window, "per_minute")
+            check("which agree here, so no contradiction is claimed",
+                  leak_row.contradicted, False)
+        runtime.forget_bench_model()
+        runtime.forget_judgement()
         aux_bound.uninstall()
 
         print("\n[11] the journal recorded the real refusals")
@@ -222,7 +395,7 @@ def main() -> int:
         # ``_mark_exhausted``; the second was written straight onto the entry
         # to stand in for another writer, and must not appear here.
         book = binding._journal.load(force=True)
-        rows = book.blocks()
+        rows = [r for r in book.blocks() if r.credential_id in {e.id for e in entries}]
         check("one block recorded", len(rows), 1)
         if rows:
             check("against the model that spent it", rows[0].model, MAIN)
@@ -507,6 +680,265 @@ def main() -> int:
             usable_widened(MAIN), ["short-key", "spare-key"],
         )
         binding._clock = lambda: NOW
+
+        print("\n[18b] the deadline reaches the host when the host derived none")
+        # The measurement that made 1.6.0.0 necessary: 295 benches over 13.9
+        # days, `last_error_reset_at` unset on every one, `sized_by: kame` a
+        # standing zero. Every check above hands `_mark_exhausted` a context
+        # that already contains a deadline — which is the one thing the real
+        # caller never does.
+        #
+        # `agent/conversation_loop.py:4280` throws away
+        # `ClassifiedError.error_context` and passes
+        # `extract_api_error_context(api_error)` instead. So this section
+        # calls the host's own extractor on the host's own Gemini exception
+        # and feeds the pool exactly what it produces — nothing.
+        from agent.agent_runtime_helpers import extract_api_error_context
+        from agent.gemini_native_adapter import GeminiAPIError
+
+        carried = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id=uuid.uuid4().hex[:6],
+                    label="carried-key",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-carried",
+                )
+            ],
+        )
+        carried_entry = carried.entries()[0]
+        clock["now"] = NOW
+        binding._clock = lambda: clock["now"]
+
+        refusal = GeminiAPIError(
+            "Gemini HTTP 429 (RESOURCE_EXHAUSTED): You exceeded your current "
+            "quota, please check your plan and billing details.",
+            code="gemini_rate_limited",
+            status_code=429,
+            details={
+                "status": "RESOURCE_EXHAUSTED",
+                "reason": "RATE_LIMIT_EXCEEDED",
+                "metadata": {
+                    "quota_limit":
+                        "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+                },
+                "message": "You exceeded your current quota.",
+            },
+        )
+        host_context = extract_api_error_context(refusal)
+        check(
+            "the host derives no deadline from a Gemini refusal",
+            host_context.get("reset_at"),
+            None,
+        )
+
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", MAIN, window="per_minute", source="catalog",
+            reset_at=NOW + 21.0, now=NOW, scope="per_model",
+        )
+        carried._mark_exhausted(carried_entry, 429, host_context)
+
+        stored = next(e for e in carried.entries() if e.id == carried_entry.id)
+        check("KAME's deadline reached the entry", stored.last_error_reset_at, NOW + 21.0)
+        check(
+            "and it is what the host's own cooldown now reads",
+            cp._exhausted_until(stored),
+            NOW + 21.0,
+        )
+        row = binding._journal.load(force=True).last_block(carried_entry.id, MAIN)
+        check("the journal can finally say who sized it", getattr(row, "sized_by", None), "kame")
+
+        # And the ledger claims it, which it can only do when the number it
+        # proposed is the number on the entry — that match is the fingerprint
+        # the release path checks before it ever lets a key back.
+        owned = binding._store.load(force=True).find(carried_entry.id, MAIN)
+        check("the bench is provably KAME's", getattr(owned, "reset_at", None), NOW + 21.0)
+
+        def usable_carried():
+            runtime.note_call("gemini", MAIN)
+            got, _pending = carried._available_entries()
+            return [e.label for e in got]
+
+        check("benched while the counter is spent", usable_carried(), [])
+
+        # And the third thing the journal could not do. A recovery inherits
+        # `predicted_reset_at` from `block.reset_at`, which is the host's
+        # stored deadline — `None` on all 295 recorded blocks, so **0 of 30**
+        # recoveries carried the prediction they were testing and the plugin
+        # could not grade itself. It is not a separate defect: it is this one,
+        # measured from the other end.
+        runtime.note_selection("gemini", carried_entry.id)
+        binding.note_success("gemini", MAIN)
+        recovered = binding._journal.load(force=True).recovery_for(carried_entry.id, MAIN)
+        check("a recovery is recorded", recovered is not None, True)
+        if recovered is not None:
+            check(
+                "carrying the prediction it tests",
+                recovered.predicted_reset_at,
+                NOW + 21.0,
+            )
+
+        print("\n[18c] a deadline the provider stated is never overwritten")
+        # The rule that keeps [18b] from ever being a regression. A
+        # `Retry-After` header is the provider's own number; KAME adds where
+        # the host found nothing and never argues with what it did find.
+        stated = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id=uuid.uuid4().hex[:6],
+                    label="stated-key",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-stated",
+                )
+            ],
+        )
+        stated_entry = stated.entries()[0]
+        clock["now"] = NOW
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", MAIN, window="per_minute", source="catalog",
+            reset_at=NOW + 21.0, now=NOW, scope="per_model",
+        )
+        stated._mark_exhausted(
+            stated_entry, 429, {"reason": "rate_limit", "reset_at": NOW + 90.0}
+        )
+        stored = next(e for e in stated.entries() if e.id == stated_entry.id)
+        check("the provider's number stands", stored.last_error_reset_at, NOW + 90.0)
+        dropped_row = binding._journal.load(force=True).last_block(stated_entry.id, MAIN)
+        check(
+            "and the journal says KAME's was dropped",
+            getattr(dropped_row, "sized_by", None),
+            "dropped",
+        )
+
+        print("\n[18d] a verdict from another call cannot attach itself")
+        # `peek_judgement` matches on provider and on the model in flight and
+        # expires after 30 seconds. Without that, a verdict left over from a
+        # failure that never became a bench would size the next key's
+        # cooldown — a wrong deadline is worse than none, because the ledger
+        # would then claim it.
+        drifting = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id=uuid.uuid4().hex[:6],
+                    label="drifting-key",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-drifting",
+                )
+            ],
+        )
+        drifting_entry = drifting.entries()[0]
+        clock["now"] = NOW
+        runtime.forget_judgement()
+        runtime.note_call("gemini", MAIN)
+        runtime.note_judgement(
+            "gemini", AUX, window="per_minute", source="catalog",
+            reset_at=NOW + 21.0, now=NOW, scope="per_model",
+        )
+        drifting._mark_exhausted(drifting_entry, 429, {})
+        stored = next(e for e in drifting.entries() if e.id == drifting_entry.id)
+        check(
+            "a verdict for another model is not borrowed",
+            stored.last_error_reset_at,
+            None,
+        )
+        runtime.forget_judgement()
+        binding._clock = lambda: NOW
+
+        print("\n[18e] the row holding several keys is never handed out as a key")
+        # The owner's NVIDIA report, reproduced. `_available_entries` and
+        # `_select_unlocked` have excluded the parent of a split since the
+        # feature shipped; `current()` never went through either, and it is
+        # what `_current_id` resolves through. That pointer is restored from
+        # auth.json, where only the parent is ever written — so after a
+        # restart the live credential was the comma-joined list, sent whole,
+        # and refused as an invalid key.
+        joined = "AIza-sandbox-fake-one" + "," + "AIza-sandbox-fake-two"
+        container = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id="parent01",
+                    label="env",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="env:GOOGLE_API_KEY",
+                    access_token=joined,
+                )
+            ],
+        )
+        parts = [e for e in container.entries() if e.id != "parent01"]
+        check("the row was split into its keys", len(parts), 2)
+        check(
+            "and the container is not offered",
+            [e.id for e in container._available_entries()[0]],
+            [e.id for e in parts],
+        )
+
+        # A restart, exactly as auth.json produces it.
+        container._current_id = "parent01"
+        live = container.current()
+        check("current() no longer answers with the container", live.id != "parent01", True)
+        check("what it answers with is one key, not the list", live.runtime_api_key != joined, True)
+        check("and it is one of the split parts", live.id in {e.id for e in parts}, True)
+        check("the pointer itself was repaired", container._current_id, live.id)
+
+        # And the key KAME actually handed out is the one it stands in for,
+        # so requests in flight are not attributed to the other part.
+        runtime.forget_selections()
+        chosen, _pending = container._select_unlocked(refresh=False)
+        container._current_id = "parent01"
+        check("it stands in for the key that was selected", container.current().id, chosen.id)
+
+        print("\n[18f] the panel can say what KAME is looking at")
+        # The other half of the same report. "The new profile doesn't detect
+        # the key separation" and "this provider field really does hold one
+        # key" are indistinguishable from outside the process, and neither
+        # number was anywhere on screen. Read here, before the single-key
+        # pool below replaces it: the record is one row per provider and says
+        # what KAME last saw, which is what a live panel wants.
+        shape = binding.seen_pools.get("gemini") or {}
+        check("the container is counted as a container", shape.get("rows"), 1)
+        check("and its keys are counted as keys", shape.get("keys"), 2)
+        check("which is what 'split' means", shape.get("split"), True)
+        check("named by where they came from", shape.get("origin"), "env")
+        leaked = [
+            value for value in shape.values()
+            if isinstance(value, str) and "AIza" in value
+        ]
+        check("and nothing key-shaped is kept", leaked, [])
+
+        # A pool with nothing to split is untouched.
+        single = cp.CredentialPool(
+            "gemini",
+            [
+                cp.PooledCredential(
+                    provider="gemini",
+                    id="solo01",
+                    label="one",
+                    auth_type=cp.AUTH_TYPE_API_KEY,
+                    priority=0,
+                    source="manual",
+                    access_token="AIza-sandbox-fake-solo",
+                )
+            ],
+        )
+        single._current_id = "solo01"
+        check("a row that is a key is still returned", single.current().id, "solo01")
 
         print("\n[19] uninstall leaves Hermes exactly as found")
         names = (

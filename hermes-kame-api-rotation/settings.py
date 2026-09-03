@@ -68,6 +68,29 @@ GEMINI_TOOL_CALL_FIX_DISABLED = "gemini_tool_call_fix_disabled"
 # every other switch here.
 STREAM_STITCH_DISABLED = "stream_stitch_disabled"
 
+# 1.6.0.0, and the only switch here that turns something *on*.
+#
+# Hermes answers a spent credential two ways at once: rotate to another key,
+# and — if that does not work — fall back to a different model, and then to a
+# different provider. For most installs that is the right instinct. For the
+# install this plugin was written for it is the wrong one, and the owner said
+# why in a sentence: the point of the pool is to wait out a quota and come
+# back *on the model that was asked for*, exactly as the Agent Zero plugin
+# does. A silent switch to another provider mid-conversation is not a
+# recovery, it is a different answer from a different model, and the user
+# finds out afterwards.
+#
+# So this is opt-in and off by default: falling back is Hermes' own behaviour
+# and this plugin does not get to decide that nobody wants it.
+#
+# **What it can and cannot reach.** ``should_fallback`` is a field on the
+# classification, so it governs every refusal KAME classifies — which is the
+# whole main conversation. The auxiliary lane fires no classification hook at
+# all (see ``aux_binding``), and Hermes routes summarisation and titling by
+# its own rules there; this switch does not reach it. That is a real limit
+# and it is written in the help text rather than left to be discovered.
+NO_MODEL_FALLBACK = "never_fall_back_to_another_model"
+
 _ENV_FOR = {
     ROTATION_DISABLED: "KAME_ROTATION_DISABLED",
     SPREAD_DISABLED: "KAME_SPREAD_DISABLED",
@@ -78,6 +101,7 @@ _ENV_FOR = {
     LIVE_STATUS_DISABLED: "KAME_LIVE_STATUS_DISABLED",
     GEMINI_TOOL_CALL_FIX_DISABLED: "KAME_GEMINI_TOOL_CALL_FIX_DISABLED",
     STREAM_STITCH_DISABLED: "KAME_STREAM_STITCH_DISABLED",
+    NO_MODEL_FALLBACK: "KAME_NO_MODEL_FALLBACK",
 }
 
 # The settings that carry a number rather than a yes/no. Kept in a separate
@@ -131,9 +155,22 @@ STREAM_SILENCE_TIMEOUT = "stream_silence_timeout_seconds"
 SILENT_STREAM_PATIENCE = STREAM_SILENCE_TIMEOUT
 
 #: 1.1.1. How many times one turn may continue an answer that was cut off
-#: mid-stream. Three, because each resume costs a request and the failure it
-#: recovers from is rare; zero switches stitching off as surely as the flag
-#: does, which is why the range starts there.
+#: mid-stream. Zero switches stitching off as surely as the flag does, which
+#: is why the range starts there.
+#:
+#: **1.6.0.0 demoted it.** It was the gate, at three, and three is a number
+#: someone chose. The paragraph at the top of this file rejects exactly that
+#: for the rotation loop — "any non-null value reintroduces the failure it
+#: was meant to prevent, and the user who sets a safe number hits it on a
+#: hard prompt and blames the plugin" — and there was never a reason the
+#: stitching loop should be held to a weaker standard. The owner put it
+#: plainly: *the agent should not stop because of errors.*
+#:
+#: ``dispatch_binding`` now ends the loop on evidence instead: every key in
+#: the pool asked to continue the answer, and not one of them adding a word.
+#: Unanimity, the same shape ``_pool_agrees_it_is_the_request`` uses. This
+#: number stays as the guard rail it always claimed to be, defaulted to the
+#: top of its own range so it never ends an answer that was still growing.
 STREAM_RESUME_LIMIT = "stream_resume_limit"
 
 _NUMBER_ENV_FOR = {
@@ -466,12 +503,27 @@ ALL_FLAGS = (
     LIVE_STATUS_DISABLED,
     GEMINI_TOOL_CALL_FIX_DISABLED,
     STREAM_STITCH_DISABLED,
+    NO_MODEL_FALLBACK,
 )
+
+#: The subset that turns a KAME behaviour *off*. Every one is named
+#: ``*_disabled`` and every one hands a job back to Hermes, which is what the
+#: "Turn parts of KAME off" card says about the settings it lists — so the
+#: card is built from this rather than from ``ALL_FLAGS``, which since
+#: 1.6.0.0 also carries a switch that turns something on.
+DISABLE_FLAGS = tuple(flag for flag in ALL_FLAGS if flag.endswith("disabled") or flag == ROTATION_DISABLED)
 
 ALL_NUMBERS = {
     DAILY_COOLDOWN: 3600.0,
     STREAM_SILENCE_TIMEOUT: 0.0,
-    STREAM_RESUME_LIMIT: 3.0,
+    # 1.6.0.0: 3 -> 10. The number stopped being the thing that ends the
+    # stitching loop; ``dispatch_binding`` now stops when every key in the
+    # pool has been asked to continue the answer and none of them added a
+    # word. This stays as the guard rail it always said it was, and is set to
+    # the top of its own range so a working continuation is never cut off
+    # mid-answer by an arbitrary count. A user who typed a number still gets
+    # exactly that number, and zero still switches stitching off.
+    STREAM_RESUME_LIMIT: 10.0,
 }
 
 #: What each number counts, for a UI that has to label a field and for a
@@ -565,10 +617,21 @@ META = {
         "a model that thinks before it answers gets abandoned mid-thought, so "
         "anything above zero is raised to at least 5s.",
     ),
+    NO_MODEL_FALLBACK: (
+        "Stay on this model, always",
+        "Hermes answers a spent key by rotating and, if that does not work, "
+        "by quietly switching to another model or provider. Turn this on and "
+        "KAME tells it not to: the pool waits out the quota and comes back on "
+        "the model you asked for, however long that takes. Summarisation and "
+        "titling are routed by Hermes on a lane this cannot reach, so those "
+        "may still fall back.",
+    ),
     STREAM_RESUME_LIMIT: (
         "Resume attempts per turn",
-        "How many times one answer may be continued after the provider cuts "
-        "the stream. Zero switches stitching off.",
+        "A ceiling, not the rule. KAME keeps continuing a cut answer while "
+        "keys are still adding words to it, and stops on its own once every "
+        "key has been asked and none of them added anything — so this only "
+        "bites if you lower it. Zero switches stitching off entirely.",
     ),
 }
 
@@ -690,7 +753,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "Optional",
         "Off until you turn it on. Nothing here is needed for rotation to "
         "work — this is an extra, for one specific problem.",
-        (STREAM_SILENCE_TIMEOUT,),
+        (STREAM_SILENCE_TIMEOUT, NO_MODEL_FALLBACK),
     ),
     (
         "tuning",
@@ -705,7 +768,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "Escape hatches. Each one gives a job back to Hermes and is meant for "
         "proving whether KAME is behind a problem — not for tuning. Leave "
         "them alone unless something is wrong.",
-        ALL_FLAGS,
+        DISABLE_FLAGS,
     ),
 )
 

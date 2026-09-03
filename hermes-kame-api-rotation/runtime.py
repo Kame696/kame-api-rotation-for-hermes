@@ -129,6 +129,58 @@ def describe(pool_provider: Optional[str] = None) -> str:
     return f"{provider}/{model}"
 
 
+# ── which model a bench about to be written belongs to ────────────────────
+# The announcement above is scoped to the *call*, and unwinds the moment the
+# call returns or raises. For the main lane that is exactly right: the bench
+# is written from inside the same request, with the announcement still up.
+#
+# The auxiliary lane is the exception, and it is the reason this exists.
+# ``agent/auxiliary_client`` lets the relay raise, catches it *outside* the
+# relay, and only then calls ``_recover_provider_pool`` -> the pool
+# (``:4560``, ``:4572``). By then ``scoped_call`` has already restored the
+# main model's announcement — so the bench earned by a summarisation call on
+# a small model was being written against the conversation's model, on a key
+# the small model had not spent. That is the per-model regression this plugin
+# exists to fix, running in the one lane that fires no hooks.
+#
+# The announcement itself is deliberately *not* held open past the call: an
+# announcement that outlived its scope would mis-attribute the next main-lane
+# failure, which is a worse error in the other direction. This is a separate,
+# narrower fact — "the next bench on this provider belongs to that model" —
+# with the same provider match and the same short expiry as a verdict, set
+# only where a lane is known to bench outside its own call.
+
+_BENCH_MODEL: ContextVar[Tuple[str, str, float]] = ContextVar(
+    "kame_bench_model", default=("", "", 0.0)
+)
+
+
+def note_bench_model(provider: object, model: object, *, now: float) -> None:
+    """Say which model owns the bench the host is about to write."""
+    _BENCH_MODEL.set((_norm(provider), normalize_model(model), float(now)))
+
+
+def bench_model_for(pool_provider: object, *, now: float) -> str:
+    """That model, if the hint is fresh and belongs to this pool.
+
+    Returns ``""`` in every other case, which puts the caller straight back
+    on ``model_for`` — the announcement — exactly as before this existed.
+    """
+    provider, model, at = _BENCH_MODEL.get()
+    if not model:
+        return ""
+    if now - at > JUDGEMENT_TTL_SECONDS:
+        _BENCH_MODEL.set(("", "", 0.0))
+        return ""
+    if not providers_match(pool_provider, provider):
+        return ""
+    return model
+
+
+def forget_bench_model() -> None:
+    _BENCH_MODEL.set(("", "", 0.0))
+
+
 # ── the verdict that is about to become a bench ───────────────────────────
 # KAME classifies a failure roughly fifty lines before the pool writes the
 # cooldown that classification produced. The classifier knows *why* — which
@@ -155,6 +207,11 @@ class Judgement:
     # Whether the refusal reaches past the model that earned it. Defaulted so
     # a caller written against the older signature still constructs.
     scope: str = "unknown"
+    # The window the provider's own counter named, which is not the same
+    # question as ``window`` above: that one is what KAME decided to act on,
+    # this one is what the provider said. Filed side by side so a disagreement
+    # between them can be counted later instead of being argued about.
+    stated: str = "unknown"
 
 
 _JUDGEMENT: ContextVar[Optional[Judgement]] = ContextVar("kame_judgement", default=None)
@@ -175,6 +232,7 @@ def note_judgement(
     reset_at: Optional[float],
     now: float,
     scope: str = "unknown",
+    stated: str = "unknown",
 ) -> None:
     _JUDGEMENT.set(
         Judgement(
@@ -185,18 +243,15 @@ def note_judgement(
             reset_at=reset_at,
             at=float(now),
             scope=str(scope or "unknown"),
+            stated=str(stated or "unknown"),
         )
     )
 
 
-def take_judgement(pool_provider: object, model: object, *, now: float) -> Optional[Judgement]:
-    """Claim the pending verdict for this pool and model, once.
-
-    Returns ``None`` unless the verdict is fresh and describes the same call
-    the pool is about to bench. Claimed verdicts are cleared so a second
-    bench — a different key failing later in the same turn — is recorded as
-    what it is rather than inheriting the first one's reasoning.
-    """
+def _matching_judgement(
+    pool_provider: object, model: object, *, now: float
+) -> Optional[Judgement]:
+    """The pending verdict if it describes this call, without claiming it."""
     judgement = _JUDGEMENT.get()
     if judgement is None:
         return None
@@ -207,8 +262,42 @@ def take_judgement(pool_provider: object, model: object, *, now: float) -> Optio
         return None
     if judgement.model and judgement.model != normalize_model(model):
         return None
+    return judgement
+
+
+def take_judgement(pool_provider: object, model: object, *, now: float) -> Optional[Judgement]:
+    """Claim the pending verdict for this pool and model, once.
+
+    Returns ``None`` unless the verdict is fresh and describes the same call
+    the pool is about to bench. Claimed verdicts are cleared so a second
+    bench — a different key failing later in the same turn — is recorded as
+    what it is rather than inheriting the first one's reasoning.
+    """
+    judgement = _matching_judgement(pool_provider, model, now=now)
+    if judgement is None:
+        return None
     _JUDGEMENT.set(None)
     return judgement
+
+
+def peek_judgement(pool_provider: object, model: object, *, now: float) -> Optional[Judgement]:
+    """The same verdict, read without consuming it.
+
+    There are two readers now and they run in this order, both inside one
+    call to the pool's ``_mark_exhausted``:
+
+    1. the **bench**, on the way in, which needs the deadline *before* the
+       entry is written — that is the only moment at which the host will
+       accept it;
+    2. the **journal**, on the way out, which needs the same verdict to say
+       whether the deadline that got stored is the one KAME asked for.
+
+    ``take_judgement`` clears as it reads, which is right for a single reader
+    and wrong for two: the first would have swallowed the verdict and the
+    second would have recorded ``sized_by: host`` for a bench KAME had just
+    sized itself. So the writer peeks and the recorder claims.
+    """
+    return _matching_judgement(pool_provider, model, now=now)
 
 
 def forget_judgement() -> None:

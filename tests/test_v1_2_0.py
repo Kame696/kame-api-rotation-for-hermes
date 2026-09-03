@@ -76,13 +76,18 @@ def _clean(monkeypatch):
 
 
 class TestTheShelves:
-    def test_the_optional_extra_is_alone_on_its_own_shelf(self):
-        # The whole point of the split: the one setting that is off on a
-        # correct install must not sit next to nine that are off because
-        # turning them on breaks something.
+    def test_the_optional_extra_shelf_holds_only_settings_that_add_something(self):
+        # The whole point of the split: a setting that is off on a correct
+        # install and *adds* a behaviour must not sit next to nine that are
+        # off because turning them on takes one away.
         extra = [group for group in settings.groups() if group["id"] == "extra"]
         assert len(extra) == 1
-        assert extra[0]["keys"] == [settings.STREAM_SILENCE_TIMEOUT]
+        assert extra[0]["keys"] == [
+            settings.STREAM_SILENCE_TIMEOUT,
+            settings.NO_MODEL_FALLBACK,
+        ]
+        for key in extra[0]["keys"]:
+            assert key not in settings.DISABLE_FLAGS, key
 
     def test_the_optional_extra_really_is_off_by_default(self):
         assert settings.ALL_NUMBERS[settings.STREAM_SILENCE_TIMEOUT] == 0.0
@@ -91,7 +96,7 @@ class TestTheShelves:
         ) == 0.0
 
     def test_every_escape_hatch_is_on_the_shelf_that_warns_about_it(self):
-        for key in settings.ALL_FLAGS:
+        for key in settings.DISABLE_FLAGS:
             assert settings.group_of(key) == "off", key
 
     def test_no_escape_hatch_leaked_onto_another_shelf(self):
@@ -99,7 +104,14 @@ class TestTheShelves:
             if group["id"] == "off":
                 continue
             for key in group["keys"]:
-                assert key not in settings.ALL_FLAGS, key
+                assert key not in settings.DISABLE_FLAGS, key
+
+    def test_the_off_shelf_holds_nothing_but_escape_hatches(self):
+        # 1.6.0.0 added the first switch that turns something *on*, so "every
+        # flag is an escape hatch" stopped being true and the shelf had to
+        # stop being built from every flag.
+        off = [g for g in settings.groups() if g["id"] == "off"][0]
+        assert set(off["keys"]) == set(settings.DISABLE_FLAGS)
 
     def test_the_tuning_shelf_holds_the_numbers_that_are_not_the_extra(self):
         tuning = {

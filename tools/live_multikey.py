@@ -199,6 +199,14 @@ def main() -> int:
             return 1
         plugin_module = manager._plugins[loaded[0]].module
 
+        # Hermes announces the model before a call goes out, through the
+        # ``pre_api_request`` hook, and that announcement is the only way KAME
+        # learns which model is spending. Without it the dispersion counters
+        # are filed under the bare provider and the report cannot name a
+        # model — which is what phase 10 asks it for. Fired once, the way the
+        # dispatcher fires it.
+        plugin_module._on_pre_api_request(provider=PROVIDER, model=MODEL)
+
         from agent import credential_pool as cp
 
         check_true(

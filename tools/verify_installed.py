@@ -79,6 +79,12 @@ def main() -> int:
         # means a comma-separated credential is still one malformed key.
         "_persist",
         "__init__",
+        # Since 1.6.0.0. `_available_entries` and `_select_unlocked` have
+        # always excluded the row that holds several keys; `current()` never
+        # went through either, and it is what the pointer restored from
+        # auth.json resolves through — so an unwrapped `current` means the
+        # comma-joined list can still be sent to the provider as one key.
+        "current",
     ):
         wrapped = getattr(getattr(cp.CredentialPool, method), "__kame_wrapped__", False)
         check(f"CredentialPool.{method}", wrapped, True)

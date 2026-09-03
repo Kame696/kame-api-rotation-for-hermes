@@ -35,6 +35,7 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import time
 from typing import Any, Callable, Optional, Tuple
 
 from . import runtime
@@ -143,7 +144,11 @@ class AuxBinding:
             if not model:
                 return original(client, kwargs, **options)
             with runtime.scoped_call(provider, model):
-                return original(client, kwargs, **options)
+                try:
+                    return original(client, kwargs, **options)
+                except BaseException as exc:
+                    binding._read_refusal(provider, model, exc)
+                    raise
 
         setattr(_kame_relay, _MARK, True)
         return _kame_relay
@@ -157,10 +162,93 @@ class AuxBinding:
             if not model:
                 return await original(client, kwargs, **options)
             with runtime.scoped_call(provider, model):
-                return await original(client, kwargs, **options)
+                try:
+                    return await original(client, kwargs, **options)
+                except BaseException as exc:
+                    binding._read_refusal(provider, model, exc)
+                    raise
 
         setattr(_kame_relay_async, _MARK, True)
         return _kame_relay_async
+
+    # -- the failure nobody else reads -----------------------------------
+
+    def _read_refusal(self, provider: str, model: str, exc: BaseException) -> None:
+        """Classify an auxiliary failure, because no hook will.
+
+        The main lane's refusals reach ``core.classify`` through
+        ``transform_api_error_classification``. This lane fires no hooks at
+        all, so its refusals were the only ones the plugin never read — and
+        it is the lane that benches most eagerly, reaching straight for
+        ``mark_exhausted_and_rotate`` (``agent/auxiliary_client:4560``,
+        ``:4572``). Every auxiliary 429 therefore got the host's fixed TTL
+        on a key the auxiliary model had barely touched.
+
+        Two facts are left behind, both with the provider match and the
+        30-second expiry that govern every hand-off in ``runtime``:
+
+        * the **verdict**, so ``pool_binding`` can carry KAME's deadline into
+          the bench the way it now does on the main lane;
+        * the **model**, because ``_recover_provider_pool`` runs *after* this
+          call has unwound and ``scoped_call`` has already put the
+          conversation's model back. Without it the bench earned by a
+          titling call lands on the model that answers the user.
+
+        Nothing here may change what the caller sees. The exception is
+        re-raised by the caller untouched, and every failure inside this
+        function is swallowed: reading a refusal is worth less than the
+        refusal itself, which the host still handles exactly as before.
+        """
+        try:
+            from .core import classify as classify_error
+            from .core import evidence
+            from . import host_text
+
+            ev = evidence.harvest(
+                exc,
+                message=str(exc),
+                guidance_blocks=host_text.guidance_blocks(),
+            )
+            verdict = classify_error(
+                provider=provider,
+                model=model,
+                status_code=ev.status_code,
+                error_message=ev.message,
+                error_body=ev.body,
+                headers=ev.headers,
+                error=exc,
+                error_type=type(exc).__name__,
+                error_code=str(ev.code or ""),
+                now_epoch=time.time(),
+            )
+        except Exception:
+            logger.debug("kame: could not read the auxiliary refusal", exc_info=True)
+            return
+
+        now = time.time()
+        try:
+            # Set even when the verdict is ``None``. The attribution is not
+            # KAME's opinion about the failure — it is a fact about which
+            # model was on the wire, and it is right whether or not this
+            # plugin has anything to say about the refusal itself.
+            runtime.note_bench_model(provider, model, now=now)
+            if verdict is not None:
+                runtime.note_judgement(
+                    provider,
+                    model,
+                    window=verdict.quota_window,
+                    source=verdict.source,
+                    reset_at=verdict.reset_at,
+                    now=now,
+                    scope=verdict.quota_scope,
+                )
+                logger.info(
+                    "kame: auxiliary %s/%s -> %s [%s via %s]",
+                    provider, model, verdict.reason,
+                    verdict.quota_window, verdict.source or "-",
+                )
+        except Exception:  # pragma: no cover — ContextVar sets do not fail
+            logger.debug("kame: could not stage the auxiliary verdict", exc_info=True)
 
     # -- identification --------------------------------------------------
 

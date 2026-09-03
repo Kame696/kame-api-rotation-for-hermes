@@ -551,3 +551,70 @@ class TestTheEmptyAnswerLines:
         line = report.render_quiet([self._seen("gemini", 2)])[0]
         assert "429" not in line
         assert "sized" not in line
+
+
+# --------------------------------------------------------------------------
+# 1.6.0.0 — the key a wait will not fix.
+#
+# Carried back from the Agent Zero plugin, which counted failures per kind
+# per key and could therefore name the bad one. This port recorded the same
+# facts and rendered none of them, so a single dead credential in a pool of
+# fifteen was invisible: the pool rotated past it every time, correctly, for
+# ever. On the owner's own journal it was 20 401s across 13.9 days, eleven of
+# them on one key, and nothing anywhere said so.
+# --------------------------------------------------------------------------
+
+
+class TestNamingTheKeyThatWillNotWork:
+    def test_a_key_the_provider_keeps_rejecting_is_named(self):
+        book = Journal()
+        for index in range(4):
+            block(book, at=NOW + index * MINUTE, credential="bad", status_code=401)
+        lines = "\n".join(report.render_repeat_offenders(book, now=NOW))
+        assert "Keys a wait will not fix" in lines
+        assert "bad" in lines
+        assert "x4" in lines
+
+    def test_a_throttle_is_the_pools_business_and_is_not_listed(self):
+        # 429 is what rotation is *for*. Listing it would turn the one
+        # section that asks the reader to act into noise.
+        book = Journal()
+        for index in range(9):
+            block(book, at=NOW + index * MINUTE, credential="busy", status_code=429)
+        assert report.render_repeat_offenders(book, now=NOW) == []
+
+    def test_one_bad_afternoon_is_not_a_bad_key(self):
+        # Two transient 401s happen — a token refreshing, a provider blip.
+        # KAME deliberately does not retire a key on a 401 (1.4.0 removed
+        # that after 21 healthy keys were quarantined), so this section must
+        # not cry wolf either.
+        book = Journal()
+        for index in range(2):
+            block(book, at=NOW + index * MINUTE, credential="blip", status_code=401)
+        assert report.render_repeat_offenders(book, now=NOW) == []
+
+    def test_the_worst_key_is_named_first(self):
+        book = Journal()
+        for index in range(3):
+            block(book, at=NOW + index, credential="mild", status_code=403)
+        for index in range(7):
+            block(book, at=NOW + 100 + index, credential="worst", status_code=401)
+        lines = report.render_repeat_offenders(book, now=NOW)
+        body = [line for line in lines if " x" in line]
+        assert "worst" in body[0]
+        assert "mild" in body[1]
+
+    def test_it_renders_a_label_and_never_a_credential(self):
+        book = Journal()
+        for index in range(3):
+            block(book, at=NOW + index, credential="abcdef0123456789", status_code=401)
+        lines = "\n".join(
+            report.render_repeat_offenders(
+                book, now=NOW, labels={"abcdef0123456789": "NVIDIA_API_KEY (2/2)"}
+            )
+        )
+        assert "NVIDIA_API_KEY (2/2)" in lines
+        assert "abcdef0123456789" not in lines
+
+    def test_a_healthy_pool_renders_nothing_at_all(self):
+        assert report.render_repeat_offenders(Journal(), now=NOW) == []

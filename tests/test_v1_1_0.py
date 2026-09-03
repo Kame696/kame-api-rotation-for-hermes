@@ -20,8 +20,10 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -199,6 +201,52 @@ class TestTheSnapshotIsTheDoorToARealPanel:
         state.publish(None, force=True)
         directory = home / "plugin-data" / state.PLUGIN_ID
         assert [p.name for p in directory.iterdir()] == ["state.json"]
+
+    def test_a_temporary_a_killed_run_left_behind_is_swept(self, home):
+        # 1.6.0.0. The write is atomic and unlinks its own temporary on every
+        # exception — but ``os.replace`` is the last statement, and a process
+        # killed before it reaches that line leaves the file with nobody left
+        # to remove it. The owner's plugin-data directory had six, 40 KB in
+        # total, one per mid-write restart, and nothing would ever have
+        # cleaned them up.
+        directory = home / "plugin-data" / state.PLUGIN_ID
+        directory.mkdir(parents=True, exist_ok=True)
+        orphan = directory / "tmpdeadbeef.tmp"
+        orphan.write_text("{}", encoding="utf-8")
+        os.utime(orphan, (time.time() - 3600, time.time() - 3600))
+
+        state._swept = False
+        assert state.publish(None, force=True) is True
+        assert not orphan.exists()
+        assert sorted(p.name for p in directory.iterdir()) == ["state.json"]
+
+    def test_a_temporary_another_process_may_still_be_writing_is_left_alone(self, home):
+        # The age threshold. A second Hermes writing its snapshot right now
+        # is between ``mkstemp`` and ``os.replace``; deleting that file would
+        # turn a tidy-up into the very failure it is cleaning up after.
+        directory = home / "plugin-data" / state.PLUGIN_ID
+        directory.mkdir(parents=True, exist_ok=True)
+        live = directory / "tmpinflight.tmp"
+        live.write_text("{}", encoding="utf-8")
+
+        state._swept = False
+        assert state.publish(None, force=True) is True
+        assert live.exists()
+        live.unlink()
+
+    def test_nothing_but_a_snapshot_temporary_is_touched(self, home):
+        directory = home / "plugin-data" / state.PLUGIN_ID
+        directory.mkdir(parents=True, exist_ok=True)
+        keepers = [directory / "state.json.bak", directory / "notes.tmp.json"]
+        for keeper in keepers:
+            keeper.write_text("{}", encoding="utf-8")
+            os.utime(keeper, (time.time() - 3600, time.time() - 3600))
+
+        state._swept = False
+        assert state.publish(None, force=True) is True
+        for keeper in keepers:
+            assert keeper.exists(), keeper.name
+            keeper.unlink()
 
     def test_an_unchanged_document_is_not_rewritten(self, home):
         assert state.publish(None, force=True) is True

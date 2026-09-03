@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a whole day; the cooldown KAME works out finally reaches the pool instead of being dropped one hop short; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key before Hermes tells the model its call was too big; and the panel says, in one line per provider, what KAME can actually see |
 | **1.5.0** | The rest of the evidence, and the gate that was never run | The class of the exception is read at last, so a failure with no status and no body is sized instead of guessed; two payloads 1.4.0 wrongly claimed are given back to the host; the Settings panel can no longer freeze |
 | **1.4.0** | The evidence was on the exception all along | The installed plugin had no engine and nothing said so; cooldowns are sized from the provider's own fields instead of its prose; the Events tab says where every wait came from |
 | **1.2.9** | True provider limits and inspectable payloads | The classifier uses the exact provider name instead of a hardcoded 'gemini', fixing NVIDIA limits; the UI now lets you click on any event to inspect the raw error payload. |
@@ -41,6 +42,195 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.6.0.0] — 2026-09-02
+
+**In short.** Two subsystems that were each correct and never met, one
+provider whose evidence nothing read, and three ceilings that ended a turn
+the plugin exists to keep alive. Nothing here is a new feature; every item is
+a thing 1.5.0 already believed it was doing.
+
+The release began as a list of bugs and turned into a contract, stated by the
+owner and now written into the code as named tests: *the agent is
+uninterrupted; it never tries the same API twice in a row; it rotates to the
+one most likely to be healthy; it never stops except when a single healthy
+credential is left. The agent should not stop because of errors.*
+
+### The measurement it all came from
+
+The prediction journal on the owner's own install, 13.9 days, **295 recorded
+blocks**:
+
+| What the journal said | Count |
+|---|---|
+| `sized_by: kame` — a cooldown KAME chose that reached the pool | **0** |
+| `sized_by: dropped` — KAME sized it, the number never arrived | 185 |
+| `sized_by: host` — KAME named no deadline | 110 |
+| Entries whose `last_error_reset_at` was set | **0 of 295** |
+| Gemini refusals decided by prose rather than by a field | 184 of 225 |
+| Recoveries carrying the prediction they tested | **0 of 30** |
+
+A plugin whose entire purpose is to size a wait had never once delivered one.
+
+### The deadline never reached the pool
+
+KAME's hook returns `error_context: {"reset_at": ...}`. It survives
+`hermes_cli/plugins.py:6151` and lands on `ClassifiedError.error_context`.
+Then `agent/conversation_loop.py:4280` **rebuilds the context from the raw
+exception** and passes that on instead — `ClassifiedError.error_context` is
+read by nobody. The host's own extractor looks for `error.body` (Hermes'
+Gemini adapter files nothing there), then a `Retry-After` header (Google
+sends none), then three prose regexes. On this traffic it produced a deadline
+zero times.
+
+The deadline is now put back at the last seam KAME owns — the pool's own
+`_mark_exhausted` — and only when the host derived none of its own, so a
+number the provider actually stated always wins. Proven against the real
+`CredentialPool`: the entry gets the deadline, `_exhausted_until` returns it,
+and the journal can finally say who sized the bench.
+
+### Gemini's refusals were read from the wrong place
+
+Hermes serves Google through its own adapter, which reads the response body
+once and files the parsed error on the exception:
+`details={"status": "RESOURCE_EXHAUSTED", "reason": "RATE_LIMIT_EXCEEDED",
+"metadata": {"quota_limit": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}}`
+— with `code` set to `gemini_rate_limited`, a name Hermes invents. The body is
+then spent, so `error_body` arrived empty and every reader below it found
+nothing.
+
+The cost was not silence. Google's free-tier 429 says, word for word,
+OpenAI's out-of-credits sentence. `_AMBIGUOUS_BILLING_PATTERNS` exists for
+exactly that collision and is settled by evidence from the body — which was
+empty. So **184 of 295 refusals** were read as `billing` at `account` scope: a
+key benched for a day, every model down with it, the probe disarmed by the
+reason and the escalation disarmed by the window. A twenty-one second
+throttle, treated as a spent account.
+
+`exc.details` is now read alongside the body, the quota identifier is found
+in a parsed payload as well as raw JSON, and a catalogued throttle settles
+the ambiguous sentence outright. The same nine payloads that produced one
+right answer now produce nine.
+
+### The row holding several keys could still be sent as a key
+
+`_available_entries` and `_select_unlocked` have excluded the parent of a
+split since the feature shipped. `current()` never went through either, and
+it is what the restored `_current_id` resolves through — and only the parent
+is ever written to `auth.json`, because a derived row must not reach disk. So
+after a restart the live credential could be the comma-joined list, sent
+whole and refused as invalid. Reproduced against the real pool; visible in
+the journal as 31 of NVIDIA's 56 blocks sitting on the bare parent row.
+
+### Three ceilings that ended a turn
+
+* **A cut answer** stopped after three continuations. It now continues while
+  any key is still adding words, and stops when the pool starts repeating
+  itself with nothing new — unanimity, not a count, the same shape rotation
+  has always used. `stream_resume_limit` stays as the guard rail it always
+  claimed to be, defaulted to the top of its range.
+* **A dropped tool call** went straight back to Hermes, which tells the model
+  that its previous tool call was too large and must not be retried — often
+  false, and it teaches the model to avoid a working tool. When nothing has
+  reached the screen, the same call is now asked of another key first.
+* **The auxiliary lane** fires no classification hook, so its refusals were
+  the only ones the plugin never read, and it benches after its own call has
+  unwound — so a titling call's cooldown landed on the model that answers the
+  user. It now reads its own refusals and says which model earned the bench.
+
+### Asked for, and added
+
+* **Stay on this model, always** — a new switch. Hermes answers a spent
+  credential by rotating and then quietly switching model and provider; turn
+  this on and it does not. Off by default, because falling back is the host's
+  own behaviour. The auxiliary lane is routed by Hermes and this cannot reach
+  it, which the help text says rather than leaving it to be discovered.
+* **The event inspector is readable.** Its card was painted with
+  `--ui-bg-primary`, which is a 90%-transparent wash meant for tinting a
+  surface that already exists — so the payload was read over the events list
+  behind it. It now uses the opaque token Hermes' own popovers use.
+* **"What KAME can see"** — one line per provider: rows stored, keys after
+  splitting, how many are resting, and where they came from. Counts and
+  origins only, never a key. It is the answer to "is it even seeing my
+  keys?", which turned out to be the question behind every report.
+* **Temporary files are swept.** The snapshot write is atomic and cleans up
+  after every exception, but `os.replace` is the last statement and a process
+  killed before it leaves the file behind. Six of them, 40 KB, one per
+  mid-write restart.
+* **Five detection markers** carried back from the Agent Zero plugin after a
+  release-by-release audit of all 28 of its versions. Three were already
+  covered here; `tokens per day`, `tokens per min` and `quota left` were not —
+  the shape a refusal takes when the provider states the counter instead of
+  naming the category.
+
+### The bench that was filed under the wrong model
+
+Found by running the live harnesses, which had never been run: a sole key
+benched for a daily cap was offered again the *instant* its bench was
+written. The bench was real. It had been filed under the auxiliary model.
+
+The note that says which model an auxiliary bench belongs to exists because
+the host benches after the relay call has unwound, and it deliberately
+outlives that call. What it must not outlive is the **next** refusal: a
+titling call that fails seconds before the conversation's own 429 made KAME
+file the conversation's bench under the small model, and per-model release —
+working exactly as designed — then handed the key straight back to the model
+that had just spent it.
+
+`agent/auxiliary_client.py` never calls `classify_api_error`, so reaching the
+classification hook is proof the refusal belongs to the main lane. The note
+is now cleared there, before the verdict is even reached, so a refusal KAME
+declines to size clears it too.
+
+### What the provider said, and what kept going wrong
+
+Two things the journal could not tell anyone, both carried back from the
+Agent Zero plugin.
+
+**The verdict had nothing to argue with it.** Every row held the window KAME
+concluded and no record of what the provider itself named — so a confident
+right verdict and a confident wrong one were the same row, and the
+misclassification that produced this release was invisible in the very file
+that recorded it 184 times. Rows now carry the window the provider's own
+counter stated, read on its own, beside the one KAME acted on. Where they
+disagree, the report says how often.
+
+The counter's *text* is deliberately not carried anywhere. It is
+provider-authored, and the report has one invariant worth more than the
+detail: no error text reaches it. What travels is a word from KAME's own
+vocabulary.
+
+**A daily cap, a per-minute throttle and a rejected credential are three
+problems.** The fortnight tally grouped by window, which answers "is KAME
+reading these" and cannot answer what an owner asks first — *what keeps
+happening, and is waiting even the right answer to it*. A new section counts
+refusals by kind per provider, says how many of each KAME sized, and marks
+the kinds no timer fixes.
+
+Rendered against the owner's own 295-block journal, which promptly found a
+bug in it: ordering rows by count alone printed `gemini` twice under two
+separate headings.
+
+### Verified
+
+* 1553 unit tests.
+* The host's own error corpus, 87 cases, run clean and run again with KAME
+  behind the real hook dispatch: identical both ways.
+* Every host fact the plugin reasons about, re-checked against the installed
+  Hermes.
+* The full sandbox suite against the real `CredentialPool`,
+  `PooledCredential`, `GeminiAPIError` and `extract_api_error_context`,
+  including the five sections written for this release — one of which now
+  follows a provider's own counter from the exception, through the real hook
+  and the real pool, into the journal row.
+* **All five live harnesses, run for the first time.** Real sockets, the real
+  OpenAI SDK, the real `classify_api_error`, the real pool. They found the
+  bench-attribution bug above and three stale expectations of their own:
+  `live_429` still asserted the US/Pacific midnight calculation that 1.2.4
+  removed on purpose, and `live_429` and `live_multikey` both checked that the
+  `pre_api_request` hook was registered and then never fired it — so every
+  per-model claim below that point had been measuring a plugin that had been
+  told nothing about which model was spending.
 
 ## [1.5.0] — 2026-08-29
 

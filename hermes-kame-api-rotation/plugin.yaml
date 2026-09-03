@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.5.0"
+version: "1.6.0.0"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because the two halves of Hermes disagree about the number and only
 # one of them is in the way of an install:
@@ -98,8 +98,12 @@ config_schema:
     description: "Stop continuing an answer that was cut mid-stream. KAME normally resumes it on another key, prefilled with what you already saw, and trims whatever the model repeats, so the reply arrives as one piece. Turning this on hands the half-answer back to Hermes instead, which appends its own '[System: The previous response was cut off...]' note. Same as KAME_STREAM_STITCH_DISABLED."
   stream_resume_limit:
     type: int
-    default: 3
-    description: "How many times one request may continue a cut answer before what arrived is handed back as it is. Zero turns continuation off, same as stream_stitch_disabled. Clamped to 0-10. Same as KAME_STREAM_RESUME_LIMIT."
+    default: 10
+    description: "A ceiling on continuing a cut answer, not the rule. KAME keeps going while keys are still adding words and stops on its own once the pool starts repeating itself with nothing new, so this only bites if you lower it. Zero turns continuation off, same as stream_stitch_disabled. Clamped to 0-10. Same as KAME_STREAM_RESUME_LIMIT."
+  never_fall_back_to_another_model:
+    type: bool
+    default: false
+    description: "Stay on the model you asked for. Hermes answers a spent credential by rotating keys and, failing that, by switching to a different model and then a different provider; turn this on and KAME tells it not to, so the pool waits the quota out and comes back on the same model however long that takes. Off by default because falling back is Hermes' own behaviour. Summarisation and titling run on a lane that fires no classification hook, so those may still fall back. Same as KAME_NO_MODEL_FALLBACK."
 hooks:
   - transform_api_error_classification
   - on_session_reset

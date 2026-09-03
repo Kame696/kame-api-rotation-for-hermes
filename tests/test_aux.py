@@ -96,9 +96,18 @@ def build_module(*, record_to: list):
 
 @pytest.fixture(autouse=True)
 def _clean_context():
-    runtime.forget_call()
+    _reset()
     yield
+    _reset()
+
+
+def _reset() -> None:
     runtime.forget_call()
+    # 1.6.0.0: the relay now reads its own refusals and leaves both a verdict
+    # and an attribution behind for the bench that follows. Neither may
+    # survive into the next test.
+    runtime.forget_judgement()
+    runtime.forget_bench_model()
 
 
 @pytest.fixture

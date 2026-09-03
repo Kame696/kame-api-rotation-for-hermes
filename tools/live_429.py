@@ -18,8 +18,8 @@ distinction:
 
 * the same sentence and the same 21-second RetryInfo arrive for a per-minute
   throttle and for a daily cap, and only the counter named in the body tells
-  them apart - the first is held 21 seconds, the second until midnight
-  US/Pacific;
+  them apart - the first is held 21 seconds, the second for the daily floor
+  in ``core/quota.py``;
 * the auxiliary lane fires no hooks at all, so a real relay call asks, from
   inside the call, whether the key the main model spent is available to the
   smaller model - and whether it goes back to being withheld the moment the
@@ -54,10 +54,8 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 HERMES_ROOT = Path(os.environ.get("KAME_HERMES_ROOT", Path.home() / "AppData/Local/hermes"))
 AGENT = HERMES_ROOT / "hermes-agent"
@@ -231,6 +229,7 @@ def main() -> int:
         if not loaded:
             return 1
         plugin_module = manager._plugins[loaded[0]].module
+        quota_module = importlib.import_module(plugin_module.__name__ + ".core.quota")
         check_true(
             "hook registered", plugin_system.has_hook("transform_api_error_classification")
         )
@@ -291,23 +290,38 @@ def main() -> int:
         check_true("still classified", classified is not None)
         if classified is None or waited is None:
             return 1
-        # Same sentence, same RetryInfo, different counter. A daily free-tier
-        # quota rolls over at midnight US/Pacific, so the 21 seconds is the
-        # provider's generic retry hint and not the answer to this question.
-        pacific = ZoneInfo("America/Los_Angeles")
-        now_pacific = datetime.now(pacific)
-        midnight = (now_pacific + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
+        # Same sentence, same RetryInfo, different counter. The 21 seconds is
+        # the provider's generic retry hint, not the answer to "when does a
+        # spent daily allowance come back", so the daily cap has to be held
+        # far longer than the throttle above.
+        #
+        # *How much* longer stopped being "until midnight US/Pacific" in
+        # 1.2.4, which removed that calculation on purpose: it locked keys for
+        # 12-18 hours on a burst error, and the whole of
+        # ``seconds_until_pacific_midnight`` was deleted in 1.2.5. The
+        # contract since then is the flat floor in ``core/quota.py``, and this
+        # check asserted the deleted behaviour until it was first run.
+        daily_floor = quota_module.DEFAULT_PER_DAY_BENCH_SECONDS
+        check_true(
+            "not the provider's 21 seconds",
+            waited > RETRY_DELAY_SECONDS * 10,
         )
-        to_midnight = (midnight - now_pacific).total_seconds()
-        check("held to the next Pacific midnight", abs(waited - to_midnight) <= 120, True)
-        print(
-            f"        {waited / 3600:.1f}h out; midnight Pacific is "
-            f"{to_midnight / 3600:.1f}h out"
+        check(
+            "held for the daily floor instead",
+            abs(waited - daily_floor) <= 120,
+            True,
         )
+        print(f"        {waited / 60:.0f}m out; the daily floor is {daily_floor / 60:.0f}m")
         daily_reset_at = (classified.error_context or {}).get("reset_at")
 
         print("\n[4] the host's own recovery benches that key and rotates")
+        # Hermes announces the model before a call goes out, and KAME learns it
+        # there and nowhere else: with nothing in flight, `_adjust` returns the
+        # host's answer untouched and every per-model claim below would be
+        # measuring a plugin that had been told nothing. Phase 1 checks this
+        # hook is registered; until this line nothing ever fired it. Fired the
+        # way the dispatcher fires it — once, for the main model.
+        plugin_module._on_pre_api_request(provider=PROVIDER, model=MODEL)
         entries = [
             cp.PooledCredential(
                 provider=PROVIDER,

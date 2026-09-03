@@ -186,6 +186,13 @@ class PoolBinding:
         self.installed = False
         self.reason = "not installed"
         self.watching_selection = False
+        # 1.6.0.0. Whether ``current()`` is wrapped so the row holding several
+        # keys can never be handed out as though it were one of them.
+        self.guarding_current = False
+        # 1.6.0.0. What each provider's pool turned out to be, the last time
+        # KAME touched it: rows, keys after splitting, how many are benched,
+        # and where they came from. Numbers only — see ``_note_shape``.
+        self.seen_pools: dict = {}
         # Splitting a multi-key credential is only safe while the parts can be
         # kept off disk, so it is switched on by the persist guard and by
         # nothing else. See ``_guard_persist``.
@@ -252,6 +259,7 @@ class PoolBinding:
         self._watch_selection(pool_class)
         self._guard_persist(pool_class)
         self._expand_on_construction(pool_class)
+        self._guard_current(pool_class)
         self.installed = True
         self.reason = "active"
         logger.info("kame: per-model quota memory active")
@@ -280,6 +288,108 @@ class PoolBinding:
         # only the second half the order would never change, so the feature
         # switches on here and nowhere else.
         self.spreading_load = not _spread_disabled()
+
+    def _guard_current(self, pool_class: Any) -> None:
+        """Never hand out the container as though it were a credential.
+
+        ``_available_entries`` and ``_select_unlocked`` already exclude the
+        parent of a split — ``_supersedes`` has done that since the feature
+        shipped. ``current()`` does not go through either. It reads
+        ``self._current_id`` and returns whatever entry carries it:
+
+            def _current_unlocked(self):
+                if not self._current_id: return None
+                return next((e for e in self._entries if e.id == self._current_id), None)
+
+        A parent's ``runtime_api_key`` is the comma-joined list. Anything that
+        reaches ``current()`` while that pointer names the parent sends
+        ``key1,key2`` to the provider as one key and is refused — which is the
+        report this fix came from: NVIDIA intermittently saying the API key is
+        wrong, with the suspicion that it was reading two keys as one.
+        Reproduced against the real ``CredentialPool``, and visible in the
+        journal: 31 of NVIDIA's 56 recorded blocks sit on the bare parent row
+        ``01e224``, 6 of them 401s, while Gemini's parent — the same code, a
+        pool that had selected before it ever failed — has none at all.
+
+        The pointer gets there without anything being wrong: it is restored
+        from ``auth.json``, where only the parent is ever written, because a
+        derived row must not reach disk.
+
+        So the pointer is *repaired* rather than the answer faked. Handing
+        back a child while ``_current_id`` still named the parent would leave
+        the next reader to make the same mistake, and this runs under the
+        pool's own re-entrant lock, so fixing it here is safe.
+
+        Wrapped outside ``inspect_module`` for the same reason selection is:
+        a host that renamed this method should cost the repair, not the whole
+        binding.
+        """
+        original = getattr(pool_class, "current", None)
+        if not callable(original) or getattr(original, _MARK, False):
+            return
+        self._originals["current"] = original
+        pool_class.current = self._build_current(original)
+        self.guarding_current = True
+
+    def _build_current(self, original: Callable) -> Callable:
+        binding = self
+
+        def _kame_current(pool):
+            entry = original(pool)
+            try:
+                if entry is None or not binding._supersedes(entry):
+                    return entry
+                child = binding._child_standing_in_for(pool, entry)
+                if child is None:
+                    return entry
+                logger.info(
+                    "kame: the pool pointed at %s, which is the row holding "
+                    "several keys rather than a key — using %s instead",
+                    _label(entry),
+                    _label(child),
+                )
+                try:
+                    pool._current_id = getattr(child, "id", "")
+                except Exception:  # pragma: no cover — a read-only pool
+                    pass
+                return child
+            except Exception:
+                # Never cost the host its credential over a repair.
+                logger.debug("kame: could not resolve the parent row", exc_info=True)
+                return entry
+
+        setattr(_kame_current, _MARK, True)
+        return _kame_current
+
+    def _child_standing_in_for(self, pool: Any, parent: Any) -> Any:
+        """Which of a parent's split keys should answer for it.
+
+        The one KAME last handed out, when that is still one of them — it is
+        the key whose requests are in flight, and picking a different one
+        would attribute them to the wrong row. Otherwise the first child the
+        host would consider available, and failing that the first child at
+        all, because a container is never a better answer than one of its
+        parts.
+        """
+        parent_id = str(getattr(parent, "id", "") or "")
+        if not parent_id:
+            return None
+        prefix = parent_id + "-"
+        children = [
+            entry for entry in pool.entries()
+            if str(getattr(entry, "id", "") or "").startswith(prefix)
+            and multikey.is_child_source(getattr(entry, "source", ""))
+        ]
+        if not children:
+            return None
+        selected = runtime.selected_for(getattr(pool, "provider", ""))
+        for child in children:
+            if selected and getattr(child, "id", "") == selected:
+                return child
+        for child in children:
+            if self._is_usable(pool, child, refresh=False):
+                return child
+        return children[0]
 
     def _guard_persist(self, pool_class: Any) -> None:
         """Wrap ``_persist`` so a derived key can never be written, and only
@@ -395,7 +505,17 @@ class PoolBinding:
         part that already exists is kept as the same object so an in-memory
         cooldown survives the recomputation.
         """
-        if not self.splitting_multikey or self._module is None:
+        if self._module is None:
+            return
+        if not self.splitting_multikey:
+            # Nothing to split, but the shape is still worth recording — a
+            # panel that goes blank when splitting is off answers the "is it
+            # seeing my keys" question with silence, which is the answer that
+            # started this.
+            try:
+                self._note_shape(pool, list(pool.entries()))
+            except Exception:
+                logger.debug("kame: could not read the pool's shape", exc_info=True)
             return
         try:
             api_key_type = self._module.AUTH_TYPE_API_KEY
@@ -433,11 +553,78 @@ class PoolBinding:
                         changed = True
                 if changed or len(rebuilt) != len(entries):
                     pool._entries = rebuilt
+            self._note_shape(pool, rebuilt)
         except Exception:
             # A pool that did not gain its parts is the pool the previous
             # version had. A pool left half-rebuilt is not something any
             # version had, so nothing is assigned until the list is complete.
             logger.debug("kame: multi-key expansion skipped", exc_info=True)
+
+    def _note_shape(self, pool: Any, entries: List[Any]) -> None:
+        """Remember what this pool turned out to be. Numbers only.
+
+        The panel's answer to "is it even seeing my keys?" — the one question
+        every report about this plugin has really been, and the one thing
+        that was nowhere on screen. A profile where the key separation
+        "doesn't work" and a profile whose provider field genuinely holds one
+        key look identical from the outside; ``rows`` beside ``keys`` tells
+        them apart at a glance.
+
+        Counts, an origin word, and nothing else. No entry is kept, so this
+        cannot pin a pool in memory or outlive one, and no key or fragment of
+        a key is stored — the report is rendered from these numbers alone.
+
+        ``load_pool()`` builds a new pool object per call and Hermes keeps no
+        registry of them, so there is nothing to enumerate at snapshot time.
+        This is written where KAME already touches every pool the process
+        builds instead.
+        """
+        provider = str(getattr(pool, "provider", "") or "")
+        if not provider:
+            return
+        exhausted = getattr(self._module, "STATUS_EXHAUSTED", "exhausted")
+        children = [
+            entry for entry in entries
+            if multikey.is_child_source(getattr(entry, "source", ""))
+        ]
+        parents = [
+            entry for entry in entries
+            if not multikey.is_child_source(getattr(entry, "source", ""))
+        ]
+        # A parent that was split is a container, not a key. Counting it
+        # would report sixteen where the user has fifteen.
+        containers = {
+            str(getattr(parent, "id", "")) for parent in parents
+            if any(
+                str(getattr(child, "id", "")).startswith(
+                    str(getattr(parent, "id", "")) + "-"
+                )
+                for child in children
+            )
+        }
+        usable = [
+            entry for entry in entries
+            if str(getattr(entry, "id", "")) not in containers
+        ]
+        origins = sorted({
+            str(getattr(parent, "source", "") or "?").split(":", 1)[0].split("#", 1)[0]
+            for parent in parents
+        })
+        self.seen_pools[provider] = {
+            "provider": provider,
+            "rows": len(parents),
+            "keys": len(usable),
+            "benched": sum(
+                1 for entry in usable
+                if getattr(entry, "last_status", None) == exhausted
+            ),
+            "origin": ", ".join(origins),
+            "split": len(usable) > len(parents),
+            "at": self._clock(),
+        }
+        if len(self.seen_pools) > 32:  # pragma: no cover — bounded, never hit
+            oldest = min(self.seen_pools, key=lambda name: self.seen_pools[name]["at"])
+            self.seen_pools.pop(oldest, None)
 
     def _splittable_keys(self, entry: Any, api_key_type: Any) -> List[str]:
         """The keys inside one entry, or nothing if it is not that kind of entry.
@@ -546,8 +733,10 @@ class PoolBinding:
         self._module = None
         self.installed = False
         self.watching_selection = False
+        self.guarding_current = False
         self.splitting_multikey = False
         self.spreading_load = False
+        self.seen_pools = {}
         self.reason = "uninstalled"
 
     # -- wrapper: recording ----------------------------------------------
@@ -564,6 +753,7 @@ class PoolBinding:
             persist: bool = True,
             failure_reason: Optional[str] = None,
         ):
+            error_context = binding._carry_deadline(pool, error_context)
             updated = original(
                 pool,
                 entry,
@@ -584,6 +774,79 @@ class PoolBinding:
         setattr(_kame_mark_exhausted, _MARK, True)
         return _kame_mark_exhausted
 
+    def _carry_deadline(self, pool: Any, error_context: Any) -> Any:
+        """Put KAME's deadline where the pool will actually read it.
+
+        This is the one line the whole plugin was missing, and the journal
+        says so without ambiguity: **295 benches over 13.9 days, 295 of them
+        with ``last_error_reset_at`` unset**, and ``sized_by: kame`` a
+        standing zero. Not a sizing that was wrong — a sizing that was never
+        delivered.
+
+        The verdict travelled correctly right up to the last hop:
+
+            KAME's hook returns ``{"error_context": {"reset_at": ...}}``
+              -> ``hermes_cli/plugins.get_plugin_error_classification`` keeps
+                 the key (``:6151``)
+              -> ``ClassifiedError.error_context`` holds it
+                 (``agent/error_classifier.py:92``)
+              -> ``agent/conversation_loop.py:4280`` **rebuilds** the context
+                 from the raw exception, and passes *that* to the pool.
+
+        ``classified.error_context`` is simply never read. What is passed on
+        instead is ``extract_api_error_context(api_error)``, which looks for
+        ``error.body`` (Hermes' Gemini adapter files nothing there), then a
+        ``Retry-After`` header (Google sends none), then three prose regexes.
+        On the owner's traffic it produced a deadline zero times.
+
+        So the deadline is put back at the last seam KAME owns: the pool's
+        own ``_mark_exhausted``, whose ``error_context`` argument is
+        normalised into ``last_error_reset_at`` eleven lines later
+        (``agent/credential_pool.py:830``) and read back by
+        ``_exhausted_until`` (``:426``) *before* the fixed TTL is considered.
+        That is what turns a verdict into a cooldown.
+
+        Two rules keep this from ever being a regression:
+
+        * **Only when the host has none.** A ``reset_at`` the host did derive
+          came from the provider's own header, and the provider outranks
+          anything inferred. This adds; it never overwrites.
+        * **Only for this call.** ``peek_judgement`` matches on provider and
+          on the model in flight, and expires after 30 seconds, so a verdict
+          left over from a failure that never became a bench cannot attach
+          itself to the next key.
+
+        A permanently dead credential is unaffected by construction: the
+        ``auth_permanent`` verdict carries no ``reset_at``, so there is
+        nothing to inject and ``_is_terminal_auth_failure`` still sees the
+        context it would have seen.
+        """
+        if isinstance(error_context, dict) and error_context.get("reset_at") not in (None, ""):
+            return error_context
+        provider = getattr(pool, "provider", "")
+        now = self._clock()
+        model = self._benching_model(provider, now)
+        if not model:
+            return error_context
+        judgement = runtime.peek_judgement(provider, model, now=now)
+        if judgement is None or judgement.reset_at is None:
+            return error_context
+        carried = dict(error_context) if isinstance(error_context, dict) else {}
+        carried["reset_at"] = float(judgement.reset_at)
+        return carried
+
+    @staticmethod
+    def _benching_model(provider: Any, now: float) -> str:
+        """Which model this bench belongs to.
+
+        Normally the model in flight. The exception is a lane that benches
+        after its own call has already unwound — the auxiliary lane does
+        exactly that — and leaves an explicit hint saying so. Absent a hint
+        this is ``runtime.model_for`` and nothing else.
+        """
+        hinted = runtime.bench_model_for(provider, now=now)
+        return hinted or runtime.model_for(provider)
+
     def _remember(self, pool: Any, updated: Any, *, status_code: Any = None) -> None:
         module = self._module
         if module is None or updated is None:
@@ -593,11 +856,11 @@ class PoolBinding:
             # true for every model and must never be released for one.
             return
         provider = getattr(pool, "provider", "")
-        model = runtime.model_for(provider)
+        now = self._clock()
+        model = self._benching_model(provider, now)
         if not model:
             return
 
-        now = self._clock()
         reset_at = getattr(updated, "last_error_reset_at", None)
         reason = str(getattr(updated, "last_error_reason", "") or "rate_limit")
 
@@ -770,6 +1033,11 @@ class PoolBinding:
             return
         window = judgement.window if judgement is not None else "unknown"
         source = judgement.source if judgement is not None else ""
+        # What the provider's own counter named, kept apart from what KAME
+        # acted on. ``getattr`` rather than attribute access: a judgement
+        # built by an older caller has no such field, and a missing opinion
+        # about the provider must never cost the row that carries the bench.
+        stated = getattr(judgement, "stated", "unknown") if judgement is not None else "unknown"
         sized_by = journal_module.SIZED_BY_HOST
         if judgement is not None and judgement.reset_at is not None:
             # KAME did size this one. Whether it governed anything is a
@@ -793,6 +1061,7 @@ class PoolBinding:
             reset_at=held_to,
             sized_by=sized_by,
             reason=reason,
+            stated_window=stated,
         )
         if row is None:
             return

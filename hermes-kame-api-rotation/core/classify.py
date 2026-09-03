@@ -164,6 +164,19 @@ _QUOTA_PATTERNS = (
     # A concurrency ceiling is a per-credential counter like any other: the
     # next key has its own. Named by Kimi and MiniMax alongside RPM and TPM.
     re.compile(r"concurren\w*[\s_-]*limit", re.I),
+    # A counter named by its unit and its window and by nothing else:
+    # "You have exceeded your limit of 200000 tokens per day". No "rate
+    # limit", no "quota exceeded" — the two words every pattern above waits
+    # for are the two words this sentence does not contain. Carried over from
+    # the Agent Zero plugin, where it was one of the markers that kept the
+    # agent running through refusals this port went quiet on. ``quota.py``
+    # already reads the window out of the same words (``tokensperday`` is in
+    # ``_PER_DAY_MARKERS``); it was never asked, because nothing upstream
+    # called this a quota failure.
+    re.compile(r"tokens?[\s_-]*per[\s_-]*(?:min|minute|hour|day|week|month)", re.I),
+    # "no quota left", "Quota left: 0". Same family, stated as a remainder
+    # instead of as a breach.
+    re.compile(r"quota[\s_-]*left", re.I),
 )
 
 # The provider is busy. Nothing is wrong with the credential, so the cooldown
@@ -265,6 +278,37 @@ def structured_error_values(
             take(family, getattr(error, "type", None))
         except Exception:  # pragma: no cover - hostile attribute access
             pass
+        # ``exc.details`` — the parsed error the host already extracted, and
+        # for one whole provider the *only* place the machine-readable values
+        # survive. Hermes serves Gemini through its own adapter
+        # (``agent/gemini_native_adapter.gemini_http_error``), which reads the
+        # response body once, files ``{"status", "reason", "metadata",
+        # "message"}`` on the exception, and sets ``code`` to a name it invents
+        # — ``gemini_rate_limited``, ``gemini_unauthorized`` — which no
+        # catalogue can know. The body is then spent: a streaming
+        # ``httpx.Response`` raises on a second read, so ``error_body`` arrives
+        # empty and every read below it finds nothing.
+        #
+        # Measured before this existed: 225 Gemini refusals over 13.9 days,
+        # **zero** catalogue hits, 184 of them decided by prose instead — while
+        # ``details["status"]`` held ``RESOURCE_EXHAUSTED`` and
+        # ``details["reason"]`` held ``RATE_LIMIT_EXCEEDED``, both of which the
+        # table has always recognised. The values were never missing; they were
+        # never offered.
+        try:
+            detail_map = getattr(error, "details", None)
+        except Exception:  # pragma: no cover - hostile attribute access
+            detail_map = None
+        if isinstance(detail_map, dict):
+            # ``google.rpc.ErrorInfo.reason``, already unwrapped by the host.
+            take(reason, detail_map.get("reason"))
+            # Google's canonical status. A family, ranked with the families
+            # exactly as the same value is when it arrives inside a body.
+            take(family, detail_map.get("status"))
+            metadata = detail_map.get("metadata")
+            if isinstance(metadata, dict):
+                take(code, metadata.get("provider_code"))
+                take(family, metadata.get("error_type"))
 
     if isinstance(body, dict):
         take(code, body.get("code"))
@@ -425,6 +469,57 @@ def _body_text(body: Any, limit: int = 20000) -> str:
         return ""
 
 
+def _details_text(error: Any, limit: int = 20000) -> str:
+    """The searchable text of ``exc.details``, or ``""``.
+
+    Same material as a body and read for the same reasons — it is the
+    provider's own words about *this* call, parsed by the host instead of
+    being left in the response. It is kept in its own function because it is
+    only ever *appended*: an exception whose body survived already carries
+    this text, and a payload has one story, not two.
+
+    Nothing from another party can enter here. ``looks_like_upstream_wrapper``
+    guards against a relayed upstream failure and reads ``error_body``, which
+    this does not touch.
+    """
+    if error is None:
+        return ""
+    try:
+        details = getattr(error, "details", None)
+    except Exception:  # pragma: no cover - hostile attribute access
+        return ""
+    if not details:
+        return ""
+    try:
+        return str(details)[:limit]
+    except Exception:  # pragma: no cover - hostile __str__
+        return ""
+
+
+def _details_body(error: Any) -> Any:
+    """``exc.details`` as a walkable structure, for the readers that walk one.
+
+    ``_details_text`` is for the regexes; this is for everything that takes a
+    ``body=`` and traverses it — ``detect_quota_window``,
+    ``detect_quota_scope``, ``extract_retry_delay_seconds``,
+    ``compute_reset_at``. They were all handed ``error_body``, and on Gemini
+    ``error_body`` is ``None``, so the field that names the counter
+    (``metadata.quota_limit``: ``GenerateRequestsPerMinutePerProjectPerModel``)
+    was carried into the process and read by nobody.
+
+    Returns ``None`` for anything that is not a structure those readers can
+    walk, so a provider that files a bare string on ``details`` changes
+    nothing.
+    """
+    if error is None:
+        return None
+    try:
+        details = getattr(error, "details", None)
+    except Exception:  # pragma: no cover - hostile attribute access
+        return None
+    return details if isinstance(details, (dict, list, tuple)) and details else None
+
+
 class Verdict:
     """What KAME believes about one failure, and why.
 
@@ -474,6 +569,34 @@ class Verdict:
         )
 
 
+def stated_window(*, error_body: Any = None, error: Any = None) -> str:
+    """The window the provider's *own* counter named, whatever KAME concluded.
+
+    Two different questions share one vocabulary here, and keeping them apart
+    is the point. ``Verdict.quota_window`` is what KAME decided to act on,
+    reached through headers, prose, the catalogue and this identifier
+    together. This is only the last of those: the counter Google names in
+    ``quotaId``/``quota_limit``, read on its own and reported unchanged.
+
+    Recorded so the two can be compared later. A provider that keeps saying
+    ``PerMinute`` on a refusal KAME benches for a day is the shape of a
+    misclassification, and it is invisible while only the conclusion is
+    stored — the journal would show a confident daily bench and nothing to
+    argue with it.
+
+    Returns a word from KAME's own vocabulary, never the provider's text.
+    The identifier itself is not carried anywhere: it is provider-authored
+    text, and the report has one invariant it will not spend — that no error
+    text reaches it.
+    """
+    text = _body_text(error_body)
+    details = _details_text(error)
+    if details and details not in text:
+        text = (text + "\n" + details) if text else details
+    window, _scope = catalog.read_quota_id(text)
+    return window
+
+
 def classify(
     *,
     provider: str = "",
@@ -503,6 +626,21 @@ def classify(
     now = float(now_epoch) if now_epoch is not None else time.time()
     message = str(error_message or "")
     body_text = _body_text(error_body)
+    # A body the host consumed leaves nothing here. Hermes' Gemini adapter
+    # reads the response once, files the parsed error on the exception, and
+    # the ``httpx.Response`` refuses a second read — so for that whole
+    # provider ``error_body`` arrives empty and every search below it finds
+    # nothing, ``quotaId`` included. The details are the same payload,
+    # already parsed; appended, never substituted, and only when they are not
+    # already in the text.
+    details_text = _details_text(error)
+    if details_text and details_text not in body_text:
+        body_text = (body_text + "\n" + details_text) if body_text else details_text
+    # The same substitution for the readers that traverse a body instead of
+    # searching text. Only when there is no body: a real body is the whole
+    # payload and the details are a slice of it, so preferring the body keeps
+    # every existing provider reading exactly as it was.
+    evidence_body = error_body if error_body else _details_body(error)
     status = status_code if isinstance(status_code, int) else None
 
     # HTTP 200 OK is an HTTP success; KAME does not classify HTTP 200 as an API error.
@@ -557,7 +695,7 @@ def classify(
     if status_reading is not None and status_reading.family == catalog.BILLING:
         stated, _stated_source = extract_retry_delay_seconds(
             message=message,
-            body=error_body,
+            body=evidence_body,
             headers=headers,
             error=error,
             now_epoch=now,
@@ -633,12 +771,23 @@ def classify(
     #    it. A provider that names a wait or names the counter that blew has
     #    already said this is a throttle, and the reading below will size it
     #    correctly from the same payload.
+    #
+    #    A catalogued throttle disarms the ambiguous half outright, ahead of
+    #    any evidence-weighing. The whole reason that pattern is called
+    #    *ambiguous* is that the sentence means two things; a provider that
+    #    also filed ``RESOURCE_EXHAUSTED`` or ``RATE_LIMIT_EXCEEDED`` in a
+    #    field has already said which one, and this module's standing rule is
+    #    that a field outranks a sentence. Nothing here weakens the
+    #    unambiguous half: "credit balance is too low" beside a throttle field
+    #    is a genuine disagreement, not a known-ambiguous sentence, and the
+    #    more specific claim still wins.
     ambiguous = _matches(_AMBIGUOUS_BILLING_PATTERNS, message, body_text)
     if _matches(_BILLING_PATTERNS, message, body_text) or (
         ambiguous
+        and not catalog_throttle
         and not _names_a_wait(
             message=message,
-            body=error_body,
+            body=evidence_body,
             body_text=body_text,
             headers=headers,
             error=error,
@@ -724,7 +873,7 @@ def classify(
         now_epoch=now,
         provider=provider,
         message=message,
-        body=error_body,
+        body=evidence_body,
         headers=headers,
         error=error,
     )

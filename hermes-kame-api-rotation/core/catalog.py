@@ -136,8 +136,20 @@ _put(
     "Too Many Requests",
     # Google's status string on a 429.
     "RESOURCE_EXHAUSTED",
-    # Google ErrorInfo.reason.
-    "RATE_LIMIT_EXCEEDED",
+    # Google ErrorInfo.reason. ``QUOTA_EXCEEDED`` is the second half of that
+    # pair and was missing: Google sends ``RATE_LIMIT_EXCEEDED`` for a
+    # per-minute counter and ``QUOTA_EXCEEDED`` for a longer allowance. Both
+    # are spent counters on one credential and both want the same move —
+    # rotate. Neither names its own window, which is what ``quotaId`` is read
+    # for; leaving the window unset here lets that field decide instead of
+    # guessing a minute and re-hammering a key that is out for the day.
+    "RATE_LIMIT_EXCEEDED", "QUOTA_EXCEEDED",
+    # Not a provider's word — Hermes'. ``agent/gemini_native_adapter`` names
+    # every Gemini failure itself (``gemini_rate_limited``,
+    # ``gemini_unauthorized``, ``gemini_http_<status>``) and files that name
+    # where a provider's code would be. Catalogued because it is the only
+    # code that survives when Gemini answers a 429 with no ErrorInfo at all.
+    "gemini_rate_limited",
     # Alibaba's entire 429 family is spelled with this stem and never with the
     # words "rate limit"; the prefix rule below catches the sub-codes.
     "Throttling",
@@ -167,6 +179,10 @@ _put(
     Reading(AUTH_DEAD, why="the provider rejected the credential itself"),
     "invalid_api_key", "authentication_error", "authentication",
     "API_KEY_INVALID", "invalid_authentication", "UNAUTHENTICATED",
+    # Hermes' own name for a Gemini 401 — see ``gemini_rate_limited`` above.
+    # A 401 from Google is the key, not the request: the adapter goes as far
+    # as appending instructions for minting a replacement.
+    "gemini_unauthorized",
 )
 
 # --- deliberate refusal of this key for this model. -----------------------
@@ -269,7 +285,23 @@ _PREFIX_RULES: Tuple[Tuple[str, Reading], ...] = (
 # `quotaId` is a single string that names the window and the scope at once —
 # `GenerateRequestsPerMinutePerProjectPerModel-FreeTier`. It is the most
 # informative field any provider sends on a 429 and the host discards it.
-_QUOTA_ID = re.compile(r'"quotaId"\s*:\s*"([^"]+)"')
+#
+# Three spellings, one identifier. ``quotaId`` is what Google puts in
+# ``google.rpc.QuotaFailure.violations[]``; ``quota_limit`` is what the very
+# same string is called inside ``google.rpc.ErrorInfo.metadata``, which is the
+# half Hermes' Gemini adapter keeps — so a plugin that only knew ``quotaId``
+# read the field on providers that relay the raw body and never on Gemini,
+# the one provider that defines it. ``quota_limit_value`` is a different
+# field (the number) and is excluded by requiring the quote right after the
+# key.
+#
+# Either quote character, because the text this searches is not always JSON:
+# a body the host already parsed reaches here as ``str(dict)``, where every
+# quote is a single one. The old pattern required double quotes and so read
+# raw text only — a parsed payload carried the field and matched nothing.
+_QUOTA_ID = re.compile(
+    r"""["'](?:quotaId|quota_limit|quotaLimit)["']\s*:\s*["']([^"']+)["']"""
+)
 
 _WINDOW_FRAGMENTS: Tuple[Tuple[str, str], ...] = (
     # Widest first. A body naming both PerMinute and PerDay is saying the daily

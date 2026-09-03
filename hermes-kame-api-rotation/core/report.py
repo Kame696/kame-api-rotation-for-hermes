@@ -17,9 +17,9 @@ module at all.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from .journal import Journal, WindowStat, summarize
+from .journal import Journal, KindStat, WindowStat, count_kinds, summarize
 from .ledger import Ledger
 
 
@@ -267,6 +267,71 @@ def render_quiet(rows: Optional[List]) -> List[str]:
     return lines
 
 
+#: Statuses that mean a human has to do something, not that a timer has to
+#: run out. A throttle is the pool's business; a credential the provider
+#: keeps calling invalid is the owner's, and no amount of rotation fixes it.
+_NEEDS_A_PERSON = (401, 403)
+
+#: How many refusals of the same kind, on one key, before it is worth a line.
+#: Two is noise on any pool; this is the shape of a key that is simply wrong.
+_REPEAT_FLOOR = 3
+
+
+def render_repeat_offenders(
+    book: Journal, *, now: float, labels: Optional[Dict[str, str]] = None
+) -> List[str]:
+    """Keys the provider keeps refusing for a reason waiting cannot fix.
+
+    Carried back from the Agent Zero plugin, which counted failures per kind
+    per key and could therefore say *which* key was the problem. This port
+    recorded the same facts in the journal and rendered none of them, so a
+    single bad credential in a pool of fifteen was invisible: the pool
+    rotated past it every time, correctly, for ever.
+
+    The owner's own journal is the case. Twenty 401s on NVIDIA across
+    13.9 days, eleven of them on one key — and nothing anywhere said so. The
+    pool kept working, which is exactly why nobody could see it.
+
+    Deliberately a *report* and not a rule. KAME does not retire a key on a
+    401: 1.4.0 removed that after twenty-one healthy keys were quarantined
+    for an hour each on transient auth failures. Counting them and naming the
+    key leaves the decision with the person who can actually replace it.
+
+    Counts and labels only, like every other section here.
+    """
+    try:
+        blocks = book.blocks()
+    except Exception:  # pragma: no cover - a journal that cannot be read
+        return []
+    tally: Dict[Tuple[str, int], int] = {}
+    for block in blocks:
+        status = getattr(block, "status_code", None)
+        credential = str(getattr(block, "credential_id", "") or "")
+        if status in _NEEDS_A_PERSON and credential:
+            key = (credential, int(status))
+            tally[key] = tally.get(key, 0) + 1
+    rows = [
+        (credential, status, count)
+        for (credential, status), count in tally.items()
+        if count >= _REPEAT_FLOOR
+    ]
+    if not rows:
+        return []
+    rows.sort(key=lambda row: (-row[2], row[0]))
+    lines = ["", "Keys a wait will not fix"]
+    for credential, status, count in rows:
+        what = "rejected the credential" if status == 401 else "refused this key"
+        lines.append(
+            f"  {_name(credential, labels):<20} {status}  x{count}"
+            f" · the provider {what}"
+        )
+    lines.append(
+        "  KAME keeps rotating past these. Replacing one is the only thing "
+        "that clears it."
+    )
+    return lines
+
+
 def render_learning(stats: List[WindowStat]) -> List[str]:
     if not stats:
         return ["  nothing recorded yet — no real refusal has passed through KAME"]
@@ -275,6 +340,54 @@ def render_learning(stats: List[WindowStat]) -> List[str]:
         lines.extend(_stat_lines(stat))
     return lines
 
+
+
+def render_kinds(stats: List[KindStat]) -> List[str]:
+    """What kept going wrong, by kind, over the same fortnight.
+
+    The tally below this one answers "is KAME reading these" and groups by the
+    window it concluded. This answers the question an owner asks first — *what
+    keeps happening* — and it is a different question, because a daily cap, a
+    per-minute throttle and a rejected credential are three problems with
+    three answers and only one of them is a timer.
+
+    Two columns beyond the count, and both are about trust rather than volume:
+
+    * how many of that kind KAME actually sized, so a kind it reads well and
+      a kind it never reads are not one number;
+    * how often the provider's own counter named a **different** window than
+      the one KAME acted on. That is the misclassification signal, and until
+      1.6.0.0 nothing recorded the provider's half at all — the journal held a
+      confident verdict with nothing able to contradict it.
+
+    A disagreement is only reported where there was something to disagree
+    with. Providers that name no counter render no column, because "0
+    contradictions" out of nothing said is not reassurance, it is silence.
+
+    Counts and KAME's own vocabulary. No provider text reaches this module.
+    """
+    if not stats:
+        return []
+    lines: List[str] = ["", "What kept going wrong (last 14 days)"]
+    provider = None
+    for stat in stats:
+        if stat.provider != provider:
+            provider = stat.provider
+            lines.append(f"  {provider or '?'}")
+        detail = f"{stat.kame_sized} sized by KAME" if stat.kame_sized else "none sized"
+        line = f"    {stat.kind:<26} ×{stat.blocks:<4} {detail}"
+        if stat.contradicted:
+            line += (
+                f"  ← the provider named another window on "
+                f"{stat.contradicted} of {stat.stated}"
+            )
+        elif stat.needs_a_person:
+            # The one row where the count is not the message. Rotation is
+            # working perfectly and will go on working perfectly for ever;
+            # somebody has to replace a credential or pay a bill.
+            line += "  ← waiting does not fix this one"
+        lines.append(line)
+    return lines
 
 def render(
     ledger: Ledger,
@@ -306,8 +419,16 @@ def render(
     # same question — what reached KAME and what it could make of it — and on
     # a healthy install it renders nothing at all.
     lines.extend(render_quiet(quiet))
+    # Before the window tally, because it is the shorter and blunter reading
+    # of the same fortnight: what kept happening, and whether waiting is even
+    # the right answer to it. The tally below then says how well KAME is
+    # reading each window.
+    lines.extend(render_kinds(count_kinds(book, now=now)))
     lines.extend(["", "What KAME has seen (last 14 days)"])
     lines.extend(render_learning(summarize(book, now=now)))
+    # Last, and usually absent. It is the only section that asks the reader
+    # to do something, so it belongs after the picture that justifies it.
+    lines.extend(render_repeat_offenders(book, now=now, labels=labels))
     if footer:
         lines.extend(["", footer])
     return "\n".join(lines)
