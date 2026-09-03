@@ -271,6 +271,13 @@ class Judgement:
     # this one is what the provider said. Filed side by side so a disagreement
     # between them can be counted later instead of being argued about.
     stated: str = "unknown"
+    # Which verdict this was. Carried since 1.6.0.2 for one reader —
+    # ``PoolBinding._carry_deadline`` — which has to tell "a throttle nobody
+    # could size" from "a credential the provider called dead", because the
+    # host's fallback for the first is an hour and for the second is right.
+    # Defaulted so a caller written against the older signature still
+    # constructs, exactly as ``scope`` and ``stated`` were before it.
+    reason: str = ""
 
 
 _JUDGEMENT: ContextVar[Optional[Judgement]] = ContextVar("kame_judgement", default=None)
@@ -292,6 +299,7 @@ def note_judgement(
     now: float,
     scope: str = "unknown",
     stated: str = "unknown",
+    reason: str = "",
 ) -> None:
     _JUDGEMENT.set(
         Judgement(
@@ -303,6 +311,7 @@ def note_judgement(
             at=float(now),
             scope=str(scope or "unknown"),
             stated=str(stated or "unknown"),
+            reason=str(reason or ""),
         )
     )
 

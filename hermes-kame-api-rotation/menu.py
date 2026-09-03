@@ -554,6 +554,30 @@ class MenuCommand:
             f"({settings.provenance(key)}).\n" + "\n".join(removed)
         )
 
+    def _alive(self) -> str:
+        """One line saying the plugin is running, for a list that may be empty.
+
+        This list records failures and rotations, so a stretch where nothing
+        went wrong prints nothing — the same output an inert plugin gives. That
+        ambiguity was reported as a freeze. The count alone does not resolve it
+        either; when the last call went out does.
+        """
+        binding = self._binding
+        if binding is None:
+            return "  KAME is not installed in this Hermes process."
+        calls = int(getattr(binding, "calls", 0) or 0)
+        if not calls:
+            return "  KAME is running and has not been asked to route a call yet."
+        import time as _time
+
+        last = float(getattr(binding, "last_call_at", 0.0) or 0.0)
+        when = (
+            f", the last {format_duration(max(0.0, _time.time() - last))} ago"
+            if last
+            else ""
+        )
+        return f"  KAME is running — {calls} call(s) routed{when}."
+
     def events(self, limit: int = 20) -> str:
         """The recent decisions, newest first. Fingerprints only — never a key."""
         rows = EVENTS.recent(limit)
@@ -561,7 +585,8 @@ class MenuCommand:
             return (
                 "KAME events\n\n"
                 "  Nothing recorded yet. Rotations, quarantines, cut streams and\n"
-                "  continuations appear here as they happen."
+                "  continuations appear here as they happen.\n\n"
+                + self._alive()
             )
         import time as _time
 

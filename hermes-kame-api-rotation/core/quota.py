@@ -53,6 +53,33 @@ SOURCE_ANCHOR = "anchor"
 # clock skew between us and the provider.
 DEFAULT_PER_MINUTE_BENCH_SECONDS = 65.0
 
+# A throttle the provider named but did not size, and whose window nobody
+# could identify. **The most important number in this file**, because until
+# 1.6.0.2 there was no number here at all.
+#
+# ``classify`` used to return such a throttle with ``reset_at`` unset, and
+# said so in a comment: "bench it for nothing". There is no "bench it for
+# nothing" in this host. ``agent/credential_pool.py`` reads the deadline KAME
+# supplies (``_exhausted_until``, :426) and, finding none, falls back to a
+# fixed table (``_exhausted_ttl``, :333) whose entry for a 429 is
+# ``EXHAUSTED_TTL_429_SECONDS = 60 * 60``. Silence was not neutrality. Silence
+# was an hour, on every key, on the commonest refusal there is — measured on
+# the owner's 2026-09-03 14:39 run, where nineteen bare ``RESOURCE_EXHAUSTED``
+# replies each cost a credential an hour it did not owe.
+#
+# Twenty seconds, for the same reason ``DEFAULT_REJECTED_BENCH_SECONDS`` is
+# twenty: re-probing costs exactly one failed request, over-benching costs the
+# use of a healthy key, and the two are not close. A throttle nobody could
+# size is far more often a burst limit that clears in seconds than a daily cap
+# — a daily cap says so, in a quota id or in a stated delay, and both of those
+# are read before this number is ever reached.
+#
+# It is an opening, not a ceiling. ``core/escalate.py`` doubles a bench that
+# proves too short (20, 40, 80, 160 ...), so a window that really is long is
+# found by measurement in a couple of refusals instead of guessed at an hour
+# on the first one. That is the whole trade this plugin exists to make.
+DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS = 20.0
+
 # What to apply to an hourly window with no explicit delay. Deliberately
 # shorter than the window: re-probing costs one failed call, while
 # over-benching costs the use of a healthy key.

@@ -173,6 +173,19 @@ def role() -> str:
     Read off ``sys.argv`` because that is where the host itself decides which
     it is, and because the alternative — asking the plugin context — answers
     the same for both.
+
+    **It reports ``hermes`` more often than 1.6.0.1 assumed, and nothing may
+    depend on it being right.** Measured on the owner's machine: three live
+    processes sharing one home, all three answering ``hermes``, because the
+    Desktop starts its backends in a way that matches neither ``serve`` nor
+    ``--profile``. The panel's ``ownSection`` picked "the one whose role is
+    ``desktop``, else the freshest", so the first half never matched and the
+    second named a different process on every heartbeat — the Events tab
+    showed 150 rows, then none, then three. It now ranks on
+    ``counters.last_call_at``, which is evidence of traffic rather than a
+    guess about a command line, and uses the role only to break ties. Treat
+    this function as a hint for a human reading the panel, never as an
+    identity anything selects on.
     """
     try:
         argv = " ".join(sys.argv).lower()
@@ -326,6 +339,14 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
     rows = _pool_rows()
     counters = {
         "calls": int(getattr(binding, "calls", 0) or 0),
+        # 1.6.0.2. When the last of those calls went out, as wall clock, or 0.
+        #
+        # `updated_at` above says when this document was written, which happens
+        # on a timer whether or not anything is using the plugin. This says
+        # when KAME last had a call to route, and it is the difference between
+        # "quiet" and "stopped" — the two things the Events tab could not
+        # separate, because both draw an empty list.
+        "last_call_at": float(getattr(binding, "last_call_at", 0.0) or 0.0),
         "rotations": int(getattr(binding, "rotations", 0) or 0),
         "recovered": int(getattr(binding, "recovered", 0) or 0),
         "surfaced": int(getattr(binding, "surfaced", 0) or 0),

@@ -342,6 +342,7 @@ def _on_api_error_classification(
             now=time.time(),
             scope=verdict.quota_scope,
             stated=stated,
+            reason=verdict.reason,
         )
     except Exception:  # pragma: no cover — a ContextVar set does not fail
         logger.debug("%s: could not stage the verdict", PLUGIN_NAME, exc_info=True)

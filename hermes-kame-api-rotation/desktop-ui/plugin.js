@@ -507,32 +507,106 @@ async function readSnapshot() {
   settle(snap)
 }
 
+/** A section still being written by a process that is alive.
+ *
+ *  The writer prunes sections older than this whenever it saves, but only a
+ *  *live* process saves — so after every Hermes on a home has exited, its
+ *  section stays on disk until one of them comes back. Nothing here should
+ *  ever choose one of those. Mirrors `state._PROCESS_STALE_S`. */
+const SECTION_STALE_S = 120
+
+/** How much of the document this panel is looking at, and why that one.
+ *
+ *  Sticky, so the same process keeps the screen between ticks. */
+let chosenPid = null
+
 /** The section this panel is a part of.
  *
- *  This code runs inside the Desktop, so the Desktop's own backend is the one
- *  whose pools, events and settings belong on this screen — never the
- *  gateway's, which serves the phone and has its own idea of what is in
- *  flight. At most one section can be the Desktop's: a second Desktop would be
- *  a second profile, and a profile has its own home and its own file.
+ *  This is harder than it looks, and 1.6.0.2 is the release that found out
+ *  how. The panel reads a file, not its own backend — it has no way to ask
+ *  "which process am I attached to?" — and the file holds a section per
+ *  Hermes sharing the home.
  *
- *  Falling back to the freshest section rather than to nothing, because a
- *  Hermes started in a way this cannot name is still a Hermes, and showing its
- *  reading beats showing an empty page. */
-function ownSection(document) {
-  const sections = Object.values(document?.processes ?? {}).filter(
-    section => section && typeof section === 'object'
+ *  **The bug this replaces.** The old rule was "the one whose role is
+ *  `desktop`, else the freshest". `role` is read off `sys.argv`
+ *  (`state.role()`), and the Desktop on this machine starts its backends in a
+ *  way that matches neither `serve` nor `--profile`, so all of them report the
+ *  generic `hermes` and the first half never matched. That left the second
+ *  half deciding — *the freshest* — with **three live sections** in the file:
+ *
+ *      pid=13496  role='hermes'  events=150
+ *      pid=16048  role='hermes'  events=0
+ *      pid=6780   role='hermes'  events=3
+ *
+ *  Each writes on its own heartbeat, so "the freshest" named a different
+ *  process every second or so, and the Events tab showed 150 rows, then none,
+ *  then three, then none. Reported as the events freezing and then not coming
+ *  back — which is exactly what it looks like from the outside, and no
+ *  restart or new session could clear it, because nothing was stuck.
+ *
+ *  **The rule now**, in order:
+ *
+ *  1. Only sections still being written. A dead process's section lingers on
+ *     disk until some Hermes starts again, and the old rule would happily
+ *     have picked one.
+ *  2. Keep the section already on screen while it stays alive. Stickiness is
+ *     the whole fix for the flicker: whatever is chosen, it must not change
+ *     because somebody else saved.
+ *  3. Choosing fresh: prefer the process that most recently *routed a call*,
+ *     not the one that most recently wrote. `last_call_at` moves only when
+ *     there is real traffic, so it identifies the Hermes actually serving
+ *     this chat and does not change on a heartbeat. A `desktop` outranks a
+ *     `hermes`, and both outrank a `gateway` — the gateway serves the phone
+ *     and its pools are not what this screen is about.
+ *  4. `updated_at` only as the last tie-break, for a home where nothing has
+ *     been asked of any process yet. */
+function ownSection(document, now = Date.now()) {
+  const live = Object.values(document?.processes ?? {}).filter(
+    section =>
+      section &&
+      typeof section === 'object' &&
+      now / 1000 - (section.updated_at ?? 0) <= SECTION_STALE_S
   )
 
-  if (!sections.length) {
+  if (!live.length) {
+    chosenPid = null
+
     return null
   }
 
-  return (
-    sections.find(section => section.role === 'desktop') ??
-    sections.reduce((best, section) =>
-      (section.updated_at ?? 0) > (best.updated_at ?? 0) ? section : best
+  const sticky = live.find(section => String(section.pid) === String(chosenPid))
+
+  // Stickiness holds against heartbeats, and yields to traffic. If another
+  // live process has routed a call more recently than the one on screen, the
+  // conversation has moved — a different model, a different profile, a
+  // backend that was restarted under you — and following it is the whole
+  // point. `last_call_at` changes only when a call is actually made, so this
+  // cannot fire on a timer the way "the freshest section" did.
+  if (sticky) {
+    const mineCall = sticky.counters?.last_call_at ?? 0
+    const busier = live.some(
+      section =>
+        section.pid !== sticky.pid && (section.counters?.last_call_at ?? 0) > mineCall
     )
-  )
+
+    if (!busier) {
+      return sticky
+    }
+  }
+
+  const rank = section => (section.role === 'desktop' ? 0 : section.role === 'gateway' ? 2 : 1)
+  const best = live.reduce((a, b) => {
+    if (rank(a) !== rank(b)) return rank(a) < rank(b) ? a : b
+    const callA = a.counters?.last_call_at ?? 0
+    const callB = b.counters?.last_call_at ?? 0
+    if (callA !== callB) return callA > callB ? a : b
+
+    return (a.updated_at ?? 0) >= (b.updated_at ?? 0) ? a : b
+  })
+
+  chosenPid = best.pid
+
+  return best
 }
 
 /** The other Hermes processes using these same keys, newest first.
@@ -541,9 +615,19 @@ function ownSection(document) {
  *  gateway is resting is a key this Hermes cannot use either, and a gateway
  *  running last month's build is why a fix that is definitely installed is
  *  definitely not working on half the traffic. */
-function neighboursOf(document, mine) {
+function neighboursOf(document, mine, now = Date.now()) {
   return Object.values(document?.processes ?? {})
-    .filter(section => section && typeof section === 'object' && section.pid !== mine.pid)
+    .filter(
+      section =>
+        section &&
+        typeof section === 'object' &&
+        section.pid !== mine.pid &&
+        // A process that has stopped leaves its section on disk until some
+        // Hermes writes again. Listing it as a live neighbour was the same
+        // mistake `ownSection` was making, and here it would claim your keys
+        // are being shared with something that exited an hour ago.
+        now / 1000 - (section.updated_at ?? 0) <= SECTION_STALE_S
+    )
     .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
 }
 
@@ -1875,6 +1959,60 @@ function PayloadInspector() {
 }
 
 /** One number and its word, for the strip above the list. */
+/**
+ * One line saying the plugin is alive, under a list that is allowed to be
+ * empty.
+ *
+ * Events records failures and rotations. A day where nothing failed writes
+ * nothing, which is the same screen a plugin that stopped running draws — and
+ * the owner read one as the other, cleared the list, restarted twice, and
+ * reported it as frozen. It was quiet. Nothing on the screen said so.
+ *
+ * `last_call_at` is the fact that separates them: a wall clock stamped every
+ * time KAME had a call to route. Paired with `updated_at` it answers both
+ * halves of the question — *is the panel reading a live process* and *is that
+ * process being asked to do anything* — which are different failures and were
+ * being reported as one.
+ */
+function Heartbeat({ snap, now }) {
+  const counters = snap.counters ?? {}
+  const calls = Number(counters.calls ?? 0)
+  const lastCall = Number(counters.last_call_at ?? 0)
+  const wrote = Number(snap.updated_at ?? 0)
+
+  // Age of the document itself. A Hermes that died mid-turn leaves a snapshot
+  // that still looks live, so this is the only way to catch a stale reader.
+  const readAge = wrote ? (now - wrote * 1000) / 1000 : null
+  const stale = readAge !== null && readAge > 30
+
+  let sentence
+  if (!snap.installed) {
+    sentence = 'KAME is not installed in this Hermes process, so nothing will be recorded here.'
+  } else if (stale) {
+    sentence =
+      `This reading is ${ago(readAge)} — the Hermes process that writes it may have stopped. ` +
+      'Everything below is what it last knew, not what is happening now.'
+  } else if (!calls) {
+    sentence = 'KAME is running and has not been asked to route a call yet in this process.'
+  } else if (lastCall) {
+    sentence =
+      `KAME is running. ${calls} call${calls === 1 ? '' : 's'} routed, the last one ` +
+      `${ago((now - lastCall * 1000) / 1000)}. An empty list above means nothing failed.`
+  } else {
+    sentence = `KAME is running. ${calls} call${calls === 1 ? '' : 's'} routed. An empty list above means nothing failed.`
+  }
+
+  return h(
+    'p',
+    {
+      className: `mt-3 border-t border-(--ui-border-secondary) pt-3 text-xs ${
+        stale ? 'text-(--ui-text-warning)' : 'text-(--ui-text-tertiary)'
+      }`
+    },
+    sentence
+  )
+}
+
 function Tally({ count, label, tone, active, onClick, title }) {
   return h(
     'button',
@@ -1991,7 +2129,14 @@ function EventsPage({ snap }) {
             events.length
               ? 'Nothing of that kind yet.'
               : 'Nothing recorded yet. Every rotation, refusal, cut answer and continuation appears here as it happens.'
-          )
+          ),
+      // Proof of life, and the reason it exists: this list records failures
+      // and rotations, so a healthy stretch draws exactly what a broken plugin
+      // draws — nothing. An empty screen was reported as a frozen one, and
+      // nothing on the screen could contradict that. The counts alone cannot
+      // either; "53 calls" reads the same a second later and an hour later.
+      // What settles it is when the last call actually went out.
+      h(Heartbeat, { key: 'heartbeat', now, snap })
     ),
     Card(
       { key: 'legend', note: 'Nine words, and what each one means.', title: 'Reading this list' },
@@ -2086,6 +2231,9 @@ function FirstRun() {
  *  Renders nothing when this is the only one, which is the common case and
  *  should cost the page nothing. */
 function Neighbours({ snap }) {
+  // Subscribed before the early return so the hook order is stable — a
+  // neighbour appearing must not change how many hooks this component ran.
+  const now = useValue($now)
   const others = snap.neighbours ?? []
 
   if (!others.length) {
@@ -2135,6 +2283,32 @@ function Neighbours({ snap }) {
             `${other.totals?.ready ?? other.totals?.healthy ?? '?'} of ${
               other.totals?.keys ?? '?'
             } ready`
+          ),
+          // 1.6.0.2. Whether the plugin is doing anything over there.
+          //
+          // "5 of 5 ready" is a statement about keys, and it reads exactly the
+          // same on a profile whose KAME never registered — the keys are fine
+          // either way. A profile that would not answer was reported here, and
+          // this row had no way to show that its plugin was inert. Calls, and
+          // when the last one was, is the smallest fact that does.
+          h(
+            'span',
+            {
+              className: cn(
+                'text-xs tabular-nums',
+                other.installed === false ? 'text-amber-500' : 'text-(--ui-text-quaternary)'
+              ),
+              key: 'work'
+            },
+            other.installed === false
+              ? 'KAME not installed there'
+              : (() => {
+                  const calls = Number(other.counters?.calls ?? 0)
+                  const last = Number(other.counters?.last_call_at ?? 0)
+                  if (!calls) return 'no calls yet'
+                  const when = last ? `, last ${ago((now - last * 1000) / 1000)}` : ''
+                  return `${calls} call${calls === 1 ? '' : 's'}${when}`
+                })()
           ),
           h(
             'span',

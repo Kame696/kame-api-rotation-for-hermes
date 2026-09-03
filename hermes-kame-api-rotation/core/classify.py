@@ -386,6 +386,65 @@ _DENIAL_STATUSES = frozenset({403})
 # every signal inside it belongs to someone else's key.
 _WRAPPER_MESSAGE = re.compile(r"^provider returned (?:an? )?error", re.I)
 
+# ── the host's own voice ──────────────────────────────────────────────────
+#: Advice **Hermes** appends to a provider's error message before this hook
+#: is ever called. ``agent/gemini_native_adapter.py`` builds the message at
+#: :899 and then concatenates guidance onto it — free-tier advice at :907,
+#: legacy-Standard-key advice at :913 — so it reaches ``error_message``
+#: welded to the provider's own sentence with nothing to tell them apart.
+#:
+#: It is not evidence. It is Hermes talking to the user about Hermes, and
+#: reading it as though the provider said it is the plainest possible case of
+#: the rule this module already lives by: *a field outranks a sentence, and
+#: the provider outranks the library*. Text the host wrote outranks nothing
+#: at all, because the host is not a party to the failure.
+#:
+#: What it cost, measured. The free-tier footer trips **two** of
+#: ``_BILLING_PATTERNS``, and the second one is the instructive one:
+#:
+#:     "...so the free tier is exhausted in a handful of messages..."
+#:         -> ``free[\s_-]*tier\b[^.\n]{0,40}?\bexhausted``
+#:     "...regenerate the key in a billing-enabled project..."
+#:         -> ``billing\b[\w\s_-]{0,24}?\b(?:enabled|...)``
+#:
+#: The first pattern was written for Alibaba Model Studio, whose
+#: ``AllocationQuota.FreeTierOnly`` says "The free tier of the model has been
+#: exhausted" and means it — a real, decisive account fact. Hermes' footer
+#: says the same words about the *user's* situation in the host's own voice,
+#: and the pattern cannot tell the two apart, because the difference is not
+#: in the words. It is in who wrote them.
+#:
+#: Billing is the most expensive verdict this module has — an hour, at
+#: **account** scope, with both the re-probe and the escalation disarmed by
+#: the reason itself. So a 429 whose payload said *"Please retry in
+#: 6.89161299s"* was classified as an empty account and the credential held
+#: for an hour, on a sentence Google never wrote. On a neutral HTTP 500 the
+#: footer *alone* still returned ``billing``: it needs no help from the
+#: provider's half of the string. It was appended 340 times in one week of
+#: the owner's logs.
+#:
+#: Anchored on the opening words rather than matched whole, so a reworded
+#: tail still gets cut. ``tools/host_prose.py`` checks these against the
+#: installed host, so a footer that moves is a failing gate and not a silent
+#: return of this bug.
+_HOST_APPENDED_PROSE = (
+    re.compile(r"\n\nYour Google API key is on the free tier\b.*", re.S | re.I),
+    re.compile(r"\n\nGoogle Gemini rejected this API key.s type\b.*", re.S | re.I),
+)
+
+
+def strip_host_prose(text: str) -> str:
+    """The provider's half of a message the host has added to.
+
+    Exported because it is the kind of rule a reader should be able to check
+    against the host by hand, and because ``tools/host_prose.py`` does.
+    """
+    if not text:
+        return text
+    for pattern in _HOST_APPENDED_PROSE:
+        text = pattern.sub("", text)
+    return text
+
 
 def looks_like_upstream_wrapper(body: Any) -> bool:
     """Is this an aggregator relaying somebody else's failure?
@@ -646,8 +705,12 @@ def classify(
     unchanged.
     """
     now = float(now_epoch) if now_epoch is not None else time.time()
-    message = str(error_message or "")
-    body_text = _body_text(error_body)
+    # The host's own advice comes off before a single pattern reads a word of
+    # this. See ``_HOST_APPENDED_PROSE``: Hermes welds guidance onto the
+    # provider's sentence, and every reader below would otherwise weigh
+    # Hermes' opinion as though Google had stated it.
+    message = strip_host_prose(str(error_message or ""))
+    body_text = strip_host_prose(_body_text(error_body))
     # A body the host consumed leaves nothing here. Hermes' Gemini adapter
     # reads the response once, files the parsed error on the exception, and
     # the ``httpx.Response`` refuses a second read — so for that whole
@@ -725,11 +788,43 @@ def classify(
         if stated is not None:
             status_reading = None
 
+    #     A class name is the weakest machine-readable thing here, and 1.6.0.2
+    #     stops it deciding for the provider. It used to sit in this chain as
+    #     a third equal, which gave it every power the two above it have —
+    #     including the power a few lines down to *end* the classification
+    #     outright for the four families KAME does not act on. Four SDK class
+    #     names return ``terminal`` and four more return ``server`` or
+    #     ``timeout``, and all eight were doing it **before the provider's own
+    #     sentence had been read at all**. Two measured consequences:
+    #
+    #         400 "API key not valid. Please pass a valid API key."
+    #             + error_type "BadRequestError"   -> declined
+    #         402 "Usage limit reached, try again in 5 minutes"
+    #             + error_type "APIStatusError"    -> declined
+    #
+    #     The first is Google's only way of saying a key is revoked, so a
+    #     genuinely dead credential could never be retired. The second is the
+    #     payload 1.5.0 shipped a fix for — silently dead ever since, because
+    #     the class name got there first. Both are the same mistake in the
+    #     same direction: the library's guess about a family beat the
+    #     provider's statement about this call.
+    #
+    #     So the class is kept, and consulted twice, in the order its evidence
+    #     deserves. Here it may only *add* a family KAME acts on — a bare
+    #     ``RateLimitError`` with an empty body is still a throttle, which is
+    #     the row that earns this table its place. Its four "stay out of it"
+    #     families are held back to §3.5, after the sentence patterns, where
+    #     saying nothing costs nothing because nothing else spoke either.
+    class_reading = catalog.read_exception_class(error_type)
     catalog_reading = (
         catalog.look_up(*structured_error_values(error_body, error, error_code))
         or status_reading
-        or catalog.read_exception_class(error_type)
     )
+    if catalog_reading is None and class_reading is not None and (
+        class_reading.family in (catalog.THROTTLE, catalog.BILLING,
+                                 catalog.DENIAL, catalog.AUTH_DEAD)
+    ):
+        catalog_reading = class_reading
 
     catalog_throttle = False
     if catalog_reading is not None:
@@ -902,23 +997,33 @@ def classify(
         error=error,
     )
 
-    # 6. A throttle we cannot size is a throttle the host already handles.
+    # 6. A throttle nobody could size. **Reaching this point means the payload
+    #    already said "throttle"** — the gate above admits only a 429 or a
+    #    matched quota pattern — so the only open question is how long, and
+    #    the answer is now always a number.
     #
-    #    Unless the payload contradicted itself, which is the one case where
-    #    silence is not neutral. The host reads the same sentence KAME just
-    #    set aside — "the engine is currently overloaded" — and reaches the
-    #    same wrong conclusion: congestion, so do not rotate. Declining here
-    #    would hand the decision back to the reading this whole branch exists
-    #    to correct, and the pool would sit on a spent key with working keys
-    #    beside it. The contradiction *is* the thing KAME knows and the host
-    #    does not, which is this module's own standard for speaking at all.
+    #    Until 1.6.0.2 it was not. These branches left ``reset_at`` unset and
+    #    said so in a comment: "bench it for nothing". That sentence describes
+    #    a host that does not exist. ``agent/credential_pool.py`` reads KAME's
+    #    deadline first (``_exhausted_until``, :426) and, finding none, applies
+    #    ``_exhausted_ttl`` (:333) — **one hour for a 429**. So the branch
+    #    written to cost a key nothing cost it the most this host can charge,
+    #    and did it on the commonest refusal there is: nineteen bare
+    #    ``RESOURCE_EXHAUSTED`` replies in one three-minute run, each taking a
+    #    credential out for an hour on evidence that named no duration at all.
     #
-    #    ``reset_at`` stays ``None`` on purpose. Nothing in the payload said
-    #    how long, so nothing here says how long either: rotate off this
-    #    credential, bench it for nothing, let the ordinary escalation size
-    #    the next refusal if there is one.
+    #    Silence is not neutrality when the other party has a default. The
+    #    only way to decline a bench here is to say a small number out loud;
+    #    ``DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS`` is that number, and
+    #    ``core/escalate.py`` doubles it if it proves short. Every branch that
+    #    can *identify* the window still answers above this line, so nothing
+    #    here shortens a bench that was ever measured.
     if decision.reset_at is None:
         if contradicted:
+            # The payload disagreed with itself: prose saying "overloaded"
+            # beside a structured type saying "rate_limit". The host reads the
+            # prose and declines to rotate; the contradiction is the thing
+            # KAME knows and it does not.
             return Verdict(
                 reason="rate_limit",
                 retryable=True,
@@ -940,14 +1045,15 @@ def classify(
             # Declining here handed a spent key straight back and the pool sat
             # on it while healthy keys waited beside it.
             #
-            # ``reset_at`` stays ``None`` on purpose, exactly as in the
-            # contradiction case above: nothing said how long, so nothing here
-            # says how long. Rotate off this credential, bench it for nothing,
-            # and let the ordinary escalation size the next refusal if there is
-            # one. That is also the right shape for NVIDIA specifically, whose
-            # burst limits clear in seconds — the escalating ladder that used
-            # to run instead spent 20s, then 40s, then 1m20s before answering
-            # on attempt six.
+            # The bench is the short default, and NVIDIA is the reason it is
+            # short: its burst limits clear in seconds, so the escalating
+            # ladder that ran before 1.5.0 spent 20s, then 40s, then 1m20s
+            # before answering on attempt six. 1.5.0 replaced that with
+            # silence — which reads as *no bench* here and as **one hour** in
+            # ``credential_pool._exhausted_ttl``, the exact opposite of what
+            # the paragraph above was arguing for. Twenty seconds is what the
+            # argument actually wanted: shorter than the ladder's own opening
+            # was allowed to grow, and an hour shorter than saying nothing.
             window, scope = catalog.read_quota_id(body_text)
             return Verdict(
                 reason="rate_limit",
@@ -967,6 +1073,23 @@ def classify(
                     or "the provider named a throttle but nothing to size it by"
                 ),
             )
+        # Nothing in a field, nothing in the prose, nothing to size it by.
+        #
+        # A 429 alone is *not* enough to speak here, and the host's own corpus
+        # is why. Three of its cases are a bare 429 whose sentence Hermes reads
+        # better than this module can — "usage limit reached" with
+        # ``usage_limit_reached`` in the body, "Monthly quota reached.", and
+        # Anthropic's long-context tier notice — and all three are **billing**
+        # or a tier problem, not a throttle. 1.6.0.2 briefly claimed them as
+        # twenty-second throttles on the strength of the status code alone, and
+        # ``tools/host_corpus.py`` failed all three. The standing rule held:
+        # KAME speaks about what the host gets wrong, and a status code on its
+        # own is never evidence that it did.
+        #
+        # Nothing is lost on the payload that produced this release. Google's
+        # bare ``RESOURCE_EXHAUSTED`` arrives with ``error_code
+        # "gemini_rate_limited"``, so it is answered — and now sized — by the
+        # catalogue branch above, not here.
         return None
 
     # An account-level window reached through the quota path is still an

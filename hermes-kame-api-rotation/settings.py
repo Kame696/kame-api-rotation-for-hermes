@@ -661,7 +661,12 @@ META = {
         "reasoning model can spend well over twenty seconds before its first "
         "token, and a number that short would abandon it mid-thought and "
         "rotate through the whole pool doing the same. Anything above zero is "
-        "raised to at least 5s for the same reason.",
+        "raised to at least 5s for the same reason. "
+        "If you do have such a provider, 60 is the number to try: it is well "
+        "clear of the slowest honest first token anyone has measured here, and "
+        "half of what Hermes would otherwise spend before giving up — so a "
+        "hung key costs a minute instead of two, and a slow one is still "
+        "allowed to think.",
     ),
     NO_MODEL_FALLBACK: (
         "Stay on this model, always",

@@ -241,6 +241,7 @@ class AuxBinding:
                     reset_at=verdict.reset_at,
                     now=now,
                     scope=verdict.quota_scope,
+                    reason=verdict.reason,
                 )
                 logger.info(
                     "kame: auxiliary %s/%s -> %s [%s via %s]",

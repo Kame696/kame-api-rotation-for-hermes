@@ -75,6 +75,7 @@ from .core import journal as journal_module
 from .core import dispersion, multikey
 from .core import probe, reconcile
 from .core.carousel import fingerprint
+from .core.quota import DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS
 from .core.reconcile import EntryView
 
 logger = logging.getLogger(__name__)
@@ -848,11 +849,63 @@ class PoolBinding:
         if not model:
             return error_context
         judgement = runtime.peek_judgement(provider, model, now=now)
-        if judgement is None or judgement.reset_at is None:
+        if judgement is None:
+            return error_context
+        deadline = judgement.reset_at
+        if deadline is None:
+            deadline = self._floor_for_unsized(judgement, now)
+        if deadline is None:
             return error_context
         carried = dict(error_context) if isinstance(error_context, dict) else {}
-        carried["reset_at"] = float(judgement.reset_at)
+        carried["reset_at"] = float(deadline)
         return carried
+
+    @staticmethod
+    def _floor_for_unsized(judgement: Any, now: float) -> Optional[float]:
+        """A deadline for a throttle KAME named but could not size.
+
+        The case this exists for is the commonest refusal there is, and
+        1.6.0.1 answered it with silence:
+
+            Gemini HTTP 429 (RESOURCE_EXHAUSTED): Resource has been exhausted
+            (e.g. check quota).
+
+        ``classify`` recognises it — a spent per-credential counter, rotate —
+        and deliberately leaves ``reset_at`` unset, because nothing in the
+        payload said how long and inventing a number is what this plugin
+        refuses to do everywhere else. That reasoning is sound and the comment
+        defending it is still in place. It is also **only true of one of the
+        two clocks**, and the other one is the one the user sees:
+
+        * ``dispatch_binding`` reads the verdict's own ``reset_at`` as the
+          rest between attempts *inside* a turn, and there an unsized throttle
+          correctly falls to ``_escalate``'s one-second floor. NVIDIA's burst
+          limits clear in seconds and 1.5.0 tuned this precisely.
+        * ``credential_pool`` benches the credential *across* turns, and there
+          a missing deadline is not "no bench". ``_exhausted_until`` (:426)
+          reads what KAME supplied and, finding nothing, applies
+          ``_exhausted_ttl`` (:333) — **one hour for a 429**.
+
+        So the same silence meant one second in one place and an hour in the
+        other, and the code that chose it only ever looked at the first. The
+        owner's 2026-09-03 14:39 run is the measurement: nineteen bare
+        ``RESOURCE_EXHAUSTED`` replies, KAME logging ``resting 1s`` on each
+        one, and the pool holding those credentials for an hour apiece.
+
+        Twenty seconds, and only for a throttle. Every other verdict keeps the
+        host's fallback exactly as it was:
+
+        * ``auth_permanent`` must not be shortened — a credential the provider
+          named dead is *meant* to sit out, and ``_is_terminal_auth_failure``
+          reads the context this method writes into;
+        * ``billing`` and ``auth``/``denied`` already carry their own
+          deadlines, so they never reach here at all;
+        * a judgement with no reason recorded — anything staged by an older
+          build — is left alone rather than guessed at.
+        """
+        if str(getattr(judgement, "reason", "") or "") != "rate_limit":
+            return None
+        return now + DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS
 
     @staticmethod
     def _benching_model(provider: Any, now: float) -> str:

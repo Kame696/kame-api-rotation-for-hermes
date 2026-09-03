@@ -845,6 +845,35 @@ PARTIAL_STUB_ID = "partial-stream-stub"
 #: which is the entire point of resting it.
 DROP_REST_S = 30.0
 
+#: The same rest, for a pool with barely anything in it.
+#:
+#: 1.1.3 exempted a pool of **one** key, on the reasoning that a rest whose
+#: only job is to route the next request elsewhere buys nothing when there is
+#: nowhere else. That reasoning does not stop at one. On a pool of two, the
+#: full rest takes **half the pool** out for half a minute over a dropped
+#: connection, and the owner's NVIDIA pool is exactly two:
+#:
+#:     kame: nvidia:moonshotai/kimi-k3 key:b65dd9 cut the answer after 568
+#:           character(s) — resting it 30s and continuing on another key (1/10)
+#:
+#: The answer itself was fine — it continued on the other key and was
+#: delivered whole. What is not fine is the half-minute afterwards, in which
+#: one refusal on the surviving key leaves the pool with nothing usable and
+#: the carousel waits. A dropped stream is the weakest evidence this module
+#: acts on; it should not be able to do that.
+#:
+#: Five seconds is chosen against the sentence above: the rest exists so that
+#: *the very next attempt* picks a different key, and the next attempt is
+#: immediate. Five is already an eternity at that scale and still enough that
+#: a genuinely flapping connection is not re-selected in a tight loop. Pools
+#: of three or more keep the full thirty, because there the cost is a third of
+#: the capacity rather than a half, and the extra caution is affordable.
+DROP_REST_SMALL_POOL_S = 5.0
+
+#: Below this many healthy keys, a dropped stream gets the short rest above.
+#: Two, not three: at three the pool can lose one and still rotate.
+DROP_SMALL_POOL_BELOW = 3
+
 
 def _rest_unless_it_is_the_only_one(
     engine: Any,
@@ -874,11 +903,29 @@ def _rest_unless_it_is_the_only_one(
     and ``kind`` are written on both paths, so the key's history is the same
     and only the sentence is dropped. Returns the cooldown actually applied,
     which is ``0.0`` when this was the last key standing.
+
+    **1.6.0.2 extends the same reasoning one step.** The exemption was written
+    for a pool of one, and the argument it rests on — a rest that only exists
+    to route the next request elsewhere should not cost more than that — does
+    not stop at one. On a pool of two, thirty seconds is half the capacity
+    withdrawn over a dropped connection, and one refusal on the survivor then
+    leaves the carousel with nothing to pick. So a small pool gets
+    :data:`DROP_REST_SMALL_POOL_S` instead: still long enough that the next
+    attempt goes elsewhere, which the docstring above says is the entire
+    point, and short enough that the pool is whole again before the next turn.
+    A pool of three or more is unchanged.
+
+    Only cooldowns of the *second* kind reach this function at all — a
+    ``Retry-After`` or a daily quota is applied directly, because those bind
+    whatever else is in the pool.
     """
-    if engine.healthy_count(identity, keys) > 1:
-        return engine.mark(identity, key, False, seconds, kind)
-    engine.mark(identity, key, False, 0.0, kind)
-    return 0.0
+    healthy = engine.healthy_count(identity, keys)
+    if healthy <= 1:
+        engine.mark(identity, key, False, 0.0, kind)
+        return 0.0
+    if healthy < DROP_SMALL_POOL_BELOW:
+        seconds = min(seconds, DROP_REST_SMALL_POOL_S)
+    return engine.mark(identity, key, False, seconds, kind)
 
 
 def _partial_text(result: Any) -> Optional[str]:
@@ -1242,6 +1289,16 @@ class DispatchBinding:
         # For ``/kame-quota``: an install that has never rotated and one that
         # is silently inert are otherwise indistinguishable.
         self.calls = 0
+        # 1.6.0.2. Wall clock of the last call this binding saw, or 0.0.
+        #
+        # The Events tab records failures and rotations, which means a healthy
+        # stretch draws an empty screen — and an empty screen is exactly what a
+        # broken one draws. The owner read one as the other and reported the
+        # panel as frozen; it was not, it was quiet, and nothing on it could
+        # tell the two apart. A count with no timestamp cannot either: 53 calls
+        # is the same number whether the last one was a second ago or before
+        # lunch. This is the one fact that separates them.
+        self.last_call_at = 0.0
         self.rotations = 0
         self.recovered = 0
         self.surfaced = 0
@@ -1414,6 +1471,7 @@ class DispatchBinding:
         label = identity
         started = time.monotonic()
         self.calls += 1
+        self.last_call_at = time.time()
 
         # Recorded once per call rather than per attempt: the answer is a
         # property of how this agent was configured, not of how the call went.

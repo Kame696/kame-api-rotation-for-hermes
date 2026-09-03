@@ -375,13 +375,13 @@ class TestRedactedBeforeStored:
     def test_credentials_do_not_survive(self):
         payload = (
             "Invalid key AIzaSyD-1234567890abcdefghijklmnopqrstu and "
-            "nvapi-CVCzU3iC5ewjOqVcd7KuujH8j0nckDOLIlBLvAnU7M0 and "
-            "sk-P5s2aoeVmnBHvx5pcynDQB8CPIdCsK2mZmxaewIlimf507cn"
+            "nvapi-EXAMPLE_NOT_A_REAL_KEY_00000000000000000000 and "
+            "sk-EXAMPLE_NOT_A_REAL_KEY_000000000000000000000000"
         )
         cleaned = redact_mod.redact(payload)
         assert "AIzaSyD-1234567890abcdefghijklmnopqrstu" not in cleaned
-        assert "nvapi-CVCzU3iC5ewjOqVcd7KuujH8j0nckDOLIlBLvAnU7M0" not in cleaned
-        assert "sk-P5s2aoeVmnBHvx5pcynDQB8CPIdCsK2mZmxaewIlimf507cn" not in cleaned
+        assert "nvapi-EXAMPLE_NOT_A_REAL_KEY_00000000000000000000" not in cleaned
+        assert "sk-EXAMPLE_NOT_A_REAL_KEY_000000000000000000000000" not in cleaned
         assert redact_mod.looks_redacted(cleaned)
 
     def test_a_starred_key_is_still_removed(self):

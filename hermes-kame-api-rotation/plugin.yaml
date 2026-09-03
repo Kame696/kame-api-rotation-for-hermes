@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.6.0.1"
+version: "1.6.0.2"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because the two halves of Hermes disagree about the number and only
 # one of them is in the way of an install:

@@ -198,7 +198,15 @@ async function loadPlugin() {
     .replace("from 'react/jsx-runtime'", "from './jsx.mjs'")
     .replace("from 'react'", "from './react.mjs'")
 
-  fs.writeFileSync(path.join(dir, 'plugin.mjs'), source)
+  // `ownSection` and `neighboursOf` decide *which process* the whole screen
+  // describes, and 1.6.0.2 found that they were getting it wrong in a way no
+  // render test could see. Exported into the temp copy only — the shipped file
+  // keeps them private, and a test that cannot reach the function it is about
+  // ends up asserting the source text instead, which is not the same thing.
+  fs.writeFileSync(
+    path.join(dir, 'plugin.mjs'),
+    `${source}\nexport { ownSection as __ownSection, neighboursOf as __neighboursOf }\n`
+  )
   fs.writeFileSync(
     path.join(dir, 'sdk.mjs'),
     `const S = globalThis.__KAME_SDK__\n` +
@@ -480,6 +488,106 @@ await check('the fixes that made this version are still in place', () => {
     !/function KamePage\(\)[\s\S]{0,400}useValue\(\$now\)/.test(source),
     'KamePage subscribes to the clock again — every tab re-renders once a second'
   )
+})
+
+// -- which process the screen is about ---------------------------------------
+// 1.6.0.2. The bug these reproduce was reported as "the events stopped
+// showing, and a new session did not fix it". Nothing was stuck. The home had
+// three live Hermes processes, all reporting the generic role `hermes`
+// (`state.role()` reads `sys.argv`, and the Desktop starts its backends in a
+// way that matches neither `serve` nor `--profile`), so the old selector fell
+// through to "the freshest section" — which named a different process on every
+// heartbeat, and the tab showed 150 events, then none, then three.
+
+const NOW_S = 1_800_000_000
+const NOW_MS = NOW_S * 1000
+
+/** A section, reduced to what `ownSection` actually reads. */
+function proc(pid, { role = 'hermes', wrote = 0, called = 0, events = 0 } = {}) {
+  return {
+    counters: { calls: called ? 1 : 0, last_call_at: called ? NOW_S - called : 0 },
+    events: Array.from({ length: events }, (_, i) => ({ seq: i })),
+    pid,
+    role,
+    updated_at: NOW_S - wrote
+  }
+}
+
+const three = {
+  processes: {
+    6780: proc(6780, { events: 3, wrote: 1 }),
+    13496: proc(13496, { called: 4, events: 150, wrote: 3 }),
+    16048: proc(16048, { events: 0, wrote: 2 })
+  }
+}
+
+await check('one of several live processes is chosen, and it is the one doing the work', () => {
+  const first = plugin.__ownSection(three, NOW_MS)
+  assert.equal(first.pid, 13496, 'the process that routed a call most recently must win')
+  assert.equal(first.events.length, 150)
+})
+
+await check('a heartbeat from another process does not move the screen', () => {
+  // The exact failure: 6780 writes, becomes "the freshest", and under the old
+  // rule the whole page switched to a section with three events in it.
+  const later = structuredClone(three)
+  later.processes[6780].updated_at = NOW_S
+  later.processes[16048].updated_at = NOW_S
+
+  assert.equal(
+    plugin.__ownSection(later, NOW_MS).pid,
+    13496,
+    'the panel followed a heartbeat instead of the traffic'
+  )
+})
+
+await check('the screen follows the traffic when the conversation moves', () => {
+  // Stickiness must not become stubbornness: switch model or profile and a
+  // different backend answers. `last_call_at` is the evidence, and it only
+  // moves when a call is really made — so this cannot fire on a timer.
+  const moved = structuredClone(three)
+  moved.processes[16048].counters.last_call_at = NOW_S - 1
+  moved.processes[16048].counters.calls = 1
+
+  assert.equal(plugin.__ownSection(moved, NOW_MS).pid, 16048)
+})
+
+await check('a process that has exited is never chosen, nor listed as a neighbour', () => {
+  // The writer prunes sections older than 120s, but only a *live* process
+  // writes — so once every Hermes on a home has exited, all of them linger.
+  // Read straight off the owner's file after the app was closed.
+  const dead = {
+    processes: {
+      6780: proc(6780, { events: 3, wrote: 606 }),
+      13496: proc(13496, { called: 600, events: 150, wrote: 651 }),
+      16048: proc(16048, { events: 0, wrote: 618 })
+    }
+  }
+
+  assert.equal(plugin.__ownSection(dead, NOW_MS), null, 'a dead process was put on the screen')
+
+  const mixed = structuredClone(dead)
+  mixed.processes[9999] = proc(9999, { called: 2, events: 7, role: 'desktop', wrote: 1 })
+  const mine = plugin.__ownSection(mixed, NOW_MS)
+  assert.equal(mine.pid, 9999)
+  assert.deepEqual(
+    plugin.__neighboursOf(mixed, mine, NOW_MS).map(section => section.pid),
+    [],
+    'three exited processes were listed as sharing your keys'
+  )
+})
+
+await check('the gateway is never mistaken for this screen', () => {
+  // It serves the phone. Its pools are the same keys and its events are not
+  // this conversation, so it loses even when it is the busiest thing running.
+  const withGateway = {
+    processes: {
+      100: proc(100, { called: 1, events: 40, role: 'gateway', wrote: 1 }),
+      200: proc(200, { called: 90, events: 2, role: 'desktop', wrote: 1 })
+    }
+  }
+
+  assert.equal(plugin.__ownSection(withGateway, NOW_MS).pid, 200)
 })
 
 if (failures.length) {

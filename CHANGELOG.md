@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.6.0.2** | Saying nothing was costing an hour | A throttle the provider named but did not size left this plugin silent, and silence is not neutral: Hermes' own fallback for an unsized 429 is **one hour per key**, so the commonest refusal there is — nineteen of them in one three-minute run — took a credential out for an hour on evidence that named no duration at all. It is now twenty seconds. Two more places where weaker evidence was overruling stronger: the advice **Hermes itself** appends to a Google error was being read as though Google had written it, turning a stated seven-second wait into an hour at account scope; and the SDK's exception class was consulted *before* the provider's own sentence, so a key Google called invalid could never be retired and a stated five-minute wait was thrown away. No behaviour was added — three signals were put back in the order of how much they are worth. Plus four things found by using it: with three Hermes processes sharing a home the panel was renaming which one it described on every heartbeat, so the Events tab flipped between 150 rows and none — it now follows the process actually routing your calls, and says whether KAME is alive at all; a dropped stream no longer takes half a two-key pool out for thirty seconds; a neighbouring profile's row says whether its KAME is doing any work; and "Wait for the first token" finally names a number to try |
 | **1.6.0.1** | Two Hermes, one file — and a refused key stopped coming back for ever | The Desktop and the gateway both write the plugin's status file and each overwrote the whole of the other's, so the panel flickered between two readings a release apart and the Settings form rebuilt itself under the cursor; the file now holds a section per process, and the panel names the others. A credential the provider refused rests twenty seconds instead of an hour and is offered last, and one the provider names dead leaves rotation altogether, because over-benching a healthy key costs an hour while under-benching a dead one costs a request that fails in milliseconds. Events finally records the rotations themselves, not only the failures. Settings is half the height, with a Refresh that re-reads the `.env` for real. And the diagnostic that reads a real run is `/kame doctor` inside the plugin instead of a script in the repo |
 | **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a whole day; the cooldown KAME works out finally reaches the pool instead of being dropped one hop short; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key before Hermes tells the model its call was too big; and the panel says, in one line per provider, what KAME can actually see |
 | **1.5.0** | The rest of the evidence, and the gate that was never run | The class of the exception is read at last, so a failure with no status and no body is sized instead of guessed; two payloads 1.4.0 wrongly claimed are given back to the host; the Settings panel can no longer freeze |
@@ -43,6 +44,244 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.6.0.2] — 2026-09-03
+
+**In short.** Three places where weaker evidence was overruling stronger, and
+the most expensive of them was **saying nothing at all**.
+
+### Silence is not neutrality
+
+On 2026-09-03 the owner's Hermes made 64 calls and rotated 133 times, and
+asked why the panel was showing credentials held for minutes when the log said
+KAME was resting them for one and five seconds.
+
+Both readings were true. There are two clocks and only one of them was ever
+checked:
+
+| | who reads it | what an unsized throttle means |
+|---|---|---|
+| the rest between attempts, inside a turn | `dispatch_binding` | `_escalate`'s one-second floor |
+| the bench on the credential, across turns | `agent/credential_pool` | `_exhausted_ttl` — **one hour** |
+
+Nineteen of that run's refusals were this exact string:
+
+    Gemini HTTP 429 (RESOURCE_EXHAUSTED): Resource has been exhausted
+    (e.g. check quota).
+
+No stated delay, no quota id, no metric. `classify` recognises it correctly —
+a spent per-credential counter, rotate — and deliberately leaves `reset_at`
+unset, with a comment saying so: *"bench it for nothing"*. There is no "bench
+it for nothing" in this host. `_exhausted_until` reads the deadline KAME
+supplied and, finding none, applies `EXHAUSTED_TTL_429_SECONDS = 60 * 60`
+(`agent/credential_pool.py:125`).
+
+So the branch written to cost a key nothing cost it the most this host can
+charge, on the commonest refusal there is.
+
+**A throttle KAME names but cannot size now benches for twenty seconds.** Not
+in the verdict — putting a number there would rebuild the escalating ladder
+1.5.0 removed for NVIDIA, whose burst limits clear in seconds — but at the one
+seam that owns the second clock, `PoolBinding._carry_deadline`. The whole unit
+suite passes unchanged, which is the evidence that the classifier's contract
+was not disturbed.
+
+Twenty seconds for the same reason a refused key rests twenty: re-probing
+costs one failed request, over-benching costs the use of a healthy key, and
+the two are not close. It is an opening, not a ceiling — `core/escalate.py`
+doubles a bench that proves short, so a window that really is long is found by
+measurement in a couple of refusals instead of guessed at an hour on the first.
+
+### The host's own voice, read as the provider's
+
+`agent/gemini_native_adapter.py` builds a Google error message and then
+appends its own advice to it — free-tier guidance at `:907`, legacy-key
+guidance at `:913` — before any hook sees it. It arrives welded to Google's
+sentence with nothing to tell them apart.
+
+Two of `_BILLING_PATTERNS` match that advice, and the second is the
+instructive one:
+
+    "...so the free tier is exhausted in a handful of messages..."
+    "...regenerate the key in a billing-enabled project..."
+
+The first pattern was written for Alibaba Model Studio, where "the free tier
+of the model has been exhausted" is a real and decisive account fact. Hermes
+says the same words about the *user's* situation. No pattern can separate
+them, because the difference is not in the words — it is in who wrote them.
+
+Billing is the most expensive verdict this plugin has: an hour, at **account**
+scope, with the re-probe and the escalation both disarmed by the reason
+itself. Measured, on the owner's own payload:
+
+| message | verdict before | after |
+|---|---|---|
+| Google's 429, `Please retry in 6.89161299s` | 6.9s | 6.9s |
+| the same, with Hermes' footer appended | **billing, 1 hour, account** | 6.9s |
+| the footer *alone*, on an HTTP 500 | **billing, 1 hour, account** | declined |
+
+The last row is the point: the footer needed no help from the provider's half
+of the string. It was appended 340 times in one week of the owner's logs.
+
+The host's advice is now removed before a single pattern reads a word.
+`tools/host_prose.py` checks the anchors against the installed Hermes and
+**discovers** any new constant the adapter welds onto a message, so a reworded
+footer is a failing gate instead of a silent return of this bug.
+
+### The SDK's class name is the weakest thing in the payload
+
+`read_exception_class` sat as a third equal beside the field lookup and the
+status lookup, which gave it the power to end the classification for the four
+families KAME does not act on — before a single pattern read the provider's
+own sentence:
+
+| payload | before | after |
+|---|---|---|
+| `400 "API key not valid. Please pass a valid API key."` + `BadRequestError` | declined | `auth_permanent` |
+| `402 "Usage limit reached, try again in 5 minutes"` + `APIStatusError` | declined | 5 minutes |
+
+The first is Google's only way of saying a key is revoked, so a genuinely dead
+credential could never be retired. The second is the payload 1.5.0 shipped
+`look_up_status`'s billing override for — silently dead ever since, because
+the class name got there first.
+
+The class is still read, twice, in the order its evidence deserves: it may
+*add* a family KAME acts on (a bare `RateLimitError` with an empty body is
+still a throttle), and its four "stay out of it" families are consulted last,
+where nothing else spoke. A `BadRequestError` wrapping "Invalid JSON payload"
+is still left alone. The difference was always in the payload, never in the
+class.
+
+### The rule underneath all three
+
+Stated once, and now enforced:
+
+    1. a machine-readable field the provider filled in
+    2. a number the provider stated
+    3. the provider's own sentence
+    4. the HTTP status on its own
+    5. the SDK exception class name
+    6. text the HOST appended  <- not evidence at all
+
+### What did not change, and why
+
+A first attempt also claimed any bare 429 as a twenty-second throttle. The
+host's own corpus failed three cases — Anthropic's `usage_limit_reached`,
+a bare "Monthly quota reached.", and the long-context tier notice — all of
+which Hermes reads better than a status code can. It was removed. A status
+code alone is never evidence that the host got something wrong.
+
+The per-minute escalation cap stays at 300s. `stretch()` did not fire once in
+the run that produced this release — zero "measured short" lines in
+`agent.log` — so there is no measurement to move it with, and a cap changed
+without one is churn.
+
+### Four things the owner found by using it
+
+Reported after a live afternoon on this build, and all four are the same shape:
+KAME was right and had no way to say so.
+
+**The Events tab could not tell "quiet" from "stopped".** It records failures
+and rotations, so an afternoon where nothing failed draws exactly what a plugin
+that stopped running draws — an empty list. The list was read as frozen,
+cleared, and Hermes restarted twice; the log for that window shows KAME working
+throughout. The counts alone do not settle it either: *53 calls* reads the same
+a second later and an hour later. The tab now ends with one line saying whether
+KAME is installed, how many calls it has routed, **and when the last one was**,
+and it warns when the reading itself is stale — a Hermes that died mid-turn
+leaves a snapshot that still looks live. `/kame events` says the same thing.
+
+**The Events tab really did stop showing things — and the cause was not the
+tab.** The first read of this was wrong and is worth writing down as such: the
+list had been cleared by hand, so an explanation existed, and the heartbeat
+above was added on the assumption that the screen was merely quiet. It was not.
+The panel picks which process's section to render with `ownSection`, and that
+function asked for "the one whose role is `desktop`, else the freshest".
+`state.role()` reads `sys.argv`, and the Desktop on this machine starts its
+backends in a way that matches neither `serve` nor `--profile` — so **three
+live processes** all reported the generic `hermes`, the first half of the rule
+never matched, and the second named a different one on every heartbeat. Read
+straight off the owner's file:
+
+    pid=13496  role='hermes'  events=150
+    pid=16048  role='hermes'  events=0
+    pid=6780   role='hermes'  events=3
+
+One second the tab showed 150 rows, the next none, the next three. No restart
+could clear it and no new session could either, because nothing was stuck.
+
+Three rules replace it. Only sections still being written are considered — a
+process that has exited leaves its section on disk until some Hermes starts
+again, and the old rule would happily have picked one. The section already on
+screen stays there while it lives, so a neighbour saving cannot move the page.
+And when a fresh choice is needed it goes to the process that most recently
+**routed a call**, not the one that most recently wrote: `last_call_at` moves
+only on real traffic, so it follows a model or profile switch and cannot fire
+on a timer. A `gateway` never wins — it serves the phone.
+
+Reverting `ownSection` to the old rule fails four of the five new checks in
+`tests/ui_reconcile.mjs`; removing the liveness filter fails the fifth.
+
+**A dropped stream took half a two-key pool out for thirty seconds.** 1.1.3
+exempted a pool of *one* from the drop rest, reasoning that a rest whose only
+job is to send the next request elsewhere buys nothing when there is nowhere
+else. That reasoning does not stop at one. Measured on the owner's NVIDIA pool,
+which has two keys:
+
+    kame: nvidia:moonshotai/kimi-k3 key:b65dd9 cut the answer after 568
+          character(s) — resting it 30s and continuing on another key
+
+The answer was fine — it continued on the other key and arrived whole. The half
+minute afterwards was not: one refusal on the survivor and the carousel has
+nothing to pick. Below three healthy keys the drop rest is now **five seconds**,
+still long enough to move the next selection, which is the entire stated purpose
+of it. Three or more keeps the full thirty.
+
+**A neighbouring profile's row said nothing about whether its KAME was
+working.** "5 of 5 ready" is a statement about keys and reads identically on a
+profile whose plugin never registered. Each row now also carries that process's
+call count and when it last routed one, or says the plugin is not installed
+there.
+
+**"Wait for the first token" gave advice with no number in it.** It said what
+the setting does and that zero is right for almost everyone, and stopped — so
+anyone who *did* have a provider that accepts a request and then hangs had to
+guess between the 5s floor and Hermes' own 120s. It now recommends **60**: clear
+of the slowest honest first token, and half of what Hermes would otherwise spend
+before giving up.
+
+### What was investigated and left alone
+
+**Rotating on a 503 was already right, and already happening.** The owner's
+point — a 503 is not the key's fault, so keep trying — is what the code does,
+and the log is the proof:
+
+    17:32:54  503 key:2c604b — resting 10s
+    17:33:24  503 key:aa51d2 — resting 5s
+    17:33:54  503 key:da0c7b — resting 5s
+    17:33:56  answered on attempt 4
+
+`classify` declining a 5xx does not cost the credential anything either: the
+host benches only on `billing`, `rate_limit` and `auth`
+(`agent_runtime_helpers.py:1235`), so no 503 has ever produced a quarantine.
+
+**A malformed table could not be attributed to this plugin.** The exported
+transcript carries the whole 4,680-character answer; only the separator row is
+wrong — ten cells where every other row has nine. No cut or stitch was recorded
+for that session.
+
+### Gates
+
+| gate | result |
+|---|---|
+| `pytest tests` | **1672 passed**, 0 failed |
+| `tools/host_corpus.py` | **130 passed** — "KAME changed nothing in the host's own corpus" |
+| `tools/decisions.py --check` | 9 decisions moved, every one of them named above |
+| `tools/host_prose.py` | both footers found, stripped, and declined on their own |
+| `node tests/ui_reconcile.mjs` | **10 checks** — five of them new, covering which process the screen describes |
+| mutation | all **5** Python rules and both panel rules turn their suites red when deleted |
+
+---
 
 ## [1.6.0.1] — 2026-09-02
 
