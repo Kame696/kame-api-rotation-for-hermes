@@ -108,7 +108,18 @@ SERVER_BASE_S = 5.0
 SERVER_BACKOFF_CAP_S = 90.0
 
 #: A per-minute throttle escalates from the second strike, up to this.
+#:
+#: The ceiling bounds the ladder **KAME invents**, never a number the provider
+#: stated. A provider that asks for longer than this is obeyed: the cap exists
+#: so a guess cannot grow without end, not so a guess can overrule evidence.
 RL_BACKOFF_CAP_S = 300.0
+
+#: Where that invented ladder starts. One second is the same floor the first
+#: strike already used — the smallest rest that cannot spin — so an unsized
+#: throttle climbs 1s, 2s, 4s ... and a sized one never leaves the provider's
+#: own number. Named for symmetry with :data:`SERVER_BASE_S` and
+#: :data:`DAILY_BASE_S`, whose branches have always had this shape.
+RL_BASE_S = 1.0
 
 #: A daily refusal escalates from this base toward ``DAILY_COOLDOWN_S``.
 DAILY_BASE_S = 20.0
@@ -697,6 +708,12 @@ class Carousel:
     def __init__(self, *, daily_cooldown_s: float = DAILY_COOLDOWN_S) -> None:
         self._lock = threading.RLock()
         self._pools: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        #: The longest rest this identity's provider has ever *asked* for on a
+        #: throttle, per ``provider:model``. It is not a cooldown and nothing
+        #: rests for it — it is the ceiling on what KAME is allowed to invent
+        #: when a later throttle arrives with no number at all. See
+        #: :meth:`_escalate`.
+        self._stated_rl_ceiling: Dict[str, float] = {}
         self.daily_cooldown_s = float(daily_cooldown_s)
         self.selections = 0
         self.rotations = 0
@@ -916,7 +933,17 @@ class Carousel:
                 # times in a row, and reading it that way would retire keys
                 # on a mixture of unrelated evidence.
                 state["consecutive_refusals"] = 0
-            applied = self._escalate(state, delay, kind)
+            if delay > 0.0 and kind in ("per_minute", "rate_limit"):
+                # Learned here rather than in ``_escalate`` because the number
+                # is the provider's whatever this key does with it, and the
+                # lesson belongs to the identity, not to the credential that
+                # happened to collect it.
+                self._stated_rl_ceiling[identity] = max(
+                    self._stated_rl_ceiling.get(identity, 0.0), float(delay)
+                )
+            applied = self._escalate(
+                state, delay, kind, ceiling=self._stated_rl_ceiling.get(identity)
+            )
             applied = max(0.0, min(applied, HARD_DELAY_CAP_S))
             # There is deliberately no shorter cap for a pool of one here.
             # The host has one (``EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS`` =
@@ -934,8 +961,20 @@ class Carousel:
             self.rotations += 1
             return applied
 
-    def _escalate(self, state: Dict[str, Any], delay: float, kind: str) -> float:
-        """How long this key rests, given how many times it has said this lately."""
+    def _escalate(
+        self,
+        state: Dict[str, Any],
+        delay: float,
+        kind: str,
+        *,
+        ceiling: Optional[float] = None,
+    ) -> float:
+        """How long this key rests, given how many times it has said this lately.
+
+        ``ceiling`` is the longest rest this identity's provider has actually
+        asked for on a throttle, or ``None`` before it has ever asked for one.
+        It bounds the invented ladder and nothing else.
+        """
         if kind in ("daily", "insufficient_quota", "denied", "auth", "revoked"):
             state["consecutive_rl"] += 1
             strikes = state["consecutive_rl"]
@@ -959,18 +998,65 @@ class Carousel:
         # release note blamed an empty error string and added a fallback for
         # it; the fallback was correct and the bench stayed at zero, because
         # the string was never what routed the kind.
+        # 1.6.0.3: this branch used to read ``min(max(delay, 1.0) * 2 **
+        # (strikes - 1), RL_BACKOFF_CAP_S)`` — it *multiplied* the provider's
+        # own number once a key said "rate limit" twice in a row. Its two
+        # sibling branches, ``daily`` above and ``server`` below, have always
+        # taken ``max(delay, base * 2 ** n)``: the ladder is a floor for the
+        # case the payload sized nothing, and a number the provider stated
+        # outranks it. Only this branch disagreed, and it is the branch that
+        # runs on the commonest failure there is.
+        #
+        # The owner's log for 1.6.0.2 is what settles it. Across 46 minutes
+        # Gemini returned 340 throttles, every one of them carrying a freshly
+        # computed ``Please retry in Ns`` between 1.5s and 59.8s — a rolling
+        # window recomputing the wait on each refusal, which is the provider
+        # answering the question correctly every single time. KAME held keys
+        # for 5m 0s on ten of them, and for 1m 4s, 1m 7s, 1m 10s and 1m 34s on
+        # others: longer than the provider had *ever* asked. With the pool
+        # benched that far out the agent then sat in ``_wait_for_a_key`` for
+        # 468s across 33 waits, which is the stall the owner reported.
+        #
+        # Repeating a throttle is not evidence that the provider's number is
+        # wrong. On a rolling window it is the ordinary case: the key is asked
+        # again while its window is still full, and the provider says so again
+        # with a new, smaller number. Widening on that reads a restatement as
+        # a refutation. Measured refutation already has an owner — the journal
+        # counts ``under_predictions`` and ``escalate.stretch`` widens only
+        # after two of them — and that mechanism is unaffected here. What is
+        # removed is this branch's habit of escalating on repetition alone.
         if kind in ("per_minute", "rate_limit"):
             state["consecutive_rl"] += 1
             strikes = state["consecutive_rl"]
-            if strikes <= 1:
-                # First strike: the provider's own number is honest and
-                # obeying it is faster than any guess we could make. The floor
-                # of one second is what makes an unsized throttle safe — it is
-                # not an invented cooldown, it is the smallest rest that
-                # cannot spin.
-                return max(delay, 1.0)
-            grown = max(delay, 1.0) * (2 ** (strikes - 1))
-            return min(grown, RL_BACKOFF_CAP_S)
+            if delay > 0.0:
+                # The provider sized this refusal, so there is nothing left to
+                # guess. Not ``max(delay, ladder)`` either: by the sixth strike
+                # the ladder stands at 32s, and a provider that has just said
+                # 22.3s would be overruled by an invented number for no reason
+                # beyond having been refused before. The floor still applies,
+                # because a sub-second rest is a spin rather than a cooldown.
+                return max(delay, RL_BASE_S)
+            # Nothing sized it — the case the ladder exists for, and the one
+            # 1.4.0 found benching keys for zero seconds. The ceiling bounds
+            # the climb because every step of it is KAME's own invention.
+            #
+            # Two ceilings, and the tighter one wins. ``RL_BACKOFF_CAP_S`` is
+            # the constant; the other is what this provider has demonstrated.
+            # The owner's log is why the second one exists: of 400 Gemini
+            # throttles in 46 minutes, 232 arrived as the terse "Resource has
+            # been exhausted (e.g. check quota)." with no number, and 168
+            # arrived as the same refusal spelled out with "Please retry in
+            # Ns" — never once above 59.8s. The terse form is not a different
+            # condition, it is the same condition worded shorter, and a plugin
+            # holding a key for five minutes while sitting on 168 samples that
+            # say under a minute is not being careful, it is ignoring what it
+            # was told. So the invented ladder may climb, but never past the
+            # longest wait the provider itself has ever asked of this model.
+            grown = RL_BASE_S * (2 ** max(0, strikes - 1))
+            grown = min(grown, RL_BACKOFF_CAP_S)
+            if ceiling is not None and ceiling > 0.0:
+                grown = min(grown, float(ceiling))
+            return grown
 
         if kind == "server":
             state["consecutive_server"] += 1
@@ -1156,6 +1242,7 @@ __all__ = [
     "HARD_DELAY_CAP_S",
     "SERVER_BACKOFF_CAP_S",
     "RL_BACKOFF_CAP_S",
+    "RL_BASE_S",
     "TIMEOUT_S",
     "OTHER_S",
     "EMPTY_RETRY_BUDGET",

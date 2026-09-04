@@ -160,22 +160,68 @@ class TestWhatARefusalCosts:
         engine.mark(ID, "a", False, 5.0, "server", now=101.0)
         assert engine.select(ID, ["a"], now=200.0)[1] == "EXHAUSTED"
 
-    def test_a_per_minute_throttle_is_believed_once_then_doubted(self):
-        # Strike one: the provider's own number is honest and obeying it is
-        # faster than any guess. Strike two from the same key is evidence the
-        # window is wider than it claims.
+    def test_a_sized_throttle_is_believed_every_time_not_just_once(self):
+        # 1.6.0.3. This test used to assert the opposite — 6s then 12s, under
+        # the name "believed once then doubted" — and the behaviour it locked
+        # in is the one the owner's 1.6.0.2 log caught: repeating a throttle
+        # was read as evidence the provider's number was wrong.
+        #
+        # It is not. On a rolling window a key refused twice in a row is a key
+        # asked again while its window is still full, and the provider answers
+        # with a fresh number each time. Doubling a restatement treats it as a
+        # refutation. Measured refutation is the journal's job, not this
+        # ladder's: ``escalate.stretch`` widens only after two recorded
+        # ``under_predictions``, and it is untouched by this change.
         engine = Carousel()
-        first = engine.mark(ID, "a", False, 6.0, "per_minute", now=100.0)
-        second = engine.mark(ID, "a", False, 6.0, "per_minute", now=100.0)
-        assert first == 6.0
-        assert second == 12.0
+        rests = [
+            engine.mark(ID, "a", False, 6.0, "per_minute", now=100.0)
+            for _ in range(6)
+        ]
+        assert rests == [6.0] * 6
 
-    def test_per_minute_backoff_stops_at_five_minutes(self):
+    def test_a_sized_throttle_is_not_overruled_by_the_invented_floor(self):
+        # The half-fix would have been ``max(delay, ladder)``, which still
+        # loses: by the sixth strike the ladder stands at 32s, so a provider
+        # asking for 22.3s — a real number from the owner's log — would be
+        # overruled by an invention. The provider's number is the answer.
         engine = Carousel()
-        applied = 0.0
-        for _ in range(12):
-            applied = engine.mark(ID, "a", False, 30.0, "per_minute", now=100.0)
-        assert applied == carousel.RL_BACKOFF_CAP_S
+        for _ in range(5):
+            engine.mark(ID, "a", False, 40.0, "per_minute", now=100.0)
+        assert engine.mark(ID, "a", False, 22.3, "per_minute", now=100.0) == 22.3
+
+    def test_a_sized_throttle_longer_than_the_cap_is_obeyed_not_clamped(self):
+        # The ceiling bounds the ladder KAME invents. Clamping the provider's
+        # own number down to it would re-probe early, into a window the
+        # provider has just said is still spent.
+        engine = Carousel()
+        rest = engine.mark(ID, "a", False, 600.0, "per_minute", now=100.0)
+        assert rest == 600.0 > carousel.RL_BACKOFF_CAP_S
+
+    def test_an_unsized_throttle_still_climbs_and_stops_at_five_minutes(self):
+        # The case the ladder exists for, and the one 1.4.0 found benching
+        # keys for zero seconds. Nothing sized it, so every step is KAME's own
+        # invention and the ceiling is what bounds it.
+        engine = Carousel()
+        climb = [
+            engine.mark(ID, "a", False, 0.0, "per_minute", now=100.0)
+            for _ in range(12)
+        ]
+        assert climb[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+        assert climb[-1] == carousel.RL_BACKOFF_CAP_S
+
+    def test_the_owners_gemini_log_never_rests_past_what_google_asked(self):
+        # The 340 throttles Gemini returned in 46 minutes under 1.6.0.2, as
+        # the range the log actually contains. Under the old ladder this
+        # sequence produced ten 5m benches and a 468s stall; under the new one
+        # no rest may exceed the longest number Google itself stated.
+        stated = [53.8, 41.1, 37.2, 31.5, 44.0, 22.3, 1.5, 59.8, 12.0, 48.2]
+        engine = Carousel()
+        rests = [
+            engine.mark(ID, "a", False, s, "rate_limit", now=100.0)
+            for s in stated
+        ]
+        assert rests == stated
+        assert max(rests) <= max(stated)
 
     def test_a_5xx_rests_briefly_and_caps_at_ninety_seconds(self):
         # The provider is unwell, not the key. A pool taken offline for an hour

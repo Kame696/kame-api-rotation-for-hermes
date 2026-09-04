@@ -14,6 +14,7 @@ Every path that cannot point at concrete evidence returns ``None``.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any, Optional
@@ -561,6 +562,77 @@ def _details_text(error: Any, limit: int = 20000) -> str:
         return ""
 
 
+def _response_text(error: Any, limit: int = 20000) -> str:
+    """The raw response body still hanging off ``exc.response``, or ``""``.
+
+    The last unread copy of the provider's own words, and on Gemini it is the
+    only one that survives. Hermes' ``gemini_http_error`` parses the payload,
+    keeps four fields of it — ``status``, ``reason``, ``metadata``,
+    ``message`` — and files the whole ``httpx.Response`` alongside them. The
+    fields it keeps are the ``google.rpc.ErrorInfo`` slice; the ones it drops
+    include the entire ``google.rpc.QuotaFailure`` block, and that block is
+    where ``quotaId`` lives.
+
+    ``quotaId`` is not a detail. It is the *only* field that says whether a
+    free-tier 429 is the per-minute counter or the per-day one, because both
+    report the identical ``quotaMetric``
+    (``generativelanguage.googleapis.com/generate_content_free_tier_requests``)
+    and differ solely in ``GenerateRequestsPerMinutePerProjectPerModel`` vs
+    ``...PerDay...``. Google's own forum thread on the subject shows a *daily*
+    exhaustion — ``quotaValue: "250"`` — arriving with ``retryDelay: "1s"``,
+    which is the misleading number Agent Zero learned to distrust in
+    production. Without ``quotaId`` there is nothing to distrust it *with*.
+
+    Attribute reads only, and every one of them guarded. ``.text`` on a
+    streaming response that was never read raises ``ResponseNotRead``
+    immediately and does no I/O, so this can neither block a call nor consume
+    a body somebody else still needs; when it raises, the result is ``""`` and
+    every reader below behaves exactly as it did before this function existed.
+    """
+    if error is None:
+        return ""
+    try:
+        response = getattr(error, "response", None)
+    except Exception:  # pragma: no cover - hostile attribute access
+        return ""
+    if response is None:
+        return ""
+    for attribute in ("text", "content"):
+        try:
+            raw = getattr(response, attribute, None)
+        except Exception:
+            # ``httpx`` raises ``ResponseNotRead`` from the property itself.
+            continue
+        if not raw:
+            continue
+        if isinstance(raw, (bytes, bytearray)):
+            try:
+                raw = raw.decode("utf-8", "replace")
+            except Exception:  # pragma: no cover - defensive
+                continue
+        if isinstance(raw, str) and raw.strip():
+            return raw[:limit]
+    return ""
+
+
+def _response_body(error: Any) -> Any:
+    """``exc.response``'s payload as a walkable structure, or ``None``.
+
+    The counterpart to :func:`_response_text` for the readers that traverse a
+    body rather than searching text. Strictly better evidence than
+    ``exc.details`` when both exist, because this is the payload entire and
+    the details are the slice of it the host chose to keep.
+    """
+    text = _response_text(error)
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) and parsed else None
+
+
 def _details_body(error: Any) -> Any:
     """``exc.details`` as a walkable structure, for the readers that walk one.
 
@@ -721,11 +793,22 @@ def classify(
     details_text = _details_text(error)
     if details_text and details_text not in body_text:
         body_text = (body_text + "\n" + details_text) if body_text else details_text
+    # And the copy the host parsed but did not keep. ``details`` is the
+    # ``ErrorInfo`` slice; this is the payload entire, including the
+    # ``QuotaFailure`` block whose ``quotaId`` is the only field that
+    # distinguishes a per-minute free-tier 429 from a per-day one. Appended on
+    # the same terms as the details — never substituted, and only when it is
+    # not already here — so a provider whose body already arrived reads
+    # exactly as it did before. See :func:`_response_text`.
+    response_text = _response_text(error)
+    if response_text and response_text not in body_text:
+        body_text = (body_text + "\n" + response_text) if body_text else response_text
     # The same substitution for the readers that traverse a body instead of
-    # searching text. Only when there is no body: a real body is the whole
-    # payload and the details are a slice of it, so preferring the body keeps
-    # every existing provider reading exactly as it was.
-    evidence_body = error_body if error_body else _details_body(error)
+    # searching text, in order of how complete each source is: the body the
+    # caller handed us, then the untouched response payload, then the slice of
+    # it the host kept. Preferring ``error_body`` keeps every existing
+    # provider reading exactly as it was.
+    evidence_body = error_body or _response_body(error) or _details_body(error)
     status = status_code if isinstance(status_code, int) else None
 
     # HTTP 200 OK is an HTTP success; KAME does not classify HTTP 200 as an API error.

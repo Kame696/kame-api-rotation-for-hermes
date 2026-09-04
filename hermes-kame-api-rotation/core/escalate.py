@@ -77,6 +77,20 @@ NEVER_STRETCH_WINDOWS = frozenset({QuotaWindow.ACCOUNT})
 ANCHOR_SOURCES = frozenset({SOURCE_ANCHOR})
 
 # Per-window caps looked up by window string in stretch().
+#
+# ``unknown`` is deliberately absent, and 1.6.0.3 tried adding it before
+# putting it back. The reasoning that argued for it — every Gemini throttle in
+# the owner's log classified as ``rate_limit [unknown]``, because Google names
+# the window in ``quotaId`` and Hermes' adapter does not carry that field — is
+# about the *carousel's* ladder, which fired on repetition and is where the
+# five-minute benches came from. This function is the other mechanism, and it
+# is the disciplined one: it widens only after the journal has recorded two
+# deadlines that were waited out in full and refused anyway. A bench that has
+# been measured short twice is short whatever the window is called, and a
+# 12-hour deadline refuted four times has earned the day-long ceiling that
+# ``test_a_widened_bench_never_outlasts_a_day`` asks for. Capping the unnamed
+# window at five minutes would have taken the ceiling away from measurement to
+# punish a guess made somewhere else.
 _WINDOW_ESCALATION_CAPS: Dict[str, float] = {
     QuotaWindow.PER_MINUTE: MAX_PER_MINUTE_HOLD_SECONDS,
     QuotaWindow.PER_HOUR:   MAX_PER_HOUR_HOLD_SECONDS,
