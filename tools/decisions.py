@@ -143,7 +143,7 @@ CASES = [
      "seconds — nothing was stated, rotating costs one request"),
     ("the 14:39 run", "429 bare, no error_code either",
      dict(status_code=429, error_message=RUN_429, error_type="GeminiAPIError"),
-     "seconds — a 429 is a throttle even with an empty body"),
+     "declined — 429 alone does not say throttle; Anthropic's is billing"),
     ("the 14:39 run", "503 high demand (8x)",
      dict(status_code=503, error_message=RUN_503, error_type="GeminiAPIError"),
      "None — congestion; the host is already right"),

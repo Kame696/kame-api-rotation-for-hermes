@@ -197,17 +197,19 @@ class TestWhatARefusalCosts:
         rest = engine.mark(ID, "a", False, 600.0, "per_minute", now=100.0)
         assert rest == 600.0 > carousel.RL_BACKOFF_CAP_S
 
-    def test_an_unsized_throttle_still_climbs_and_stops_at_five_minutes(self):
-        # The case the ladder exists for, and the one 1.4.0 found benching
-        # keys for zero seconds. Nothing sized it, so every step is KAME's own
-        # invention and the ceiling is what bounds it.
+    def test_an_unsized_throttle_rests_flat_and_never_climbs(self):
+        # 1.6.0.3. This asserted a climb to five minutes; the climb is gone.
+        # A provider that has never named a number for this model gets the
+        # same flat re-probe every time, because there is nothing to infer
+        # from having been refused before that the provider did not already
+        # answer — and a wrong short rest costs one failed request while a
+        # wrong long one costs a healthy key.
         engine = Carousel()
-        climb = [
+        rests = [
             engine.mark(ID, "a", False, 0.0, "per_minute", now=100.0)
             for _ in range(12)
         ]
-        assert climb[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-        assert climb[-1] == carousel.RL_BACKOFF_CAP_S
+        assert rests == [carousel.UNSIZED_THROTTLE_REST_S] * 12
 
     def test_the_owners_gemini_log_never_rests_past_what_google_asked(self):
         # The 340 throttles Gemini returned in 46 minutes under 1.6.0.2, as

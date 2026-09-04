@@ -357,11 +357,24 @@ class TestRestingZeroSeconds:
         # the smallest rest that cannot spin.
         assert applied >= 1.0
 
-    def test_it_still_escalates_like_a_throttle(self):
+    def test_it_still_rests_like_a_throttle(self):
+        # What 1.4.0 actually fixed was ``resting 0s`` — a pool burning
+        # through every credential it had in a few hundred milliseconds and
+        # then declaring itself exhausted. That property is what this test
+        # exists for and it is unchanged.
+        #
+        # It used to assert ``second > first`` as well, which locked in the
+        # doubling. 1.6.0.3 removed the ladder: a rate limit is a rolling
+        # window (seconds, and the provider says so) or a daily cap (hours,
+        # different counter). Nothing lives between them, so nothing climbs
+        # between them.
         pool = carousel.Carousel()
-        first = pool.mark("p:m", "k1", False, delay=0.0, kind="rate_limit")
-        second = pool.mark("p:m", "k1", False, delay=0.0, kind="rate_limit")
-        assert second > first
+        rests = [
+            pool.mark("p:m", "k1", False, delay=0.0, kind="rate_limit")
+            for _ in range(4)
+        ]
+        assert all(rest == carousel.UNSIZED_THROTTLE_REST_S for rest in rests)
+        assert all(rest > 0.0 for rest in rests)
 
     def test_a_provider_that_names_a_number_is_still_obeyed(self):
         pool = carousel.Carousel()

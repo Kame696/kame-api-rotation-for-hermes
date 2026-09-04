@@ -36,14 +36,43 @@ A key that just told us it is out for the day must not be released in twenty
 seconds because a *different* call got a softer refusal from the same key a
 moment later. Backoff escalates per key and per kind, and resets on success.
 
-**The provider's own delay is trusted exactly once, and never for a daily cap.**
-A per-minute throttle that says "retry in 6s" is honest and worth obeying on
-the first strike; from the second strike the same key saying the same thing is
-evidence the window is wider than it claims, so the delay escalates. A *daily*
-cap is different: Google returns a short retryDelay on a daily-quota 429. Believing it produces a key that returns to
-rotation, fails, and repeats — hourly, all day. So for ``daily`` and
+**Every rest is a number somebody measured — never one this module invented.**
+A throttle rests for what the provider stated; if this refusal was not sized,
+for what the provider stated about an earlier one on the same
+``provider:model``; and only when it has never stated one at all, for a flat
+:data:`UNSIZED_THROTTLE_REST_S`. There is no exponential, because a rate limit
+has two regimes and nothing between them: a rolling window that closes in
+seconds and whose length the provider will tell you, or a daily cap that
+closes in hours under a different counter with a different name. No provider
+documents "come back in five minutes", and a ladder climbing 1s → 300s spent
+its whole range interpolating between regimes that do not meet.
+
+Erring short is the deliberate half of that, and it is the whole safety
+argument — not a backstop somewhere else. A rest that is too short costs one
+request that fails in milliseconds. A rest that is too long costs a healthy
+key for its whole duration, and there is no request whose failure announces
+it: the cost is silent, which is why every over-long bench in this plugin's
+history survived for releases and every short one was reported within a day.
+
+There *is* a widening mechanism — :func:`escalate.stretch`, driven by the
+journal's count of deadlines that were waited out in full and refused anyway
+— but it only sees refusals that reach the **host's** credential pool. The
+in-turn rotations this module performs are not among them: in the owner's
+1.6.0.2 run, 74 refusals went through here and the journal recorded none of
+them. So nothing above may be justified by "measurement will correct it".
+Every number here has to be right on its own, which is why every one of them
+is either the provider's or a flat re-probe, and never a curve.
+
+**A daily cap is the exception, and the only one.** Google returns a *short*
+retryDelay on a daily-quota 429 — a real payload from its own forum shows 250
+daily requests spent and ``retryDelay: "1s"``. Believing that produces a key
+that returns to rotation, fails, and repeats, all day. So for ``daily`` and
 ``insufficient_quota`` the parsed delay is discarded and the configured
-cooldown is used instead. This is v1.0.5's rule and it was learned the hard way.
+cooldown is used instead: probe hourly, not every second. This is v1.0.5's
+rule and it was learned the hard way. It is also why the ceiling above refuses
+to learn from any number longer than :data:`RL_BACKOFF_CAP_S` — on Gemini a
+daily cap classifies as ``rate_limit`` too, and one exhausted day must not
+teach every terse throttle afterwards to rest for an hour.
 
 **5xx is checked before 429.** A real quota refusal is a 429, never a 503. An
 overloaded provider that returns 503 to every key in the pool must not take the
@@ -114,12 +143,19 @@ SERVER_BACKOFF_CAP_S = 90.0
 #: so a guess cannot grow without end, not so a guess can overrule evidence.
 RL_BACKOFF_CAP_S = 300.0
 
-#: Where that invented ladder starts. One second is the same floor the first
-#: strike already used — the smallest rest that cannot spin — so an unsized
-#: throttle climbs 1s, 2s, 4s ... and a sized one never leaves the provider's
-#: own number. Named for symmetry with :data:`SERVER_BASE_S` and
-#: :data:`DAILY_BASE_S`, whose branches have always had this shape.
+#: The smallest rest that is a cooldown rather than a spin. A provider that
+#: answers "retry in 0.2s" is obeyed to the nearest second and no faster.
 RL_BASE_S = 1.0
+
+#: What a throttle rests for when the provider has never named a number for
+#: this ``provider:model`` — not once, on any refusal. Deliberately the same
+#: value as :data:`core.quota.DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS`, which
+#: sizes the *bench* for the same payload: one refusal must not produce two
+#: different waits depending on which half of the plugin is asked.
+#:
+#: Twenty seconds and flat, with no climb behind it. See :meth:`_escalate`
+#: for why there is nothing to climb between.
+UNSIZED_THROTTLE_REST_S = 20.0
 
 #: A daily refusal escalates from this base toward ``DAILY_COOLDOWN_S``.
 DAILY_BASE_S = 20.0
@@ -933,11 +969,22 @@ class Carousel:
                 # times in a row, and reading it that way would retire keys
                 # on a mixture of unrelated evidence.
                 state["consecutive_refusals"] = 0
-            if delay > 0.0 and kind in ("per_minute", "rate_limit"):
+            if (
+                kind in ("per_minute", "rate_limit")
+                and 0.0 < delay <= RL_BACKOFF_CAP_S
+            ):
                 # Learned here rather than in ``_escalate`` because the number
                 # is the provider's whatever this key does with it, and the
                 # lesson belongs to the identity, not to the credential that
                 # happened to collect it.
+                #
+                # The upper bound is not a clamp, it is a filter on what may
+                # teach. A number this long is not describing a rolling
+                # window: on Gemini a *daily* cap classifies as ``rate_limit``
+                # too, and arrives sized at an hour. Letting that hour in
+                # would mean one exhausted day teaching every terse throttle
+                # afterwards to rest for an hour, which is the original defect
+                # wearing a different hat.
                 self._stated_rl_ceiling[identity] = max(
                     self._stated_rl_ceiling.get(identity, 0.0), float(delay)
                 )
@@ -1025,38 +1072,57 @@ class Carousel:
         # counts ``under_predictions`` and ``escalate.stretch`` widens only
         # after two of them — and that mechanism is unaffected here. What is
         # removed is this branch's habit of escalating on repetition alone.
+        # There is no exponential here any more, and that is the point.
+        #
+        # A rate limit has two regimes and no middle. Either it is a rolling
+        # window, which closes in seconds and whose length the provider will
+        # tell you, or it is a daily cap, which closes in hours and is a
+        # different counter with a different name. No provider documents
+        # "come back in five minutes". The ladder that used to live here —
+        # 1s, 2s, 4s … 300s — interpolated between two regimes that have
+        # nothing between them, and every number on it was invented.
+        #
+        # What replaced it says the same thing in one line: **every rest is a
+        # number somebody measured.** Either the provider stated it for this
+        # refusal, or the provider stated it for an earlier one on the same
+        # model, or — only when it has never stated one at all — the flat
+        # re-probe that `quota` already uses for exactly this case.
+        #
+        # Erring short is deliberate and it is the asymmetry that governs the
+        # whole plugin: a rest that is too short costs one request that fails
+        # in milliseconds; a rest that is too long costs a healthy key for its
+        # whole duration, silently. Being wrong in the cheap direction is the
+        # correct bet.
+        #
+        # And it has to be, because nothing downstream will catch it. The
+        # widening mechanism — ``escalate.stretch`` — is fed by the journal,
+        # and the journal is written from ``pool_binding._remember``, which
+        # runs only when the *host* marks a credential exhausted. The
+        # rotations this method sizes happen inside a turn and never get
+        # there: 74 of them in the owner's 1.6.0.2 run, 0 journal rows. See
+        # the module docstring. Every number below is right on its own or it
+        # is wrong.
         if kind in ("per_minute", "rate_limit"):
             state["consecutive_rl"] += 1
-            strikes = state["consecutive_rl"]
             if delay > 0.0:
-                # The provider sized this refusal, so there is nothing left to
-                # guess. Not ``max(delay, ladder)`` either: by the sixth strike
-                # the ladder stands at 32s, and a provider that has just said
-                # 22.3s would be overruled by an invented number for no reason
-                # beyond having been refused before. The floor still applies,
-                # because a sub-second rest is a spin rather than a cooldown.
+                # Stated for this very refusal. Nothing outranks it. The floor
+                # still applies, because a sub-second rest is a spin rather
+                # than a cooldown.
                 return max(delay, RL_BASE_S)
-            # Nothing sized it — the case the ladder exists for, and the one
-            # 1.4.0 found benching keys for zero seconds. The ceiling bounds
-            # the climb because every step of it is KAME's own invention.
-            #
-            # Two ceilings, and the tighter one wins. ``RL_BACKOFF_CAP_S`` is
-            # the constant; the other is what this provider has demonstrated.
-            # The owner's log is why the second one exists: of 400 Gemini
-            # throttles in 46 minutes, 232 arrived as the terse "Resource has
-            # been exhausted (e.g. check quota)." with no number, and 168
-            # arrived as the same refusal spelled out with "Please retry in
-            # Ns" — never once above 59.8s. The terse form is not a different
-            # condition, it is the same condition worded shorter, and a plugin
-            # holding a key for five minutes while sitting on 168 samples that
-            # say under a minute is not being careful, it is ignoring what it
-            # was told. So the invented ladder may climb, but never past the
-            # longest wait the provider itself has ever asked of this model.
-            grown = RL_BASE_S * (2 ** max(0, strikes - 1))
-            grown = min(grown, RL_BACKOFF_CAP_S)
             if ceiling is not None and ceiling > 0.0:
-                grown = min(grown, float(ceiling))
-            return grown
+                # Stated for an earlier one. The owner's log is why this beats
+                # any constant: of 400 Gemini throttles in 46 minutes, 232
+                # arrived as the terse "Resource has been exhausted (e.g.
+                # check quota)." with no number, and 168 arrived as the same
+                # refusal spelled out — never once above 59.8s. The terse form
+                # is not a different condition, it is the same condition
+                # worded shorter, and the 168 already answered it.
+                return max(min(float(ceiling), RL_BACKOFF_CAP_S), RL_BASE_S)
+            # Never stated one. ``quota`` reaches the same number by the same
+            # reasoning for the same payload, and the two agreeing is what
+            # keeps the in-turn rest and the across-turn bench from telling
+            # the user two different stories about one refusal.
+            return UNSIZED_THROTTLE_REST_S
 
         if kind == "server":
             state["consecutive_server"] += 1
@@ -1243,6 +1309,7 @@ __all__ = [
     "SERVER_BACKOFF_CAP_S",
     "RL_BACKOFF_CAP_S",
     "RL_BASE_S",
+    "UNSIZED_THROTTLE_REST_S",
     "TIMEOUT_S",
     "OTHER_S",
     "EMPTY_RETRY_BUDGET",

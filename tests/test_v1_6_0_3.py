@@ -117,67 +117,81 @@ class TestTheLadderObeysAStatedNumber:
 # --- B. what KAME may invent when nothing sized it ---------------------------
 
 
-class TestTheInventedLadder:
-    def test_an_unsized_throttle_still_climbs(self):
-        # The case the ladder exists for, and the one 1.4.0 found benching
-        # keys for zero seconds.
-        engine = Carousel()
-        climb = [
-            engine.mark(ID, "a", False, 0.0, "rate_limit", now=NOW) for _ in range(6)
-        ]
-        assert climb == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+class TestNothingIsInvented:
+    """Every rest is a number somebody measured. There is no ladder left."""
 
-    def test_with_no_sized_sample_the_climb_stops_at_the_constant(self):
+    def test_a_provider_that_never_named_a_number_gets_a_flat_re_probe(self):
+        # No climb. A rate limit is a rolling window (seconds, and the
+        # provider says so) or a daily cap (hours, different counter). Nothing
+        # lives between them, so a ladder from 1s to 300s spent its whole
+        # range interpolating between regimes that do not meet.
         engine = Carousel()
-        climb = [
+        rests = [
             engine.mark(ID, "a", False, 0.0, "rate_limit", now=NOW) for _ in range(12)
         ]
-        assert climb[-1] == carousel.RL_BACKOFF_CAP_S
+        assert rests == [carousel.UNSIZED_THROTTLE_REST_S] * 12
 
-    def test_a_stated_number_becomes_the_ceiling_for_the_invented_one(self):
+    def test_the_flat_re_probe_is_the_same_number_quota_uses(self):
+        # One refusal must not produce two different waits depending on which
+        # half of the plugin is asked.
+        from importlib import import_module
+
+        quota = import_module(f"{PACKAGE}.core.quota")
+        assert (
+            carousel.UNSIZED_THROTTLE_REST_S
+            == quota.DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS
+        )
+
+    def test_one_stated_number_answers_every_later_terse_refusal(self):
         # 232 of the owner's 400 throttles arrived as the terse "Resource has
         # been exhausted (e.g. check quota)." with no number at all, and 168
         # arrived spelled out, never above 59.8s. The terse form is the same
-        # condition worded shorter. A plugin sitting on 168 samples that say
-        # under a minute must not invent five.
+        # condition worded shorter, and the 168 already answered it.
         engine = Carousel()
         engine.mark(ID, "a", False, 53.8, "rate_limit", now=NOW)
-        climb = [
+        rests = [
             engine.mark(ID, "a", False, 0.0, "rate_limit", now=NOW) for _ in range(10)
         ]
-        assert max(climb) == 53.8
+        assert rests == [53.8] * 10
 
-    def test_the_ceiling_is_per_identity_not_per_key(self):
+    def test_what_the_provider_said_is_learned_per_identity_not_per_key(self):
         # The lesson is about the provider's window, so a number collected on
-        # one credential bounds the guess made about the next.
+        # one credential answers the terse refusal the next one gets.
         engine = Carousel()
         engine.mark(ID, "a", False, 30.0, "rate_limit", now=NOW)
-        climb = [
+        rests = [
             engine.mark(ID, "b", False, 0.0, "rate_limit", now=NOW) for _ in range(10)
         ]
-        assert max(climb) == 30.0
+        assert rests == [30.0] * 10
 
-    def test_another_model_does_not_inherit_the_ceiling(self):
+    def test_another_model_does_not_inherit_it(self):
         # Different identity, different window. Borrowing the number would be
         # the same overreach in the other direction.
         engine = Carousel()
         engine.mark(ID, "a", False, 30.0, "rate_limit", now=NOW)
-        climb = [
+        rests = [
             engine.mark("gemini:gemini-3.5-flash", "a", False, 0.0, "rate_limit", now=NOW)
-            for _ in range(10)
+            for _ in range(4)
         ]
-        assert max(climb) == carousel.RL_BACKOFF_CAP_S
+        assert rests == [carousel.UNSIZED_THROTTLE_REST_S] * 4
 
-    def test_the_ceiling_rises_when_the_provider_asks_for_more(self):
+    def test_a_daily_length_number_never_teaches_the_short_window(self):
+        # On Gemini a *daily* cap classifies as ``rate_limit`` too and arrives
+        # sized at an hour. Letting that hour in would mean one exhausted day
+        # teaching every terse throttle afterwards to rest for an hour, which
+        # is the original defect wearing a different hat.
         engine = Carousel()
-        engine.mark(ID, "a", False, 30.0, "rate_limit", now=NOW)
-        engine.mark(ID, "a", False, 900.0, "rate_limit", now=NOW)
-        climb = [
-            engine.mark(ID, "b", False, 0.0, "rate_limit", now=NOW) for _ in range(12)
+        engine.mark(ID, "a", False, 3600.0, "rate_limit", now=NOW)
+        rests = [
+            engine.mark(ID, "b", False, 0.0, "rate_limit", now=NOW) for _ in range(4)
         ]
-        # Bounded by the constant, which is the tighter of the two ceilings
-        # once the provider's own number has gone above it.
-        assert max(climb) == carousel.RL_BACKOFF_CAP_S
+        assert rests == [carousel.UNSIZED_THROTTLE_REST_S] * 4
+
+    def test_a_number_the_provider_stated_is_still_obeyed_beyond_the_cap(self):
+        # The learning filter above is about what may *teach*. It must not
+        # become a clamp on what the provider asked for right now.
+        engine = Carousel()
+        assert engine.mark(ID, "a", False, 3600.0, "rate_limit", now=NOW) == 3600.0
 
 
 # --- C. the field the host parsed and did not keep ---------------------------

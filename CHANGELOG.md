@@ -13,7 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
-| **1.6.0.3** | It was arguing with the provider | Google spent 46 minutes telling this plugin exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds across 33 waits because it had benched its own pool that far out. The cause was one branch: on a throttle it *multiplied* the provider's stated number by two per repeat, while the two ladders beside it for daily quotas and 5xx have always treated their number as a floor. A key refused twice in a row is not evidence the provider lied; on a rolling window it is the ordinary case, and the provider restates a fresh number every time. **A stated number is now obeyed exactly.** When nothing states one — 232 of those 400 refusals arrived as the terse `Resource has been exhausted`, with no number at all — the invented ladder still climbs, but never past the longest wait that provider has actually asked for. And the field that decides everything is readable again: both of Google's free-tier quotas report the *identical* metric name and differ only in `quotaId`, which Hermes' adapter parses and throws away — so a **daily** cap arriving with Google's misleading `retryDelay: 1s` used to be re-probed every twenty seconds for the rest of the day. KAME now reads the untouched response body the adapter kept beside it, sees `...PerDay...`, and rests the hour |
+| **1.6.0.3** | It was arguing with the provider | Google spent 46 minutes telling this plugin exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds across 33 waits because it had benched its own pool that far out. Worse, six times it stopped waiting altogether and put the quota error on screen, ending the turn. **Every rest is now a number somebody measured.** The throttle ladder is gone entirely — not bounded, removed: a rate limit is a rolling window (seconds, and the provider tells you) or a daily cap (hours, a different counter), and a curve from 1s to 300s spent its whole range between two regimes that do not meet. A stated number is obeyed exactly, every repeat. An unsized refusal — 232 of those 400 arrived as the terse `Resource has been exhausted` — rests for what that provider stated about the same model earlier, and only for a flat 20s when it has never stated anything at all. The interruptions were a vocabulary bug two years old: the set of failures that must never end a turn listed `per_minute` while the classifier had long since started saying `rate_limit`, so the commonest refusal there is walked straight past the exclusion written for it. And the field that decides everything is readable again — both of Google's free-tier quotas report the *identical* metric name and differ only in `quotaId`, which Hermes' adapter parses and throws away, so a **daily** cap arriving with Google's misleading `retryDelay: 1s` used to be re-probed every twenty seconds for the rest of the day |
 | **1.6.0.2** | Saying nothing was costing an hour | A throttle the provider named but did not size left this plugin silent, and silence is not neutral: Hermes' own fallback for an unsized 429 is **one hour per key**, so the commonest refusal there is — nineteen of them in one three-minute run — took a credential out for an hour on evidence that named no duration at all. It is now twenty seconds. Two more places where weaker evidence was overruling stronger: the advice **Hermes itself** appends to a Google error was being read as though Google had written it, turning a stated seven-second wait into an hour at account scope; and the SDK's exception class was consulted *before* the provider's own sentence, so a key Google called invalid could never be retired and a stated five-minute wait was thrown away. No behaviour was added — three signals were put back in the order of how much they are worth. Plus four things found by using it: with three Hermes processes sharing a home the panel was renaming which one it described on every heartbeat, so the Events tab flipped between 150 rows and none — it now follows the process actually routing your calls, and says whether KAME is alive at all; a dropped stream no longer takes half a two-key pool out for thirty seconds; a neighbouring profile's row says whether its KAME is doing any work; and "Wait for the first token" finally names a number to try |
 | **1.6.0.1** | Two Hermes, one file — and a refused key stopped coming back for ever | The Desktop and the gateway both write the plugin's status file and each overwrote the whole of the other's, so the panel flickered between two readings a release apart and the Settings form rebuilt itself under the cursor; the file now holds a section per process, and the panel names the others. A credential the provider refused rests twenty seconds instead of an hour and is offered last, and one the provider names dead leaves rotation altogether, because over-benching a healthy key costs an hour while under-benching a dead one costs a request that fails in milliseconds. Events finally records the rotations themselves, not only the failures. Settings is half the height, with a Refresh that re-reads the `.env` for real. And the diagnostic that reads a real run is `/kame doctor` inside the plugin instead of a script in the repo |
 | **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a whole day; the cooldown KAME works out finally reaches the pool instead of being dropped one hop short; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key before Hermes tells the model its call was too big; and the panel says, in one line per provider, what KAME can actually see |
@@ -111,23 +111,72 @@ repeat, with the one-second floor still under it so a sub-second reply cannot
 spin. A number *above* the ceiling is obeyed rather than clamped down to it,
 because clamping re-probes into a window the provider just said is spent.
 
-### What may be invented, and how far
+### The ladder is gone, not bounded
 
 232 of that run's 400 refusals were the terse form, with no number anywhere:
 
     Gemini HTTP 429 (RESOURCE_EXHAUSTED): Resource has been exhausted
     (e.g. check quota).
 
-The ladder exists for exactly this, and still climbs 1s, 2s, 4s … But the
-terse message is not a different condition — it is the same condition worded
-shorter, and the other 168 refusals had already said, 168 times, that this
-window closes in under a minute. A plugin holding a key for five minutes while
-sitting on that evidence is not being careful.
+The first draft of this release kept the climb for those and merely capped it
+at the longest number the provider had ever stated. That was still wrong, and
+the reason is worth writing down: **a rate limit has two regimes and nothing
+between them.** Either it is a rolling window — seconds, and the provider will
+tell you — or it is a daily cap, which is hours, a different counter, and a
+different name. No provider documents "come back in five minutes". A ladder
+climbing 1s → 300s spent its entire range interpolating between two regimes
+that do not meet, and every number on it was invented.
 
-**The invented ladder is now bounded by the longest wait the provider itself
-has asked for**, per `provider:model`. Nothing rests for that number; it is a
-ceiling on a guess. Where the provider has never stated one, the old constant
-still applies.
+So there is no ladder. Every rest is now one of three things:
+
+| what is known | what the key rests for |
+|---|---|
+| the provider sized *this* refusal | exactly that |
+| it sized an earlier one on this `provider:model` | that number |
+| it has never sized one at all | a flat 20s |
+
+The middle row is what the terse message needed all along: the other 168
+refusals had already said, 168 times, that this window closes in under a
+minute. A daily-length number is refused as a teacher — on Gemini a daily cap
+classifies as a throttle too and arrives sized at an hour, and one exhausted
+day must not teach every terse refusal afterwards to rest for an hour.
+
+Erring short is the deliberate half, and it is the whole safety argument
+rather than a backstop somewhere else. A rest that is too short costs one
+request that fails in milliseconds. A rest that is too long costs a healthy
+key for its whole duration, and nothing announces it — which is why every
+over-long bench in this plugin's history survived for releases and every short
+one was reported within a day.
+
+### Six times it stopped waiting and ended the turn
+
+`_pool_agrees_it_is_the_request` promotes a unanimous pool to terminal: if
+every key failed the same way and none succeeded, the request is at fault, not
+the credentials. `_NEVER_PROMOTED` exists so that the failures a key *can*
+cause on its own — and can recover from on its own — never reach it. Its
+docstring has always said so: *"the case this plugin exists for, every key
+spent, wait for midnight, can never reach here."*
+
+It listed `per_minute`. The classifier says `rate_limit`. The carousel's own
+ladder was taught both names in 1.4.0 and this set was not, so for two years
+the commonest refusal there is walked past the exclusion written for it. In
+the owner's log: six turns ended with a quota error on screen where the answer
+was to wait. **`rate_limit` is in the set.**
+
+### What is *not* fixed, and is written down instead
+
+The journal — which feeds `escalate.stretch`, the only mechanism allowed to
+widen a bench on measured evidence — is written from
+`pool_binding._remember`, which runs only when the **host** marks a credential
+exhausted. The rotations `dispatch_binding` performs inside a turn never get
+there. In the owner's run: 74 refusals, 0 journal rows.
+
+That is real and it is in `ISSUES_BACKLOG.md` with the measurement. It is not
+fixed here because a second write site needs deduplication that `record_block`
+does not have, and because this release stopped *depending* on it: the three
+rows in the table above are each right on their own, with nothing deferred to
+a correction later. The code comments that claimed the backstop were corrected
+to say what is true.
 
 ### The field the host parses and drops
 
@@ -169,12 +218,23 @@ what 1.6.0.2 produced. A per-minute payload still rests for the stated 41.3s.
 
 | gate | result |
 |---|---|
-| `pytest tests` | **1696 passed** (21 new) |
+| `pytest tests` | **1700 passed** |
 | `tools/host_corpus.py` | 130/130 — *KAME changed nothing* |
 | `tools/host_prose.py` | both host footers stripped, and silent alone |
 | `tools/host_assumptions.py` | every host fact still holds |
 | `node tests/ui_reconcile.mjs` | all checks passed |
-| mutation | 5 new rules broken one at a time; **all 5 turn the suite red** |
+| `tools/decisions.py` | 25 refusal shapes, 0 raised |
+| mutation | every new rule broken one at a time; **all of them turn the suite red** |
+
+The Agent Zero port ships the same rules in the same release. It never had the
+multiplication — its ladder always treated a stated number as a floor — but it
+raised that floor *over* the provider from the second strike, which is the
+same defect in milder arithmetic, and its `quotaId` reader was a log tag
+rather than a decision. Both are fixed there too, and its
+`_extract_retry_delay` now reads the structured evidence the rest of that file
+already read: on a Gemini 429 it was returning its 20-second default while
+`"retryDelay": "41.3s"` sat in `exc.response.text`, three lines from a
+`quotaId` the same file reads from exactly there. See `PARITY.md`.
 
 ---
 

@@ -5,6 +5,35 @@
 
 ## Open
 
+### 🔲 O journal não enxerga o caminho principal — medido em 1.6.0.2, documentado em 1.6.0.3
+
+- **Medida (`tools/inspect_run.py`, build `2e3270b639b9`, 03/09/2026):**
+  `rotations since this build started: rate_limit 74, server 6` e
+  `journal: 110 refusal(s) kept, 0 since this build started`. Oitenta recusas
+  reais, zero linhas.
+- **Causa:** há dois caminhos de recusa e o journal só vê um.
+  `pool_binding._remember` (`:969`) começa com
+  `if updated.last_status != STATUS_EXHAUSTED: return`, então só grava o que o
+  **host** benchou. As rotações que o `dispatch_binding` faz dentro do turno
+  marcam o carrossel direto e nunca chegam lá.
+- **Consequência:** `_short_streak` devolve 0 para esse tráfego, logo
+  `escalate.stretch` — a única coisa autorizada a alargar um castigo por
+  evidência — nunca dispara nele. O relatório do `/kame doctor` também fica
+  vazio para o caminho onde tudo acontece.
+- **Por que NÃO foi consertado na 1.6.0.3:** ligar um segundo ponto de escrita
+  exige deduplicação (`record_block` acrescenta sem checar nada) e a lógica de
+  "o castigo chegou a ser cumprido" foi escrita para benches do host. Isso é
+  escopo novo numa versão que precisa ser final, num mecanismo que é *rede de
+  segurança*, não o caminho de correção.
+- **O que foi feito em vez disso:** a 1.6.0.3 parou de depender dele. Todo
+  descanso agora é o número que o provider declarou, ou o que ele declarou
+  antes para o mesmo `provider:model`, ou um re-teste plano — nenhum é uma
+  curva inventada que precise ser corrigida depois. Os comentários que
+  afirmavam a rede de segurança foram corrigidos para dizer o que é verdade.
+- **Quando consertar:** junto com dedupe por `(credential_id, model, ~at)`, e
+  só com um teste que prove que uma recusa que passa pelos dois caminhos vira
+  uma linha, não duas.
+
 ### 🔲 Aux lane não tenta de novo antes de cair pro fallback provider-wide — planejado pra 1.5.1
 - **Sintoma (visto em produção, 30/08/2026, `agent.log` 20:18:56):** pool
   Gemini do aux (`skills_hub`, modelo `gemini-3.5-flash-lite`) ficou sem

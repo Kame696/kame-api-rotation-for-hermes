@@ -189,11 +189,37 @@ class TestUnanimityIsEvidenceAboutTheRequest:
 
     @pytest.mark.parametrize(
         "kind",
-        ["server", "timeout", "per_minute", "daily", "insufficient_quota", "auth"],
+        [
+            "server", "timeout", "per_minute", "daily", "insufficient_quota",
+            "auth",
+            # 1.6.0.3. Absent until then, from the set and from this list, and
+            # the omission is why the docstring above was false in production:
+            # ``classify.Verdict.reason`` says ``rate_limit``, this set spoke
+            # only ``per_minute``, and the commonest refusal there is walked
+            # past the exclusion written for it.
+            "rate_limit",
+        ],
     )
     def test_the_kinds_a_key_can_cause_are_never_promoted(self, kind):
         verdicts = {k: (kind, 429) for k in KEYS}
         assert self._agrees(verdicts, KEYS, kind, 429) is False
+
+    def test_a_pool_that_is_wholly_throttled_keeps_waiting(self):
+        # The exact shape from the owner's 1.6.0.2 log, six times in 46
+        # minutes: every key answered ``rate_limit [429]``, unanimity was read
+        # as proof the request was at fault, and the turn ended with a quota
+        # error on screen instead of a wait.
+        #
+        # Unanimity proves something about the request only when the failure
+        # is one a key cannot cause on its own and cannot recover from on its
+        # own. A throttle is neither. Waiting is the entire point.
+        verdicts = {k: ("rate_limit", 429) for k in KEYS}
+        assert self._agrees(verdicts, KEYS, "rate_limit", 429) is False
+
+    def test_a_single_throttled_key_keeps_waiting_too(self):
+        # With one key there is no rotation left, but there is still a clock.
+        one = [KEYS[0]]
+        assert self._agrees({KEYS[0]: ("rate_limit", 429)}, one, "rate_limit", 429) is False
 
     def test_a_single_key_pool_can_still_be_unanimous(self):
         # The one-key case the user asked about explicitly. With one key there

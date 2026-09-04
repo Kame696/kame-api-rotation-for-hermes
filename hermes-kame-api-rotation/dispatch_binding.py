@@ -226,6 +226,24 @@ _CREDENTIAL_REFUSALS = frozenset({"auth", "revoked"})
 
 _NEVER_PROMOTED = frozenset(
     {"server", "timeout", "per_minute", "daily", "insufficient_quota", "auth",
+     # 1.6.0.3, and it is the same defect the carousel's ladder had: this set
+     # spoke only ``per_minute`` while ``classify.Verdict.reason`` says
+     # ``rate_limit``. The carousel branch was taught both names in 1.4.0 and
+     # this set was not, so for two years the commonest refusal there is could
+     # walk straight past the exclusion that exists for it.
+     #
+     # What that cost is visible in the owner's 1.6.0.2 log: six times in
+     # 46 minutes, every key in the pool answered ``rate_limit [429]``,
+     # unanimity was read as proof that the *request* was at fault, and the
+     # turn ended with a quota error on screen. The docstring below has always
+     # claimed this cannot happen — "the case this plugin exists for, every
+     # key spent, can never reach here" — and it was true only for a name the
+     # classifier had stopped using.
+     #
+     # Unanimity is proof about the request only when the failure is one that
+     # cannot pass on its own. A throttle passes on its own. That is what
+     # waiting is for.
+     "rate_limit",
      # 1.6.0.1. A pool where every key is a key the provider named dead is a
      # pool that needs new keys, not a request that is malformed. Promoting it
      # would end the turn with the wrong sentence on screen.
