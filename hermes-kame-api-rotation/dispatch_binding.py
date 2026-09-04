@@ -1735,7 +1735,16 @@ class DispatchBinding:
                 # after visible text back into a replay — the exact bug
                 # ``progress.any`` was introduced to prevent.
                 verdict, kind, status = self._on_failure(
-                    identity, key, exc, label, attempt, progress.any or bool(seen), can_stitch
+                    identity, key, exc, label, attempt, progress.any or bool(seen), can_stitch,
+                    # 1.6.0.3. The host's own id for this credential, so the
+                    # journal row lands in the same bucket as one written by
+                    # the pool path and the two can be told apart from each
+                    # other rather than counted twice. Absent for a key the
+                    # pool does not know — a resolver substitution, a fallback
+                    # carried on ``agent.api_key`` — and the row is dropped in
+                    # that case, which is right: a statistic about a
+                    # credential nobody can name later teaches nothing.
+                    credential_id=getattr(entry_by_key.get(key), "id", ""),
                 )
                 if verdict == "raise" and stitcher is not None:
                     # A refusal earned by KAME's own rewriting, not by the
@@ -2269,6 +2278,7 @@ class DispatchBinding:
         attempt: int,
         streamed: bool,
         can_stitch: bool = False,
+        credential_id: str = "",
     ) -> Tuple[str, str, Optional[int]]:
         """``(verdict, kind, status)`` — and the key's rest recorded either way.
 
@@ -2408,6 +2418,47 @@ class DispatchBinding:
             )
             return "raise", kind, status
         applied = self.engine.mark(identity, key, False, delay, kind, )
+        # 1.6.0.3. Write it down. This is the path almost every refusal takes
+        # — the key is benched on the carousel and the turn moves to the next
+        # credential without the host's pool being told — and until now the
+        # journal never saw one of them: 74 rotations and 0 rows on the
+        # owner's 1.6.0.2 build. What reads the journal is
+        # ``escalate.stretch``, the only thing allowed to widen a bench on
+        # measured evidence, so it could not fire where it was needed most.
+        #
+        # ``applied`` and not ``delay``: the carousel is what actually holds
+        # the key, and a deadline the journal did not see applied is a
+        # prediction measured against a bench that never happened.
+        if credential_id:
+            provider_name = identity.split(":", 1)[0] if ":" in identity else identity
+            now_epoch = time.time()
+            runtime.record_rotation(
+                credential_id=credential_id,
+                provider=provider_name,
+                model=identity,
+                held_to=(now_epoch + applied) if applied and applied > 0 else None,
+                status_code=status,
+                reason=kind,
+                # A ``runtime.Judgement``, not the ``classify.Verdict`` above.
+                # The journal's recorder reads ``window`` / ``source`` /
+                # ``reset_at`` / ``stated`` off a Judgement, and the Verdict
+                # spells the first of those ``quota_window``; handing it over
+                # directly would have every row read "unknown" while looking
+                # like it was recording something. They are different types
+                # for a reason — one is what the classifier concluded, the
+                # other is what the pool was told — so the translation is
+                # explicit rather than duck-typed.
+                judgement=runtime.Judgement(
+                    provider=provider_name,
+                    model=identity,
+                    window=getattr(verdict, "quota_window", "unknown") if verdict is not None else "unknown",
+                    source=(getattr(verdict, "source", "") if verdict is not None else "") or sized_by,
+                    reset_at=getattr(verdict, "reset_at", None) if verdict is not None else None,
+                    at=now_epoch,
+                    scope=getattr(verdict, "quota_scope", "unknown") if verdict is not None else "unknown",
+                    reason=kind,
+                ) if verdict is not None else None,
+            )
         # Never the error text: a provider's unredacted dump of a failed auth
         # call can carry the key that failed.
         #

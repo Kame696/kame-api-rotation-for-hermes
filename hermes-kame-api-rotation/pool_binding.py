@@ -67,6 +67,7 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable, List, Optional, Tuple
 
 from . import runtime
@@ -167,6 +168,22 @@ def inspect_module(module: Any) -> None:
         raise Incompatible(f"PooledCredential is missing {', '.join(missing)}")
 
 
+class _JustAnId:
+    """A stand-in for the host's credential entry, carrying only its id.
+
+    ``_record_block`` reads exactly one field off the entry it is given, and
+    the dispatch path has no entry to give — it works in raw key strings and
+    the host's own row for that key is what carries the id. Rather than widen
+    the recorder's signature for one caller, the caller supplies the shape it
+    already expects. Nothing else is read, so nothing else is here.
+    """
+
+    __slots__ = ("id",)
+
+    def __init__(self, credential_id: Any) -> None:
+        self.id = str(credential_id or "")
+
+
 class PoolBinding:
     """Installs, owns, and can fully remove the wrappers."""
 
@@ -182,6 +199,24 @@ class PoolBinding:
         # the journal is what will make a later version smarter. A plugin
         # constructed without one behaves exactly as v0.0.5 did.
         self._journal = journal
+        # 1.6.0.3. The last moment each ``(credential, model)`` was written
+        # down, so one refusal cannot become two rows.
+        #
+        # There are two paths into the journal now and they overlap. A refusal
+        # is benched in-turn by ``dispatch_binding`` and *may* then also be
+        # benched across turns by the host, which reaches ``_remember``; both
+        # want to record it and only one of them may. ``record_block`` appends
+        # without checking anything, so the check lives here, in front of the
+        # single funnel both paths go through.
+        #
+        # Time-based rather than identity-based because the two paths hold
+        # nothing in common to key on: the host has an entry, the dispatch
+        # path has a key string, and the refusal itself has no id. Two blocks
+        # for the same credential and model within a couple of seconds are one
+        # refusal seen twice — a real second refusal that fast would mean the
+        # bench was not applied at all, which is a different defect and one
+        # the ledger catches.
+        self._last_block_at: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
         self._clock = clock
         self._module: Any = None
         self._originals: dict = {}
@@ -271,6 +306,11 @@ class PoolBinding:
         self._guard_current(pool_class)
         self.installed = True
         self.reason = "active"
+        # 1.6.0.3. Open the journal's other half. Registered rather than
+        # imported so ``dispatch_binding`` never depends on this module: the
+        # two bindings install independently and either may be absent, and the
+        # failure path of every API call must not be able to fail on an import.
+        runtime.set_rotation_recorder(self.note_rotation)
         logger.info("kame: per-model quota memory active")
         return True
 
@@ -745,6 +785,10 @@ class PoolBinding:
         if not self.installed or self._module is None:
             return
         pool_class = self._module.CredentialPool
+        # 1.6.0.3. Before the methods, because the recorder points at *this*
+        # object: leaving it registered would keep an uninstalled binding
+        # alive and writing to a journal nobody is reading.
+        runtime.set_rotation_recorder(None)
         for name, original in self._originals.items():
             if getattr(getattr(pool_class, name, None), _MARK, False):
                 setattr(pool_class, name, original)
@@ -1116,6 +1160,92 @@ class PoolBinding:
             " (every model on this key)" if recorded.covers_every_model else "",
         )
 
+    #: How close two blocks for the same credential and model have to be
+    #: before the second one is read as the first one seen twice. Two seconds:
+    #: long enough to cover a refusal benched in-turn and then benched again
+    #: by the host on its way out of the same call, short enough that a real
+    #: second refusal — which needs a request, a round trip and a rest — can
+    #: never fall inside it.
+    ROTATION_DEDUPE_S = 2.0
+
+    #: How many ``(credential, model)`` pairs to remember for that check. A
+    #: bound rather than a sweep: this is on the failure path of every call,
+    #: and an unbounded dict keyed by credential would grow with the pool for
+    #: as long as the process lives.
+    ROTATION_DEDUPE_SLOTS = 256
+
+    def _already_written(self, credential_id: Any, model: Any, now: float) -> bool:
+        """Whether this refusal has just been journalled by the other path.
+
+        Records the moment as a side effect, so the caller's next question is
+        answered against this call. Never raises: a journal that cannot
+        deduplicate is a statistic slightly wrong, and this runs where a raise
+        would cost a turn.
+        """
+        try:
+            key = (str(credential_id or ""), str(model or ""))
+            if not key[0] or not key[1]:
+                # Nothing to key on. `record_block` drops these anyway.
+                return False
+            seen = self._last_block_at.get(key)
+            if seen is not None and 0.0 <= now - seen <= self.ROTATION_DEDUPE_S:
+                return True
+            self._last_block_at[key] = now
+            self._last_block_at.move_to_end(key)
+            while len(self._last_block_at) > self.ROTATION_DEDUPE_SLOTS:
+                self._last_block_at.popitem(last=False)
+            return False
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def note_rotation(
+        self,
+        *,
+        credential_id: str,
+        provider: str,
+        model: str,
+        held_to: Optional[float],
+        status_code: Any = None,
+        reason: str = "rate_limit",
+        judgement: Any = None,
+        now: Optional[float] = None,
+    ) -> None:
+        """File a refusal that ``dispatch_binding`` benched inside a turn.
+
+        The other half of the journal, and the half where almost everything
+        actually happens. ``_remember`` above only ever runs when the *host*
+        marks a credential exhausted; a rotation performed inside a turn
+        benches the key on the carousel and moves on without the host's pool
+        being told, so until 1.6.0.3 those refusals were invisible here. On
+        the owner's 1.6.0.2 build that was 74 rotations and 0 rows — and the
+        journal is what feeds ``escalate.stretch``, the only mechanism allowed
+        to widen a bench on measured evidence.
+
+        Registered on ``runtime`` at install time rather than imported, so the
+        dispatch binding never has to know this module exists. Deduplicated
+        against ``_remember`` through the same funnel, because a refusal
+        benched in-turn is often benched by the host moments later and that is
+        one refusal, not two.
+        """
+        if self._journal is None:
+            return
+        moment = float(now) if now is not None else self._clock()
+        self._record_block(
+            updated=_JustAnId(credential_id),
+            provider=provider,
+            model=model,
+            held_to=held_to,
+            # The dispatch path has no host entry, so there is no number the
+            # pool "actually stored" to fingerprint against. Passing the same
+            # deadline says what is true: KAME sized this bench and this bench
+            # is the one that governed.
+            host_reset_at=held_to,
+            status_code=status_code,
+            reason=reason,
+            now=moment,
+            judgement=judgement,
+        )
+
     def _record_block(
         self,
         *,
@@ -1147,6 +1277,8 @@ class PoolBinding:
         nothing.
         """
         if self._journal is None:
+            return
+        if self._already_written(getattr(updated, "id", ""), model, now):
             return
         window = judgement.window if judgement is not None else "unknown"
         source = judgement.source if judgement is not None else ""

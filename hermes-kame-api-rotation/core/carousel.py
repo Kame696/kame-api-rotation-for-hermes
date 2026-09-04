@@ -47,21 +47,22 @@ closes in hours under a different counter with a different name. No provider
 documents "come back in five minutes", and a ladder climbing 1s → 300s spent
 its whole range interpolating between regimes that do not meet.
 
-Erring short is the deliberate half of that, and it is the whole safety
-argument — not a backstop somewhere else. A rest that is too short costs one
-request that fails in milliseconds. A rest that is too long costs a healthy
-key for its whole duration, and there is no request whose failure announces
-it: the cost is silent, which is why every over-long bench in this plugin's
-history survived for releases and every short one was reported within a day.
+Erring short is the deliberate half of that, and it is the argument that has
+to stand on its own. A rest that is too short costs one request that fails in
+milliseconds. A rest that is too long costs a healthy key for its whole
+duration, and there is no request whose failure announces it: the cost is
+silent, which is why every over-long bench in this plugin's history survived
+for releases and every short one was reported within a day.
 
-There *is* a widening mechanism — :func:`escalate.stretch`, driven by the
+There is also a widening mechanism — :func:`escalate.stretch`, driven by the
 journal's count of deadlines that were waited out in full and refused anyway
-— but it only sees refusals that reach the **host's** credential pool. The
-in-turn rotations this module performs are not among them: in the owner's
-1.6.0.2 run, 74 refusals went through here and the journal recorded none of
-them. So nothing above may be justified by "measurement will correct it".
-Every number here has to be right on its own, which is why every one of them
-is either the provider's or a flat re-probe, and never a curve.
+— and as of 1.6.0.3 it finally sees this path. It used to see only refusals
+that reached the *host's* credential pool; the in-turn rotations sized here
+were invisible to it, 74 of them and no journal rows in the owner's 1.6.0.2
+run. ``dispatch_binding`` now files them through ``runtime.record_rotation``.
+That is a correction, not a licence: nothing above is justified by
+"measurement will fix it later", and every number here is either the
+provider's or a flat re-probe — never a curve waiting to be tuned.
 
 **A daily cap is the exception, and the only one.** Google returns a *short*
 retryDelay on a daily-quota 429 — a real payload from its own forum shows 250
@@ -1094,14 +1095,16 @@ class Carousel:
         # whole duration, silently. Being wrong in the cheap direction is the
         # correct bet.
         #
-        # And it has to be, because nothing downstream will catch it. The
-        # widening mechanism — ``escalate.stretch`` — is fed by the journal,
-        # and the journal is written from ``pool_binding._remember``, which
-        # runs only when the *host* marks a credential exhausted. The
-        # rotations this method sizes happen inside a turn and never get
-        # there: 74 of them in the owner's 1.6.0.2 run, 0 journal rows. See
-        # the module docstring. Every number below is right on its own or it
-        # is wrong.
+        # Something downstream does catch it now — ``escalate.stretch``,
+        # widening a bench the journal has recorded as measured short twice —
+        # and 1.6.0.3 is also the release that made the journal able to see
+        # this path at all. It was fed only from ``pool_binding._remember``,
+        # which runs when the *host* benches a credential; the rotations this
+        # method sizes happen inside a turn and never got there, 74 of them
+        # and 0 rows in the owner's 1.6.0.2 run.
+        #
+        # None of which changes the rule below. A correction that arrives
+        # after two refusals is not a reason to be wrong on the first one.
         if kind in ("per_minute", "rate_limit"):
             state["consecutive_rl"] += 1
             if delay > 0.0:

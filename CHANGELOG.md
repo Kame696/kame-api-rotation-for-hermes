@@ -13,7 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
-| **1.6.0.3** | It was arguing with the provider | Google spent 46 minutes telling this plugin exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds across 33 waits because it had benched its own pool that far out. Worse, six times it stopped waiting altogether and put the quota error on screen, ending the turn. **Every rest is now a number somebody measured.** The throttle ladder is gone entirely — not bounded, removed: a rate limit is a rolling window (seconds, and the provider tells you) or a daily cap (hours, a different counter), and a curve from 1s to 300s spent its whole range between two regimes that do not meet. A stated number is obeyed exactly, every repeat. An unsized refusal — 232 of those 400 arrived as the terse `Resource has been exhausted` — rests for what that provider stated about the same model earlier, and only for a flat 20s when it has never stated anything at all. The interruptions were a vocabulary bug two years old: the set of failures that must never end a turn listed `per_minute` while the classifier had long since started saying `rate_limit`, so the commonest refusal there is walked straight past the exclusion written for it. And the field that decides everything is readable again — both of Google's free-tier quotas report the *identical* metric name and differ only in `quotaId`, which Hermes' adapter parses and throws away, so a **daily** cap arriving with Google's misleading `retryDelay: 1s` used to be re-probed every twenty seconds for the rest of the day |
+| **1.6.0.3** | It was arguing with the provider | Google spent 46 minutes telling this plugin exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds across 33 waits because it had benched its own pool that far out. Worse, six times it stopped waiting altogether and put the quota error on screen, ending the turn. **Every rest is now a number somebody measured.** The throttle ladder is gone entirely — not bounded, removed: a rate limit is a rolling window (seconds, and the provider tells you) or a daily cap (hours, a different counter), and a curve from 1s to 300s spent its whole range between two regimes that do not meet. A stated number is obeyed exactly, every repeat. An unsized refusal — 232 of those 400 arrived as the terse `Resource has been exhausted` — rests for what that provider stated about the same model earlier, and only for a flat 20s when it has never stated anything at all. The interruptions were a vocabulary bug two years old: the set of failures that must never end a turn listed `per_minute` while the classifier had long since started saying `rate_limit`, so the commonest refusal there is walked straight past the exclusion written for it. The journal, which feeds the only mechanism allowed to widen a bench on measured evidence, was blind to that same in-turn path — 74 rotations, 0 rows — and now sees it, deduplicated against the host's own writes. And the field that decides everything is readable again — both of Google's free-tier quotas report the *identical* metric name and differ only in `quotaId`, which Hermes' adapter parses and throws away, so a **daily** cap arriving with Google's misleading `retryDelay: 1s` used to be re-probed every twenty seconds for the rest of the day |
 | **1.6.0.2** | Saying nothing was costing an hour | A throttle the provider named but did not size left this plugin silent, and silence is not neutral: Hermes' own fallback for an unsized 429 is **one hour per key**, so the commonest refusal there is — nineteen of them in one three-minute run — took a credential out for an hour on evidence that named no duration at all. It is now twenty seconds. Two more places where weaker evidence was overruling stronger: the advice **Hermes itself** appends to a Google error was being read as though Google had written it, turning a stated seven-second wait into an hour at account scope; and the SDK's exception class was consulted *before* the provider's own sentence, so a key Google called invalid could never be retired and a stated five-minute wait was thrown away. No behaviour was added — three signals were put back in the order of how much they are worth. Plus four things found by using it: with three Hermes processes sharing a home the panel was renaming which one it described on every heartbeat, so the Events tab flipped between 150 rows and none — it now follows the process actually routing your calls, and says whether KAME is alive at all; a dropped stream no longer takes half a two-key pool out for thirty seconds; a neighbouring profile's row says whether its KAME is doing any work; and "Wait for the first token" finally names a number to try |
 | **1.6.0.1** | Two Hermes, one file — and a refused key stopped coming back for ever | The Desktop and the gateway both write the plugin's status file and each overwrote the whole of the other's, so the panel flickered between two readings a release apart and the Settings form rebuilt itself under the cursor; the file now holds a section per process, and the panel names the others. A credential the provider refused rests twenty seconds instead of an hour and is offered last, and one the provider names dead leaves rotation altogether, because over-benching a healthy key costs an hour while under-benching a dead one costs a request that fails in milliseconds. Events finally records the rotations themselves, not only the failures. Settings is half the height, with a Refresh that re-reads the `.env` for real. And the diagnostic that reads a real run is `/kame doctor` inside the plugin instead of a script in the repo |
 | **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a whole day; the cooldown KAME works out finally reaches the pool instead of being dropped one hop short; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key before Hermes tells the model its call was too big; and the panel says, in one line per provider, what KAME can actually see |
@@ -163,20 +163,47 @@ the commonest refusal there is walked past the exclusion written for it. In
 the owner's log: six turns ended with a quota error on screen where the answer
 was to wait. **`rate_limit` is in the set.**
 
-### What is *not* fixed, and is written down instead
+### The journal was blind to the path where everything happens
 
-The journal — which feeds `escalate.stretch`, the only mechanism allowed to
-widen a bench on measured evidence — is written from
-`pool_binding._remember`, which runs only when the **host** marks a credential
-exhausted. The rotations `dispatch_binding` performs inside a turn never get
-there. In the owner's run: 74 refusals, 0 journal rows.
+`escalate.stretch` is the only mechanism allowed to widen a bench on measured
+evidence: it fires when the journal has recorded two deadlines that were
+waited out in full and refused anyway. The journal is written from
+`pool_binding._remember`, which begins
 
-That is real and it is in `ISSUES_BACKLOG.md` with the measurement. It is not
-fixed here because a second write site needs deduplication that `record_block`
-does not have, and because this release stopped *depending* on it: the three
-rows in the table above are each right on their own, with nothing deferred to
-a correction later. The code comments that claimed the backstop were corrected
-to say what is true.
+```python
+if getattr(updated, "last_status", None) != module.STATUS_EXHAUSTED:
+    return
+```
+
+— so it only ever saw refusals the **host** benched. A rotation performed
+inside a turn benches the key on the carousel and moves to the next credential
+without the host's pool being told. `tools/inspect_run.py` on the 1.6.0.2
+build said it in one line: **74 rotations, 0 journal rows.** The correction
+mechanism could not fire on the path where almost everything happens.
+
+`dispatch_binding` now files them, through a recorder registered on `runtime`
+at install time rather than an import — the two bindings install
+independently, either may be absent, and the failure path of every API call
+must not be able to fail on an import. Three things make it safe:
+
+* **Deduplicated at the funnel.** A refusal benched in-turn is often benched
+  by the host moments later on the way out of the same call; that is one
+  refusal seen twice. `record_block` appends without checking anything, so the
+  check sits in front of it, keyed by `(credential, model)` within two
+  seconds — long enough to cover the double write, far too short for a real
+  second refusal, which needs a request, a round trip and a rest.
+* **A key the pool cannot name is dropped.** A resolver substitution or a
+  fallback carried on `agent.api_key` has no host entry and no id, and a
+  statistic about a credential nobody can name later teaches nothing.
+* **It cannot end a turn.** The recorder is called from the failure path of
+  every API call and every call into it is guarded. A journal that cannot be
+  written is a statistic that will be missing, never a turn that fails.
+
+One translation was needed and is worth naming, because getting it wrong
+would have been invisible: `classify.Verdict` spells the quota window
+`quota_window` and `runtime.Judgement` spells it `window`. Handing the Verdict
+straight over would have written *"unknown"* into every row while looking
+exactly like it was recording something.
 
 ### The field the host parses and drops
 
@@ -218,7 +245,7 @@ what 1.6.0.2 produced. A per-minute payload still rests for the stated 41.3s.
 
 | gate | result |
 |---|---|
-| `pytest tests` | **1700 passed** |
+| `pytest tests` | **1714 passed** |
 | `tools/host_corpus.py` | 130/130 — *KAME changed nothing* |
 | `tools/host_prose.py` | both host footers stripped, and silent alone |
 | `tools/host_assumptions.py` | every host fact still holds |

@@ -347,3 +347,94 @@ class TestTheQuotaIdIsReachableAgain:
         # Still searchable, still not walkable. Neither reader may raise.
         assert classify._response_text(_GeminiAPIError(_Response("not json"))) == "not json"
         assert classify._response_body(_GeminiAPIError(_Response("not json"))) is None
+
+
+# --- D. the dispatch path reaches the journal -------------------------------
+#
+# Group C above tests the recorder; this tests the *call site*, which is the
+# half that was actually missing. `dispatch_binding` benches a key on the
+# carousel inside a turn and moves on without the host's pool being told, and
+# until 1.6.0.3 nothing wrote that down: 74 rotations, 0 rows, on the owner's
+# 1.6.0.2 build.
+
+
+dispatch_module = importlib.import_module(f"{PACKAGE}.dispatch_binding")
+runtime_module = importlib.import_module(f"{PACKAGE}.runtime")
+
+
+class _Boom(Exception):
+    def __init__(self, message, status_code=429):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class TestTheDispatchPathIsRecorded:
+    def _fresh_binding(self):
+        return dispatch_module.DispatchBinding(engine=Carousel())
+
+    def test_a_rotation_hands_the_journal_what_it_needs(self):
+        seen = []
+        runtime_module.set_rotation_recorder(lambda **f: seen.append(f))
+        try:
+            self._fresh_binding()._on_failure(
+                ID, "AIzaSyEXAMPLE", _Boom("429: Please retry in 41.3s"),
+                "label", 1, False, credential_id="entry-7",
+            )
+        finally:
+            runtime_module.set_rotation_recorder(None)
+        assert len(seen) == 1, seen
+        row = seen[0]
+        assert row["credential_id"] == "entry-7"
+        assert row["provider"] == "gemini"
+        assert row["model"] == ID
+        assert row["reason"] == "rate_limit"
+        # The deadline is the one the *carousel* applied, not the one the
+        # classifier proposed: a prediction measured against a bench that
+        # never happened teaches nothing.
+        assert row["held_to"] is not None
+
+    def test_the_judgement_carries_the_window_under_the_name_the_journal_reads(self):
+        # `classify.Verdict` spells it `quota_window`; `runtime.Judgement`
+        # spells it `window`. Handing the Verdict over directly would have
+        # written "unknown" into every row while looking like it recorded
+        # something.
+        seen = []
+        runtime_module.set_rotation_recorder(lambda **f: seen.append(f))
+        try:
+            self._fresh_binding()._on_failure(
+                ID, "AIzaSyEXAMPLE",
+                _Boom("429 RESOURCE_EXHAUSTED: Please retry in 41.3s"),
+                "label", 1, False, credential_id="entry-7",
+            )
+        finally:
+            runtime_module.set_rotation_recorder(None)
+        judgement = seen[0]["judgement"]
+        if judgement is not None:
+            assert hasattr(judgement, "window")
+            assert not hasattr(judgement, "quota_window")
+
+    def test_a_key_the_pool_cannot_name_is_never_recorded(self):
+        seen = []
+        runtime_module.set_rotation_recorder(lambda **f: seen.append(f))
+        try:
+            self._fresh_binding()._on_failure(
+                ID, "AIzaSyEXAMPLE", _Boom("429: Please retry in 41.3s"),
+                "label", 1, False,
+            )
+        finally:
+            runtime_module.set_rotation_recorder(None)
+        assert seen == []
+
+    def test_a_recorder_that_raises_does_not_end_the_turn(self):
+        def explode(**_fields):
+            raise RuntimeError("the journal is on fire")
+
+        runtime_module.set_rotation_recorder(explode)
+        try:
+            verdict, _kind, _status = self._fresh_binding()._on_failure(
+                ID, "AIzaSyEXAMPLE", _Boom("429: Please retry in 41.3s"),
+                "label", 1, False, credential_id="entry-7",
+            )
+        finally:
+            runtime_module.set_rotation_recorder(None)
+        assert verdict == "rotate"

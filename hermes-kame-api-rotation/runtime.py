@@ -24,14 +24,17 @@ Two rules make it safe to consult from a hot path:
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from .core import tally
 from .core.ledger import normalize_model
+
+logger = logging.getLogger(__name__)
 
 # (provider, model), both already normalised. A tuple rather than two vars so
 # a call can never be observed half-updated: a reader that sees the provider
@@ -537,3 +540,49 @@ def empty_answers() -> List[tally.Seen]:
 
 def forget_empty_answers() -> None:
     _QUIET.clear()
+
+
+# --- the journal's other half -----------------------------------------------
+#
+# 1.6.0.3. There are two places a refusal is benched and until now the journal
+# saw one of them.
+#
+# ``pool_binding._remember`` writes a block when the **host** marks a
+# credential exhausted. That is the across-turn path. The other one is
+# ``dispatch_binding``, which rotates *inside* a turn: it benches the key on
+# the carousel and moves to the next credential without the host's pool ever
+# being told. `tools/inspect_run.py` on the 1.6.0.2 build named the cost in
+# one line — **74 rotations, 0 journal rows** — and the journal is what feeds
+# ``escalate.stretch``, the only mechanism allowed to widen a bench on
+# measured evidence. It could not fire on the path where almost everything
+# happens.
+#
+# The recorder lives here rather than being imported directly because
+# ``pool_binding`` owns the journal and ``dispatch_binding`` must not import
+# it: the two bindings are installed independently, either may be absent, and
+# a hard import would make the hot path of every API call depend on a module
+# that might not be there. A callable registered at install time is the seam
+# that keeps them apart.
+_ROTATION_RECORDER: Optional[Callable[..., None]] = None
+
+
+def set_rotation_recorder(recorder: Optional[Callable[..., None]]) -> None:
+    """Register (or clear) the function that files an in-turn rotation."""
+    global _ROTATION_RECORDER
+    _ROTATION_RECORDER = recorder
+
+
+def record_rotation(**fields: Any) -> None:
+    """File one in-turn rotation, if anything is listening.
+
+    Guarded to the point of silence on purpose. This is called from the
+    failure path of every API call, and a journal that cannot be written is a
+    statistic that will be missing — never a turn that fails.
+    """
+    recorder = _ROTATION_RECORDER
+    if recorder is None:
+        return
+    try:
+        recorder(**fields)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("kame: the rotation could not be journalled", exc_info=True)

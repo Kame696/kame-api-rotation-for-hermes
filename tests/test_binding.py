@@ -2708,3 +2708,171 @@ class TestNamingEveryKeyThePoolOffers:
             assert len(counted) == 1
         finally:
             binding.uninstall()
+
+
+# --------------------------------------------------------------------------
+# 1.6.0.3 — the journal's other half
+#
+# There are two places a refusal is benched, and until this release the
+# journal saw one of them. `pool_binding._remember` writes when the *host*
+# marks a credential exhausted; `dispatch_binding` rotates inside a turn,
+# benching the key on the carousel and moving on without the host's pool being
+# told. On the owner's 1.6.0.2 build `tools/inspect_run.py` said it in a line:
+# 74 rotations, 0 journal rows — and the journal is what feeds
+# `escalate.stretch`, the only mechanism allowed to widen a bench on measured
+# evidence. It could not fire on the path where almost everything happens.
+# --------------------------------------------------------------------------
+
+
+class TestTheJournalSeesTheInTurnPath:
+    def test_installing_opens_the_channel(self, journaling):
+        # Registered rather than imported: `dispatch_binding` must not depend
+        # on `pool_binding`, because the two install independently and either
+        # may be absent.
+        binding, _pool, _state, _clock = journaling
+        assert runtime._ROTATION_RECORDER is not None
+
+    def test_uninstalling_closes_it(self):
+        module = _fresh_module()
+        state = FakeState()
+        clock = Clock()
+        binding = PoolBinding(
+            LedgerStore(state, ttl_seconds=0.0, clock=clock),
+            journal=JournalStore(state, ttl_seconds=0.0, clock=clock),
+            clock=clock,
+        )
+        assert binding.install(module) is True
+        binding.uninstall()
+        # Leaving it registered would keep an uninstalled binding alive and
+        # writing to a journal nobody reads.
+        assert runtime._ROTATION_RECORDER is None
+
+    def test_a_rotation_becomes_a_row(self, journaling):
+        binding, _pool, _state, clock = journaling
+        runtime.record_rotation(
+            credential_id="k0",
+            provider="gemini",
+            model=MAIN,
+            held_to=clock.now + 41.3,
+            status_code=429,
+            reason="rate_limit",
+            now=clock.now,
+        )
+        blocks = journal_of(binding).blocks()
+        assert len(blocks) == 1
+        assert (blocks[0].credential_id, blocks[0].model) == ("k0", MAIN)
+        assert blocks[0].status_code == 429
+        assert blocks[0].reset_at == clock.now + 41.3
+
+    def test_one_refusal_through_both_paths_is_one_row(self, journaling):
+        # A refusal benched in-turn is often benched by the host moments later
+        # on the way out of the same call. That is one refusal seen twice, and
+        # `record_block` appends without checking anything — so the check
+        # lives in front of the funnel both paths go through.
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        runtime.record_rotation(
+            credential_id="k0",
+            provider="gemini",
+            model=MAIN,
+            held_to=clock.now + 41.3,
+            status_code=429,
+            reason="rate_limit",
+            now=clock.now,
+        )
+        pool._mark_exhausted(pool.by_id("k0"), 429, {"reset_at": clock.now + 41.3})
+        assert len(journal_of(binding).blocks()) == 1
+
+    def test_a_second_refusal_later_is_a_second_row(self, journaling):
+        # The window is two seconds. A real second refusal needs a request, a
+        # round trip and a rest, so it can never fall inside it — and reading
+        # one as a duplicate would lose exactly the repeat the journal exists
+        # to count.
+        binding, _pool, _state, clock = journaling
+        for offset in (0.0, 30.0):
+            runtime.record_rotation(
+                credential_id="k0",
+                provider="gemini",
+                model=MAIN,
+                held_to=clock.now + offset + 41.3,
+                status_code=429,
+                reason="rate_limit",
+                now=clock.now + offset,
+            )
+        assert len(journal_of(binding).blocks()) == 2
+
+    def test_two_credentials_at_the_same_instant_are_two_rows(self, journaling):
+        # The dedupe is per credential and model. A pool rotating through
+        # three keys in one turn is three refusals, not one.
+        binding, _pool, _state, clock = journaling
+        for cid in ("k0", "k1", "k2"):
+            runtime.record_rotation(
+                credential_id=cid,
+                provider="gemini",
+                model=MAIN,
+                held_to=clock.now + 41.3,
+                status_code=429,
+                reason="rate_limit",
+                now=clock.now,
+            )
+        assert len(journal_of(binding).blocks()) == 3
+
+    def test_a_key_the_pool_cannot_name_is_dropped(self, journaling):
+        # A resolver substitution or a fallback carried on `agent.api_key` has
+        # no host entry and so no id. A statistic about a credential nobody
+        # can name later teaches nothing.
+        binding, _pool, _state, clock = journaling
+        runtime.record_rotation(
+            credential_id="",
+            provider="gemini",
+            model=MAIN,
+            held_to=clock.now + 41.3,
+            status_code=429,
+            reason="rate_limit",
+            now=clock.now,
+        )
+        assert journal_of(binding).blocks() == []
+
+    def test_recording_never_raises_into_the_call(self, journaling):
+        # This runs on the failure path of every API call. A journal that
+        # cannot be written is a statistic that will be missing, never a turn
+        # that fails.
+        binding, _pool, _state, _clock = journaling
+
+        def explode(**_fields):
+            raise RuntimeError("the journal is on fire")
+
+        runtime.set_rotation_recorder(explode)
+        try:
+            runtime.record_rotation(credential_id="k0", provider="gemini", model=MAIN,
+                                    held_to=None, status_code=429, reason="rate_limit")
+        finally:
+            runtime.set_rotation_recorder(binding.note_rotation)
+
+    def test_with_no_binding_installed_recording_is_a_no_op(self):
+        runtime.set_rotation_recorder(None)
+        runtime.record_rotation(credential_id="k0", provider="gemini", model=MAIN,
+                                held_to=None, status_code=429, reason="rate_limit")
+
+    def test_the_rows_are_what_the_streak_reads(self, journaling):
+        # The point of all of the above. `escalate.stretch` widens a bench
+        # only after the journal has recorded deadlines that were waited out
+        # in full and refused anyway — so a path the journal cannot see is a
+        # path the widening can never reach.
+        binding, _pool, _state, clock = journaling
+        at = clock.now
+        for _ in range(2):
+            runtime.record_rotation(
+                credential_id="k0",
+                provider="gemini",
+                model=MAIN,
+                held_to=at + 30.0,
+                status_code=429,
+                reason="rate_limit",
+                now=at,
+            )
+            at += 30.0
+        streak = binding._short_streak(
+            credential_id="k0", model=MAIN, window="unknown", now=at
+        )
+        assert streak >= 1
