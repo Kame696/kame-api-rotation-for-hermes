@@ -13,6 +13,7 @@ and folds the reasoning, the logs it came from and the test results underneath.
 
 | Version | Headline | What changed for you |
 |---|---|---|
+| **1.6.0.4** | A thinking token is not an answer | Two turns out of a twelve-minute run ended with a provider error while thirteen healthy keys sat idle in the pool. Both were 503s on a thinking model, and Hermes' own log for both says *"Streaming failed **before** delivery"* — nothing had reached the screen. KAME thought otherwise, and that belief is what stopped the rotation: a drop *after* visible text cannot be retried plainly, because the text would print twice, so KAME correctly stops rotating and hands the turn to the host. The flag meaning "the user has seen part of the answer" was being set by three things that show no answer at all — the one-shot the host fires on the first **reasoning** delta and on the first **tool name** as well as on text, the spinner channel that carries a face and a verb (and through which **KAME announces its own rotations**), and the end-of-stream `None` sentinel. On any thinking model that flag was therefore true on every turn before a single character of the reply existed. It is now split in two: *the user saw the answer* is set only by a delivery callback carrying real text, and *the stream is alive* is still set by everything, so the silence timeout is unchanged. The one case that kept the flag coarse is pinned by its own test — Hermes delivers real text straight through `stream_delta_callback` while tool calls accumulate, bypassing the funnel KAME wraps, and that text still forbids a replay. Same root cause, smaller blast radius, also fixed in the Agent Zero port: a model that reasons and then returns nothing is exactly the empty-answer case, and reasoning was switching the empty-answer retry off |
 | **1.6.0.3** | It was arguing with the provider | Google spent 46 minutes telling this plugin exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds across 33 waits because it had benched its own pool that far out. Worse, six times it stopped waiting altogether and put the quota error on screen, ending the turn. **Every rest is now a number somebody measured.** The throttle ladder is gone entirely — not bounded, removed: a rate limit is a rolling window (seconds, and the provider tells you) or a daily cap (hours, a different counter), and a curve from 1s to 300s spent its whole range between two regimes that do not meet. A stated number is obeyed exactly, every repeat. An unsized refusal — 232 of those 400 arrived as the terse `Resource has been exhausted` — rests for what that provider stated about the same model earlier, and only for a flat 20s when it has never stated anything at all. The interruptions were a vocabulary bug two years old: the set of failures that must never end a turn listed `per_minute` while the classifier had long since started saying `rate_limit`, so the commonest refusal there is walked straight past the exclusion written for it. The journal, which feeds the only mechanism allowed to widen a bench on measured evidence, was blind to that same in-turn path — 74 rotations, 0 rows — and now sees it, deduplicated against the host's own writes. And the field that decides everything is readable again — both of Google's free-tier quotas report the *identical* metric name and differ only in `quotaId`, which Hermes' adapter parses and throws away, so a **daily** cap arriving with Google's misleading `retryDelay: 1s` used to be re-probed every twenty seconds for the rest of the day |
 | **1.6.0.2** | Saying nothing was costing an hour | A throttle the provider named but did not size left this plugin silent, and silence is not neutral: Hermes' own fallback for an unsized 429 is **one hour per key**, so the commonest refusal there is — nineteen of them in one three-minute run — took a credential out for an hour on evidence that named no duration at all. It is now twenty seconds. Two more places where weaker evidence was overruling stronger: the advice **Hermes itself** appends to a Google error was being read as though Google had written it, turning a stated seven-second wait into an hour at account scope; and the SDK's exception class was consulted *before* the provider's own sentence, so a key Google called invalid could never be retired and a stated five-minute wait was thrown away. No behaviour was added — three signals were put back in the order of how much they are worth. Plus four things found by using it: with three Hermes processes sharing a home the panel was renaming which one it described on every heartbeat, so the Events tab flipped between 150 rows and none — it now follows the process actually routing your calls, and says whether KAME is alive at all; a dropped stream no longer takes half a two-key pool out for thirty seconds; a neighbouring profile's row says whether its KAME is doing any work; and "Wait for the first token" finally names a number to try |
 | **1.6.0.1** | Two Hermes, one file — and a refused key stopped coming back for ever | The Desktop and the gateway both write the plugin's status file and each overwrote the whole of the other's, so the panel flickered between two readings a release apart and the Settings form rebuilt itself under the cursor; the file now holds a section per process, and the panel names the others. A credential the provider refused rests twenty seconds instead of an hour and is offered last, and one the provider names dead leaves rotation altogether, because over-benching a healthy key costs an hour while under-benching a dead one costs a request that fails in milliseconds. Events finally records the rotations themselves, not only the failures. Settings is half the height, with a Refresh that re-reads the `.env` for real. And the diagnostic that reads a real run is `/kame doctor` inside the plugin instead of a script in the repo |
@@ -45,6 +46,93 @@ and folds the reasoning, the logs it came from and the test results underneath.
 generation of behaviour on both hosts; the patch number moves independently.
 The 1.1.x series exists only here, because it fixed stream handling that Agent
 Zero owns itself — the two lines rejoin at 1.2.0.
+
+## [1.6.0.4] — 2026-09-04
+
+**In short.** KAME believed the user had read part of the answer whenever the
+model *thought*, and a plugin that believes that stops rotating.
+
+### What ended the two turns
+
+Measured on the owner's machine, build `1076cd6664c1`, 04/09/2026 between
+01:59 and 02:11. Twenty-four rotations, thirteen keys, every rest the number
+Google itself stated (14s to 55s), zero seconds of dead waiting — 1.6.0.3
+doing exactly what it shipped to do. And two turns, at 02:03:02 and 02:03:37,
+that ended anyway:
+
+```
+02:03:02 ERROR agent.chat_completion_helpers: Streaming failed before delivery:
+               Gemini HTTP 503 (UNAVAILABLE)
+02:03:02 INFO  kame: gemini:gemini-3.8-flash dropped mid-answer and cannot be
+               continued — handing it to Hermes rather than printing the reply twice
+```
+
+The host says *before delivery*. It has a different sentence for the other
+case — *"Streaming failed after partial delivery, not retrying"* — and it
+did not use it. Nothing was on screen. KAME handed the turn back anyway, and
+Hermes recovered it with its own backoff (2.6s, then 5.5s), which is why the
+owner saw no error and still waited.
+
+### Why it believed otherwise
+
+Refusing to retry after visible text is correct: the text would print twice.
+The bug was in what counted as visible text. `_Progress.any` was set by:
+
+| Channel | What it actually carries | Where |
+|---|---|---|
+| `on_first_delta` | the first **reasoning** delta | `chat_completion_helpers.py:3937` |
+| `on_first_delta` | the first **tool name** | `chat_completion_helpers.py:4039` |
+| `thinking_callback` | a spinner face and a verb, or `""` | `conversation_loop.py:2483` |
+| `thinking_callback` | **KAME's own rotation notice** | `run_agent.py:1088` |
+| `_fire_stream_delta(None)` | the end-of-stream sentinel | `conversation_loop.py:6911` |
+
+Gemini 3.8-flash is a thinking model. Every turn opens with reasoning, so the
+flag was true on every turn before the answer existed — and KAME could set it
+merely by announcing that it was rotating.
+
+### The fix
+
+One flag became two, because they answer different questions:
+
+* **`any` — the user has seen part of the answer.** Set only by a delivery
+  callback carrying a non-empty string. This is what forbids a plain retry.
+* **`last_activity` — the stream is alive.** Set by everything, reasoning
+  included. The silence timeout is unchanged, and a model that thinks for
+  ninety seconds before its first word is still not called wedged.
+
+`stream_delta_callback` and `_stream_callback` keep the delivery shim.
+`thinking_callback` and `on_first_delta` move to a liveness shim that never
+claims delivery. The funnel stops marking delivery for `None` and `""`.
+
+### What was deliberately not changed
+
+Hermes has one path that puts real text on screen through
+`stream_delta_callback` directly, bypassing the funnel KAME wraps, while tool
+calls accumulate (`chat_completion_helpers.py:3852`). KAME cannot capture that
+text, so it cannot continue the answer — and it must not retry either.
+`TestTextKameCannotCaptureStillForbidsAReplay` pins it, and two older tests
+that used `on_first_delta` to stand in for "the user saw text" were rewritten
+to deliver text through that channel instead. They were passing for the wrong
+reason: what they actually pinned was that a thinking model could never rotate.
+
+### Agent Zero
+
+The same confusion, without the turn-ending consequence — A0's carousel
+rotates every non-terminal failure regardless of the flag. There it gates the
+empty-answer retry, and `reasoning_callback` was setting it: a model that
+thinks and then returns nothing *is* the empty-answer case, so the retry was
+switched off on exactly the models that need it. Reasoning now records
+liveness, and the "mid-stream drop after partial output" warning stops being
+printed for turns where no output was partial.
+
+### Gates
+
+- 1751 tests green (26 new in `tests/test_v1_6_0_4.py`).
+- Mutation: 5 rules reverted one at a time, 5 red.
+- `host_corpus` 130/130, `host_prose`, `host_assumptions`, `ui_reconcile`,
+  `decisions.py` — unchanged.
+
+---
 
 ## [1.6.0.3] — 2026-09-04
 

@@ -444,12 +444,31 @@ def _attribute(agent: Any, entry: Any) -> None:
 
 
 class _Progress:
-    """Flipped the instant anything reaches the user, and tracks activity timestamp.
+    """Tracks two different facts about one attempt, and never confuses them.
 
     The wrapper cannot count tokens — it does not own the stream any more than
     Agent Zero's v1.0.9 carousel does. It watches the callbacks instead, and
     every shim returns whatever the real callback returned, because Hermes uses
     those return values to control early stopping.
+
+    * ``any`` — **the user has seen part of the answer.** This is the flag that
+      forbids a plain retry, because a retry would print the same text twice.
+      Only a delivery callback carrying a non-empty string can set it.
+    * ``last_activity`` — **the stream is alive.** A reasoning token, a spinner
+      frame, a tool name and a ``None`` sentinel all say yes, and not one of
+      them is the answer.
+
+    Until 1.6.0.3 both were the same ``touch()``, and the cost was measured on
+    04/09/2026. Hermes fires ``on_first_delta`` on the first *reasoning* delta
+    (``chat_completion_helpers.py:3937``) and on the first *tool name*
+    (``:4039``), and routes its own spinner through ``thinking_callback``
+    (``conversation_loop.py:2483``). On a thinking model — Gemini 3.8-flash —
+    every turn opens with reasoning, so ``any`` was true before a single
+    character of the answer existed. A 503 arriving there was read as a cut
+    mid-answer, could not be stitched (there was nothing to continue from), and
+    was handed back to Hermes as a failed turn. The host's own log for both of
+    those turns says *"Streaming failed before delivery"*: it had delivered
+    nothing at all.
     """
 
     __slots__ = ("any", "last_activity", "completed")
@@ -460,17 +479,53 @@ class _Progress:
         self.completed = False
 
     def touch(self) -> None:
+        """Part of the answer reached the user. A retry would now duplicate it."""
         self.any = True
         self.last_activity = time.monotonic()
 
+    def stir(self) -> None:
+        """The stream is alive, and none of the answer has been shown yet."""
+        self.last_activity = time.monotonic()
+
+
+def _carries_text(args: Tuple[Any, ...]) -> bool:
+    """Did this callback carry text for the screen, or was it a signal?
+
+    ``stream_delta_callback(None)`` is Hermes' end-of-stream sentinel
+    (``conversation_loop.py:6911``) and an empty string is a spinner being
+    cleared. Neither puts anything in front of the user.
+    """
+    return bool(args) and isinstance(args[0], str) and bool(args[0])
+
 
 def _shim(progress: _Progress, callback: Any) -> Any:
+    """Wrap a callback that delivers answer text to the screen."""
     if not callable(callback):
         return callback
 
     @functools.wraps(callback)
     def _watched(*args, **kwargs):
-        progress.touch()
+        if _carries_text(args):
+            progress.touch()
+        else:
+            progress.stir()
+        return callback(*args, **kwargs)
+
+    return _watched
+
+
+def _stir_shim(progress: _Progress, callback: Any) -> Any:
+    """Wrap a callback that proves the stream is alive but shows no answer.
+
+    The spinner and ``on_first_delta`` both live here. They keep the silence
+    timeout honest and they never claim the user read anything.
+    """
+    if not callable(callback):
+        return callback
+
+    @functools.wraps(callback)
+    def _watched(*args, **kwargs):
+        progress.stir()
         return callback(*args, **kwargs)
 
     return _watched
@@ -720,7 +775,13 @@ def recovery_clock(eta: Optional[float]) -> str:
 def _install_shims(agent: Any, progress: _Progress, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Wrap every delivery callback for one attempt; returns what to restore."""
     restore: Dict[str, Any] = {}
-    for name in ("stream_delta_callback", "_stream_callback", "thinking_callback"):
+    # Delivery: these two carry the answer itself. ``_fire_stream_delta`` calls
+    # both with the same string, and the funnel above already watches it — but
+    # Hermes has one path that bypasses the funnel and calls
+    # ``stream_delta_callback`` directly, with real text, while tool calls are
+    # accumulating (``chat_completion_helpers.py:3852``). That text is on the
+    # screen and KAME cannot capture it, so it must still forbid a plain retry.
+    for name in ("stream_delta_callback", "_stream_callback"):
         original = getattr(agent, name, None)
         if callable(original):
             restore[name] = original
@@ -728,8 +789,20 @@ def _install_shims(agent: Any, progress: _Progress, kwargs: Dict[str, Any]) -> D
                 setattr(agent, name, _shim(progress, original))
             except Exception:
                 restore.pop(name, None)
+    # Liveness only: the spinner shows a face and a verb, never the answer.
+    for name in ("thinking_callback",):
+        original = getattr(agent, name, None)
+        if callable(original):
+            restore[name] = original
+            try:
+                setattr(agent, name, _stir_shim(progress, original))
+            except Exception:
+                restore.pop(name, None)
+    # Liveness only: fires on the first delta of *anything* — a reasoning
+    # token, a tool name, or text. Only the third is the answer, and the third
+    # is already counted by the delivery shims above.
     if callable(kwargs.get("on_first_delta")):
-        kwargs["on_first_delta"] = _shim(progress, kwargs["on_first_delta"])
+        kwargs["on_first_delta"] = _stir_shim(progress, kwargs["on_first_delta"])
     return restore
 
 
@@ -1044,9 +1117,14 @@ class _Delivery:
         self.text = ""
 
     def __call__(self, text: Any) -> Any:
-        self.progress.touch()
         if not isinstance(text, str) or not text:
+            # The end-of-stream sentinel and the empty flush. Proof the stream
+            # is alive, proof of nothing else — marking the answer as seen here
+            # turned every turn that ended cleanly into one that could not be
+            # retried.
+            self.progress.stir()
             return self._fire(text)
+        self.progress.touch()
         if self.stitcher is not None:
             text = self.stitcher.feed(text)
             if not text:

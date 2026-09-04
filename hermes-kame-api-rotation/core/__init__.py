@@ -59,7 +59,7 @@ from .quota import (
 # string nobody reads is worth: this package is meant to be lifted into
 # another host, and the number that travels with it has to say which rules
 # came along.
-__version__ = "1.6.0.3"
+__version__ = "1.6.0.4"
 
 __all__ = [
     "__version__",

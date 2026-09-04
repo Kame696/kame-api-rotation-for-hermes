@@ -500,19 +500,26 @@ class TestWhatIsNeverStitched:
         # recorded, so nothing can be continued — and rotating would print the
         # part the user already read a second time. It goes back to Hermes.
         agent = Agent()
+        agent.stream_delta_callback = lambda text: None
         del type(agent)._fire_stream_delta
         attempts = []
 
-        def host(agent_, api_kwargs, on_first_delta=None, **kwargs):
+        # 1.6.0.4: the text is delivered, rather than merely announced. The
+        # earlier version of this test fired ``on_first_delta`` and nothing
+        # else — and the host fires that one-shot on the first reasoning delta
+        # and on the first tool name too, so what it pinned was that a thinking
+        # model could never rotate. What the docstring above describes is a
+        # host showing text through a path KAME cannot capture, and that path
+        # is ``stream_delta_callback`` with the funnel absent.
+        def host(agent_, api_kwargs, **kwargs):
             attempts.append(1)
-            if on_first_delta:
-                on_first_delta()
+            agent_.stream_delta_callback("half an answer")
             raise RuntimeError("connection reset mid-stream")
 
         binding = _binding()
         try:
             with pytest.raises(RuntimeError):
-                binding.run(host, agent, conversation(), (), {"on_first_delta": lambda: None})
+                binding.run(host, agent, conversation(), (), {})
         finally:
             type(agent)._fire_stream_delta = lambda self, text: self.shown.append(text)
         assert attempts == [1]

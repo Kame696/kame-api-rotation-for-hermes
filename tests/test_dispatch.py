@@ -305,17 +305,25 @@ class TestAFailureThatMustBeRaised:
     def test_a_drop_after_the_user_saw_text_is_not_replayed(self):
         # Retrying here would print the answer twice. Hermes has machinery for
         # continuing a cut-off response; this one is its business.
+        #
+        # 1.6.0.4 changed how this test says "the user saw text". It used to
+        # fire ``on_first_delta``, which the host fires on the first *reasoning*
+        # delta and on the first tool name as well as on text — so what it
+        # actually proved was that a thinking model could not rotate. The rule
+        # it means to state is about text on screen, so it now delivers text
+        # through the one channel KAME cannot capture.
         attempts = []
+        agent = Agent()
+        agent.stream_delta_callback = lambda text: None
 
-        def host(agent, api_kwargs, on_first_delta=None, **kwargs):
+        def host(agent_, api_kwargs, **kwargs):
             attempts.append(1)
-            if on_first_delta:
-                on_first_delta()
+            agent_.stream_delta_callback("half an answer")
             raise Boom("connection reset mid-stream")
 
         binding = _binding()
         with pytest.raises(Boom):
-            binding.run(host, Agent(), {}, (), {"on_first_delta": lambda: None})
+            binding.run(host, agent, {}, (), {})
         assert attempts == [1]
 
     def test_a_drop_before_anything_streamed_does_rotate(self):
