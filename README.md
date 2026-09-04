@@ -4,7 +4,7 @@
 
 ### KAME API Rotation for Hermes — one API key per call, chosen for you
 
-[![Version](https://img.shields.io/badge/version-1.6.0.1-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
+[![Version](https://img.shields.io/badge/version-1.6.0.4-blue.svg)](https://github.com/Kame696/kame-api-rotation-for-hermes/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Hermes](https://img.shields.io/badge/Hermes-v0.20.x-purple.svg)](https://github.com/NousResearch/hermes)
 [![Python](https://img.shields.io/badge/python-3.9%2B-yellow.svg)](https://www.python.org/)
@@ -221,7 +221,7 @@ A red dot appears beside a pool holding a key the provider refused as invalid. A
 **The panel** at `/kame`, from the sidebar row *KAME API Rotation*:
 
 ```
-KAME API Rotation  v1.6.0.1          ● 14 of 15 keys ready   live
+KAME API Rotation  v1.6.0.4          ● 14 of 15 keys ready   live
 [ Overview ]  [ Settings ]  [ Events (12) ]
 
 RIGHT NOW      Calling gemini-3.7-flash, with 14 of 15 keys ready.
@@ -511,6 +511,9 @@ Every release, newest first. The full entries — what broke, what the log said,
 
 | Version | Headline | What it gave you |
 |---|---|---|
+| **1.6.0.4** | A thinking token is not an answer | Two turns of a twelve-minute run ended with a provider error while thirteen healthy keys sat idle, and Hermes' own log for both said *"Streaming failed **before** delivery"* — nothing had reached the screen. The flag meaning "the user has already read part of this", which correctly forbids a retry that would print the reply twice, was being set by the first **reasoning** token, by the first **tool name**, by the spinner (through which **KAME announces its own rotations**) and by the end-of-stream marker. On a thinking model it was true on every turn before the answer existed. It is now set only by text that actually reached you; liveness is tracked separately, so the silence timeout is unchanged |
+| **1.6.0.3** | Every rest is a number somebody measured | Google spent 46 minutes saying exactly how long to wait — 340 times, never once above **59.8 seconds** — and KAME held keys for **five minutes** on ten of them, then sat still for 468 seconds because it had benched its own pool that far out. The throttle ladder is gone entirely: a rate limit is a rolling window (seconds, and the provider tells you) or a daily cap (hours, a different counter), and a curve from 1s to 300s spent its whole range between two regimes that do not meet. Six turns had also ended outright, on a two-year-old vocabulary bug — the set of failures that must never end a turn listed `per_minute` while the classifier had long since started saying `rate_limit`. And `quotaId`, the only field separating Google's per-minute quota from its per-day one, is read back off the response the host parses it out of |
+| **1.6.0.2** | Saying nothing was costing an hour | A throttle the provider named but did not size left this plugin silent — and silence is not neutral, because Hermes' own fallback for an unsized 429 is **one hour per key**. Nineteen of those in one three-minute run. It is now twenty seconds. Two more places where weaker evidence was overruling stronger: the advice **Hermes itself** appends to a Google error was read as though Google had written it, and the SDK's exception class was consulted *before* the provider's own sentence. Plus a panel that stopped renaming which process it described on every heartbeat |
 | **1.6.0.1** | Two Hermes, one file — and a refusal stopped costing an hour | The Desktop and the gateway both wrote the whole of the plugin's status file and erased each other, so the panel flickered between two readings a release apart; it now holds a section per process and names the neighbours. A key the provider *names dead* leaves rotation on the first refusal and a bare 401 after three in a row — never deleted, back the instant it works again; while "this key may not use *this model*" never retires the key at all, because the pairing is refused and not the credential. Events records the rotations themselves, not only the failures. Settings is half the height with a Refresh that re-reads the `.env` for real. And `/kame doctor` puts the run diagnostic inside the plugin |
 | **1.6.0.0** | The plugin stopped being right in private | Gemini's refusals are read from where Hermes actually files them, so a 21-second throttle is no longer benched as a spent account for a day; the cooldown KAME works out finally reaches the pool; the row holding several keys can no longer be sent as a key; a cut answer keeps going while any key is still adding words; a dropped tool call is asked of another key; and the panel says, per provider, what KAME can actually see |
 | **1.5.0** | The rest of the evidence, and the gate that was never run | The exception's own class is read at last, so a failure carrying no status and no body is sized instead of guessed, and a transport error rests three seconds rather than twenty; two payloads 1.4.0 wrongly claimed are handed back to the host; the Settings panel can no longer freeze with every control disabled |
@@ -601,7 +604,7 @@ If KAME made your agent less frustrating, drop a star ⭐ — it costs you nothi
 
 <div align="center">
 
-🐢⚡ **KAME v1.6.0.1** — *because round-robin was never enough*
+🐢⚡ **KAME v1.6.0.4** — *because round-robin was never enough*
 
 **Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
 
