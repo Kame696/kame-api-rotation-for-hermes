@@ -1,0 +1,162 @@
+name: hermes-kame-api-rotation
+version: "1.8.1.0"
+# Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
+# 1.1.2 because the two halves of Hermes disagree about the number and only
+# one of them is in the way of an install:
+#
+#   hermes_cli/plugins.py     SUPPORTED_MANIFEST_VERSION = 2  (the loader)
+#   hermes_cli/plugins_cmd.py _SUPPORTED_MANIFEST_VERSION = 1 (the installer)
+#
+# The installer's copy is what `hermes plugins install <git url>` and the
+# Desktop plugin dashboard both run, and it *raises* rather than warns:
+# "requires manifest_version 2, but this installer only supports up to 1".
+# Every plugin Hermes ships omits the field entirely, which means v1.
+#
+# Nothing is lost by saying 1: _parse_manifest_v2_fields reads license,
+# homepage, tags, api_version and config_schema whatever this number says.
+# It is only worth raising once the installer's own constant catches up.
+manifest_version: 1
+# The plugin *API generation*, not the Hermes version — two different numbers
+# that 1.0.9 conflated. `"0.20"` made Hermes log
+# `api_version '0.20' is not an integer; ignoring` on every boot, and
+# `hermes plugins doctor` warns below 1. Every plugin Hermes ships declares 1.
+api_version: 1
+license: MIT
+homepage: https://github.com/Kame696/kame-api-rotation-for-hermes
+tags:
+  - api-key-rotation
+  - api
+  - rotation
+  - rate-limiting
+  - "429"
+  - gemini
+  - failover
+  - reliability
+  - keys
+  - quota
+  - multi-key
+# One paragraph, because this is the text a person reads in a plugin list.
+# The full account of what each release claims and how it was checked lives in
+# README.md and CHANGELOG.md, which is where a reader can choose to go looking.
+description: "Smart API key rotation for Hermes. Put several keys in one provider field, comma separated, and KAME picks the healthiest key for every call - not only after one fails. When a key is refused it reads the provider's own evidence (retry delay, quota window, rate-limit headers, error body) and rests that key exactly as long as the evidence justifies, then moves on without the error reaching your chat. A per-minute throttle, a daily quota, an outage and a dead key each get their own wait; no key is held longer than one hour by default; Gemini's bare 429 RESOURCE_EXHAUSTED is retried on a short 1, 2, 4, 8s ladder. When every key is resting it waits for the first one back and tells you how long. Works with any provider: it acts on evidence, never on a provider list. Adds /kame, /kame-keys and /kame-quota."
+author: "Kame696"
+# Every switch is also an environment variable, and the environment wins. The
+# config entry exists because that is where Hermes keeps plugin switches and a
+# knob nobody can find is a knob nobody has; the environment stays on top
+# because KAME_ROTATION_DISABLED is the escape hatch, and an escape hatch a
+# file can override is not one. Read once at registration — they are consulted
+# on the classification and selection paths, and ctx.get_config re-reads
+# config.yaml on every access.
+config_schema:
+  disabled:
+    type: bool
+    default: false
+    description: "Turn KAME into a no-op without uninstalling it. Same as KAME_ROTATION_DISABLED=1."
+  spread_disabled:
+    type: bool
+    default: false
+    description: "Keep cooldown sizing but give Hermes its own key-selection order back. Same as KAME_SPREAD_DISABLED=1."
+  field_probe_disabled:
+    type: bool
+    default: false
+    description: "Give the Settings key field back the host's one-key check, which refuses a paste holding several keys. Same as KAME_FIELD_PROBE_DISABLED=1."
+  resolver_disabled:
+    type: bool
+    default: false
+    description: "Send a multi-key variable to the provider the way Hermes resolves it — the whole comma-joined list as one key. Same as KAME_RESOLVER_DISABLED=1."
+  carousel_disabled:
+    type: bool
+    default: false
+    description: "Stop choosing a key per call. Hermes' own key, retry ceiling and rotation rules come back; cooldown sizing stays. Same as KAME_CAROUSEL_DISABLED=1."
+  storm_collapse_disabled:
+    type: bool
+    default: false
+    description: "Write every rotation failure during an outage instead of collapsing the repeats into a periodic count. Same as KAME_STORM_COLLAPSE_DISABLED=1."
+  daily_quota_cooldown_seconds:
+    type: int
+    default: 3600
+    description: "How long a key rests once a daily quota is confirmed - that is, once the whole pool has gone 20 minutes without a single answer. Before that a daily label only buys a five-minute re-probe, because keys refused 'for the day' were measured answering again 6 to 36 minutes later. Out-of-credit refusals rest this long at once. Gemini's short retry hint on a daily refusal is ignored on purpose (it is not when the quota returns); a deadline the provider genuinely names is obeyed, up to max_hold_seconds. Clamped to 1-86400. Same as KAME_DAILY_COOLDOWN."
+  max_hold_seconds:
+    type: int
+    default: 3600
+    description: "No key sits out longer than this, whatever caused the hold - the provider's stated wait, the daily cooldown above or KAME's own escalation. Past it the key is probed again; if it is still refused it is held again, so a long outage costs one refused request per interval instead of a healthy key sitting idle for however long a provider claimed. Clamped to 60-86400. Same as KAME_MAX_HOLD."
+  unsized_throttle_rest_seconds:
+    type: int
+    default: 30
+    description: "How long a key rests after a rate-limit refusal that names no wait at all. Measured on real traffic: a refused key retried within 30 seconds answered 0 of 73 times, and the fastest recovery seen was 34 seconds. Set to 0 to offer the key again at once. Not used for Gemini's bare RESOURCE_EXHAUSTED while unsized_throttle_backoff is on. Clamped to 0-300. Same as KAME_UNSIZED_REST."
+  unsized_throttle_backoff:
+    type: bool
+    default: true
+    description: "Applies to one error only: HTTP 429 with status RESOURCE_EXHAUSTED and no retry delay and no quotaId - Gemini's bare refusal. That key rests 1s, then 2, 4, 8, 16, 32 and up to unsized_backoff_max_seconds on each repeat, instead of the flat unsized_throttle_rest_seconds. It resets the moment the key answers, and a number the provider states is always obeyed, never multiplied. In real use it made fewer calls per minute than the flat rest (24 against 29) without answering less. Off restores the flat rest exactly. Same as KAME_UNSIZED_BACKOFF."
+  unsized_backoff_max_seconds:
+    type: int
+    default: 64
+    description: "Where the RESOURCE_EXHAUSTED ladder stops growing. The default, 64, runs 1, 2, 4, 8, 16, 32, 64 seconds and then holds at 64. max_hold_seconds still bounds it. Clamped to 1-3600. Same as KAME_UNSIZED_BACKOFF_MAX."
+  live_status_disabled:
+    type: bool
+    default: false
+    description: "Stop showing pool health and the recovery countdown on the spinner line. Rotation is unchanged; only the status text goes away. Same as KAME_LIVE_STATUS_DISABLED."
+  gemini_tool_call_fix_disabled:
+    type: bool
+    default: false
+    description: "Stop repairing Gemini streams that merge two parallel calls to one tool into a single unparseable argument string, which Hermes reports as 'Response truncated due to output length limit'. The repair is applied only after a runtime self-check reproduces the merge on the installed adapter and proves the repair separates it; this switch turns it off outright. Same as KAME_GEMINI_TOOL_CALL_FIX_DISABLED."
+  stream_silence_timeout_seconds:
+    type: int
+    default: 0
+    description: "How long one attempt may deliver nothing before the socket read gives up and KAME takes the next key. Zero, the default, means never - Hermes' own 120s stands. Any other value is raised to at least 5. Left alone for a local endpoint, and never applied if you set HERMES_STREAM_READ_TIMEOUT yourself. Same as KAME_STREAM_SILENCE_TIMEOUT."
+  # Named silent_stream_patience_seconds until 1.1.1, when it was renamed to say
+  # what it is - a timeout, in seconds, on a silent stream. The old name is
+  # still read, so an existing config keeps working; new configs should use the
+  # entry above.
+  silent_stream_patience_seconds:
+    type: int
+    default: 0
+    description: "Deprecated name for stream_silence_timeout_seconds. Still read, so nothing breaks; prefer the new name."
+  # The pre-1.1.1 name, one generation older than silent_stream_patience_seconds
+  # above. decisions/0001-invariants.md I11 promises all three spellings still
+  # answer; this one was missing from the manifest until 1.8.0.0 closed the
+  # gap tests/test_v1_8_0_0_invariants.py's TestI11 gate found.
+  first_token_patience_seconds:
+    type: int
+    default: 0
+    description: "Deprecated name for stream_silence_timeout_seconds (one release older than silent_stream_patience_seconds). Still read, so nothing breaks; prefer the new name."
+  stream_stitch_disabled:
+    type: bool
+    default: false
+    description: "Stop continuing an answer that was cut mid-stream. KAME normally resumes it on another key, prefilled with what you already saw, and trims whatever the model repeats, so the reply arrives as one piece. Turning this on hands the half-answer back to Hermes instead, which appends its own '[System: The previous response was cut off...]' note. Same as KAME_STREAM_STITCH_DISABLED."
+  stream_resume_limit:
+    type: int
+    default: 10
+    description: "A ceiling on continuing a cut answer, not the rule. KAME keeps going while keys are still adding words and stops on its own once the pool starts repeating itself with nothing new, so this only bites if you lower it. Zero turns continuation off, same as stream_stitch_disabled. Clamped to 0-10. Same as KAME_STREAM_RESUME_LIMIT."
+  refusal_recorder_disabled:
+    type: bool
+    default: false
+    description: "Stop writing provider refusals to refusals.jsonl. KAME records each refusal - status, message, body and a short allowlist of response headers, with keys redacted - beside its own state file. It decides nothing from it; it is what lets a new error shape be diagnosed from evidence instead of guessed. Writes only, never raises, stops at 8 MB. Same as KAME_RECORDER_DISABLED."
+  call_timings_disabled:
+    type: bool
+    default: false
+    description: "Stop timing calls. KAME writes one line per attempt to calls.jsonl beside its own state — how long until anything came back, how long until the answer started, how long the attempt took, and how much of the turn had already gone on waiting for a key. It is there so “is it slow, and whose fault is it” can be answered with a number: a two-minute turn is either a quota problem or a slow model, and from outside those look the same. No key, no prompt and no answer text is written; only durations, a model name and the key fingerprint the panel already shows. Writes only, never interrupts a call, stops at 4 MB. Same as KAME_CALL_TIMINGS_DISABLED."
+  quota_id_disabled:
+    type: bool
+    default: false
+    description: "Stop reading the quota window. Google's per-minute and per-day quotas report the same metric name and differ only in one field, quotaId, which Hermes' Gemini adapter parses and throws away before plugins see the error. KAME keeps the parsed error body on the exception so that field survives; nothing else about the error changes and no other provider is touched. Turn this on to leave the adapter exactly as Hermes wrote it. Same as KAME_QUOTA_ID_DISABLED."
+  never_fall_back_to_another_model:
+    type: bool
+    default: true
+    description: "Stay on the model you asked for. Hermes answers a spent credential by rotating keys and, failing that, by switching to a different model and then a different provider; KAME tells it not to, so the pool waits the quota out and comes back on the same model however long that takes. On by default: a pool exists so the wait ends on the model you asked for, and a silent switch mid-conversation is a different answer from a different model that you find out about afterwards. Turn it off to get Hermes' own behaviour back. Summarisation and titling run on a lane that fires no classification hook, so those may still fall back. Same as KAME_NO_MODEL_FALLBACK."
+  share_pool_health:
+    type: bool
+    default: true
+    description: "For several Hermes profiles on one machine using the same API keys. On, every profile reads and writes one shared health file, so a key benched in one profile is benched in all of them and a hold survives a restart. Off, each profile learns every refusal on its own. Only a hash of a key is ever written, never the key. Does nothing with a single profile. Same as KAME_SHARE_POOL_HEALTH."
+hooks:
+  - transform_api_error_classification
+  - on_session_reset
+  - pre_api_request
+  - post_api_request
+# Declared separately from `hooks` because `hermes plugins doctor` validates
+# registrations against this list, not against `hooks`.
+provides_hooks:
+  - transform_api_error_classification
+  - on_session_reset
+  - pre_api_request
+  - post_api_request
