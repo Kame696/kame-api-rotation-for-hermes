@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/kame-banner.png" alt="KAME — API key rotation for Hermes" width="100%" />
+<img src="assets/kame-cover.png" alt="KAME — Key-Aware Management Engine" width="420" />
 
 # 🐢⚡ KAME — API Key Rotation for Hermes
 
