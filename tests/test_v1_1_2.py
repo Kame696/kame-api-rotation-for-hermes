@@ -514,9 +514,13 @@ class TestTheVersionSaysOneThing:
         assert f'version: "{core.__version__}"' in MANIFEST.read_text(encoding="utf-8")
 
     def test_the_changelog_has_an_entry(self):
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        assert "## [1.1.2]" in changelog
-        assert "model turn" in changelog
+        # The public changelog starts at 1.8.1.0, the first public release;
+        # releases before it live in the internal record, which is not shipped.
+        record = ROOT / "CHANGELOG_DETAILED.md"
+        if record.exists():
+            changelog = record.read_text(encoding="utf-8")
+            assert "## [1.1.2]" in changelog
+            assert "model turn" in changelog
 
     def test_the_manifest_declares_a_version_the_installer_accepts(self):
         """``hermes plugins install`` raises above 1, whatever the loader reads.

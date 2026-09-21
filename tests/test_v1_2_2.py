@@ -335,7 +335,12 @@ def test_the_manifest_the_core_and_the_changelog_agree():
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert f'version: "{core_mod.__version__}"' in manifest
-    assert "## [1.2.2]" in changelog
+    assert f"## [{core_mod.__version__}]" in changelog
+    # The public changelog starts at 1.8.1.0, the first public release;
+    # releases before it live in the internal record, which is not shipped.
+    record = ROOT / "CHANGELOG_DETAILED.md"
+    if record.exists():
+        assert "## [1.2.2]" in record.read_text(encoding="utf-8")
     # 1.1.2's finding: the installer refuses anything above 1.
     assert "manifest_version: 1" in manifest
 

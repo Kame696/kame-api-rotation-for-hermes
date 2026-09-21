@@ -996,7 +996,11 @@ class TestTheReleaseIsConsistent:
         assert f'"{version}"' in MANIFEST.read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         assert f"## [{version}]" in changelog
-        assert "## [1.1.1]" in changelog
+        # The public changelog starts at 1.8.1.0, the first public release;
+        # releases before it live in the internal record, which is not shipped.
+        record = ROOT / "CHANGELOG_DETAILED.md"
+        if record.exists():
+            assert "## [1.1.1]" in record.read_text(encoding="utf-8")
 
     def test_the_snapshot_schema_moved_with_the_document(self):
         # The two halves are a pair: the panel refuses a document it does not
