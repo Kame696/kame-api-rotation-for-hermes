@@ -16,6 +16,13 @@ Versions follow `major.minor.patch.build`; the newest is at the top.
 
 **Reads every refusal from its own evidence** — the payload, never the provider's name
 
+- Built from **13,561 real refusals** (311 distinct messages) recorded from
+  Gemini, NVIDIA, OpenRouter, Anthropic and OpenAI-compatible endpoints, and
+  graded during development against an independent answer key of **68 error
+  shapes from 12 providers and gateways** — Google Gemini, OpenAI, OpenAI
+  Codex, Anthropic, NVIDIA, OpenRouter, Groq, DeepSeek, AIHubMix, TokenRouter,
+  ZenMux and GLM — sorted into **11 kinds of error**.
+
 - A stated wait (`retryDelay`, `Retry-After`, a reset header) is obeyed to the
   second and never multiplied.
 - Gemini's bare `429 RESOURCE_EXHAUSTED` — no number at all — rests the key
