@@ -55,7 +55,7 @@ hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rota
 hermes plugins enable hermes-kame-api-rotation
 ```
 
-Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so).
+Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so — [step by step, with a screenshot](#panel)).
 
 | | |
 |---|---|
@@ -89,6 +89,17 @@ Commas, spaces, newlines, semicolons and pipes all separate keys. Keys already p
 
 `add` and `import` write the new keys to `~/.hermes/auth.json` (Hermes' own credential store). Before each write KAME saves a plaintext copy of the previous file beside it as `auth.json.kame-<timestamp>.bak`, keeping the last 5 — those backups hold your keys in plain text, like `auth.json` itself.
 </details>
+
+<a id="panel"></a>
+## 🖥️ Turn on the panel (optional)
+
+Rotation works as soon as your keys are in. The Desktop panel and the sidebar entry are extra, and Desktop keeps them **off until you turn them on**:
+
+1. In Hermes Desktop open **Capabilities → Plugins**.
+2. Find **KAME API Rotation** and switch on **Desktop** (the *Agent* switch is the rotation itself).
+3. **KAME API Rotation** appears in the left sidebar, with the status chip in the bar.
+
+<p align="center"><img src="assets/panel-enable.png" alt="Hermes Desktop, Capabilities → Plugins: KAME API Rotation with both switches on" width="90%" /></p>
 
 <a id="errors"></a>
 ## 🧠 How KAME reads every error
