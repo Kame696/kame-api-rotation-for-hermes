@@ -52,13 +52,11 @@ from typing import Optional
 HERMES_HOME = Path.home() / "AppData/Local/hermes"
 SOURCE = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation"
 TARGET = HERMES_HOME / "plugins/hermes-kame-api-rotation"
-# The Desktop UI half goes to the *standalone* runtime door, not to
-# `plugins/<name>/desktop/plugin.js`. Both are loaded by the same pipeline, but
-# the unified door ships `defaultEnabled: false` to match the Python half's
-# installed-but-inert posture -- so a chip installed there stays invisible until
-# someone finds the toggle in Settings, which defeats the point of a chip.
-DESKTOP_SOURCE = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/desktop-ui/plugin.js"
-DESKTOP_TARGET = HERMES_HOME / "desktop-plugins/hermes-kame-api-rotation/plugin.js"
+# 1.8.1.0: the Desktop half ships inside the package at desktop/plugin.js (the
+# unified-package door), so the copytree below installs it. What this script
+# still does is remove the standalone copy earlier releases put in
+# desktop-plugins/ -- left there, Desktop would load the panel twice.
+LEGACY_DESKTOP = HERMES_HOME / "desktop-plugins/hermes-kame-api-rotation"
 VENV_PYTHON = HERMES_HOME / "hermes-agent/venv/Scripts/python.exe"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
@@ -168,7 +166,7 @@ def main() -> int:
     problem = check_interpreter()
     print(f"interpreter: {sys.executable}")
 
-    home, target, desktop_target = HERMES_HOME, TARGET, DESKTOP_TARGET
+    home, target, legacy_desktop = HERMES_HOME, TARGET, LEGACY_DESKTOP
     if problem:
         # The direct road is redirected. Measure the other one before giving
         # up: a refusal is the right answer to "this would land in a shadow",
@@ -194,7 +192,7 @@ def main() -> int:
             return 3
         home = alternative
         target = home / "plugins/hermes-kame-api-rotation"
-        desktop_target = home / "desktop-plugins/hermes-kame-api-rotation/plugin.js"
+        legacy_desktop = home / "desktop-plugins/hermes-kame-api-rotation"
         print()
         print("this process is redirected, so the deploy goes through the share view:")
         print(f"  {home}")
@@ -229,12 +227,16 @@ def main() -> int:
         except OSError as exc:
             print(f"stale file left behind: {path} ({exc})")
 
-    if DESKTOP_SOURCE.is_file():
-        desktop_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(DESKTOP_SOURCE, desktop_target)
-        print(f"desktop    : {desktop_target}")
+    if (target / "desktop" / "plugin.js").is_file():
+        print(f"desktop    : {target / 'desktop' / 'plugin.js'} (turn on in Settings > Plugins)")
     else:
-        print(f"desktop    : missing at {DESKTOP_SOURCE} - the chip and /kame page will not appear")
+        print("desktop    : desktop/plugin.js missing - the chip and /kame page will not appear")
+    if legacy_desktop.is_dir():
+        try:
+            shutil.rmtree(legacy_desktop)
+            print(f"removed    : old standalone panel copy {legacy_desktop}")
+        except OSError as exc:
+            print(f"old standalone panel copy left behind: {legacy_desktop} ({exc})")
 
     landed = version_of(target / "plugin.yaml")
     # Compiled bytecode left by the running Hermes is not part of the deploy
@@ -261,12 +263,6 @@ def main() -> int:
                 differs.append(relative)
         except OSError as exc:
             differs.append(f"{relative} ({exc})")
-    if DESKTOP_SOURCE.is_file():
-        try:
-            if digest(desktop_target) != digest(DESKTOP_SOURCE):
-                differs.append("desktop-ui/plugin.js -> desktop-plugins/")
-        except OSError as exc:
-            differs.append(f"desktop-plugins/plugin.js ({exc})")
     if differs:
         print(f"verified   : {len(differs)} file(s) DIFFER after the copy:")
         for relative in differs[:10]:

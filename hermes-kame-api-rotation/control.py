@@ -137,6 +137,61 @@ def poll() -> bool:
     return True
 
 
+def _clear_benches_on_disk() -> str:
+    """Everything *Clear pool* must drop besides the carousel's memory.
+
+    Each step is independent and never raises: a step that fails leaves its
+    own bench standing and says so in the log, and never stops the others.
+    Returns a short summary for the panel's acknowledgement, empty when there
+    was nothing on disk to clear.
+
+    What is deliberately left alone: the refusal and call recordings (they
+    are evidence about the past, not a bench on the present), the event list
+    (it has its own button), and every setting.
+    """
+    done = []
+    try:
+        from . import _binding  # type: ignore[attr-defined]
+    except Exception:
+        _binding = None
+    if _binding is not None:
+        for label, store in (("ledger", getattr(_binding, "_store", None)),
+                             ("receipts", getattr(_binding, "_journal", None))):
+            if store is None:
+                continue
+            try:
+                if store.clear():
+                    done.append(label)
+            except Exception:
+                logger.debug("kame: could not clear the %s", label, exc_info=True)
+    # The host's own mark. Hermes writes ``last_status: exhausted`` with its
+    # own reset time into the credential store, and that mark outlives every
+    # piece of KAME state — so a key could still be skipped by Hermes itself
+    # after everything above was cleared. Same call ``/kame-keys reset``
+    # already makes.
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from agent.credential_pool import load_pool
+
+        reset = 0
+        for provider in sorted(read_credential_pool().keys()):
+            try:
+                reset += int(load_pool(provider).reset_statuses() or 0)
+            except Exception:
+                logger.debug("kame: could not reset %s", provider, exc_info=True)
+        if reset:
+            done.append(f"{reset} host mark{'s' if reset != 1 else ''}")
+    except Exception:
+        logger.debug("kame: host credential store not reachable", exc_info=True)
+    try:
+        from . import runtime
+
+        runtime.forget_bench_model()
+    except Exception:
+        pass
+    return ", ".join(done)
+
+
 def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
     from . import envfile, settings
 
@@ -148,14 +203,24 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         # credential: the carousel's bench is health state — cooldowns,
         # counts, the last error kind — and clearing it is a decision about
         # rotation, not about configuration.
+        #
+        # 1.8.1.0 (owner report, 2026-09-21): this used to be
+        # ``ENGINE.forget()`` and nothing else. Four other places still held
+        # the benches it promised to drop, and the first of them put every
+        # key straight back: the shared pool-health file (on by default),
+        # KAME's per-model ledger on disk, the receipts that widen a hold
+        # after a deadline proves short, and the host's own "exhausted" mark
+        # on each pooled credential. All four are cleared now.
         try:
             from .core.carousel import ENGINE
 
-            ENGINE.forget()
+            ENGINE.reset_all()
         except Exception:
             logger.debug("kame: could not clear the pool", exc_info=True)
             return False, "the pool could not be cleared — see the log"
-        return True, "every key starts again as if it had never been tried"
+        cleared = _clear_benches_on_disk()
+        tail = f" ({cleared})" if cleared else ""
+        return True, "every key starts again as if it had never been tried" + tail
 
     if action == "clear_events":
         try:

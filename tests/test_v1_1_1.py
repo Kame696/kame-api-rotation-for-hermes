@@ -36,7 +36,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-DESKTOP_PLUGIN = PLUGIN_DIR / "desktop-ui/plugin.js"
+DESKTOP_PLUGIN = PLUGIN_DIR / "desktop/plugin.js"
 MANIFEST = PLUGIN_DIR / "plugin.yaml"
 PACKAGE = "kame_v111_under_test"
 
@@ -908,30 +908,12 @@ class TestTheManifestLoadsWithoutAWarning:
 
 
 class TestTheDesktopHalfCanBeTakenBackOut:
-    def test_install_then_uninstall_leaves_nothing_behind(self, home):
-        assert desktop_ui.install() is True
-        target = desktop_ui.target()
-        assert target.is_file()
-        assert desktop_ui.uninstall() is True
-        assert not target.exists()
-        assert not target.parent.exists()
-
-    def test_a_directory_holding_somebody_elses_file_is_left_alone(self, home):
-        desktop_ui.install()
-        target = desktop_ui.target()
-        (target.parent / "notes.txt").write_text("mine", encoding="utf-8")
-        desktop_ui.uninstall()
-        assert target.parent.is_dir()
-        assert (target.parent / "notes.txt").read_text(encoding="utf-8") == "mine"
-
-    def test_uninstalling_what_was_never_installed_is_not_an_error(self, home):
-        assert desktop_ui.uninstall() is False
-        assert desktop_ui.report()["reason"] == "was not installed"
-
-    def test_the_plugin_registers_the_removal_with_the_host(self):
+    # 1.8.1.0: nothing is copied outside the package any more, so removing the
+    # plugin removes the panel with it — there is nothing left to take back.
+    def test_nothing_outside_the_package_needs_removing(self):
         source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
-        assert "on_unload" in source
-        assert "desktop_ui.uninstall" in source
+        assert "desktop_ui.uninstall" not in source
+        assert not hasattr(desktop_ui, "uninstall")
 
 
 # --- 8. first run, and a key that will never work ---------------------------

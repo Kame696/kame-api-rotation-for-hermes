@@ -7,7 +7,7 @@ import subprocess
 
 def test_detailed_sources_and_unknowns_are_visible():
     root = Path(__file__).resolve().parents[1]
-    source = (root / "hermes-kame-api-rotation/desktop-ui/plugin.js").read_text(encoding="utf-8")
+    source = (root / "hermes-kame-api-rotation/desktop/plugin.js").read_text(encoding="utf-8")
     table = source[source.index("const SIZED_BY_LABELS ="):source.index("function EventRow(")]
     # Before the fix, execute exactly the inline lookup used by EventRow.
     function = "sizedByLabel" if "function sizedByLabel(" in table else "(source => SIZED_BY_LABELS[source] ?? null)"

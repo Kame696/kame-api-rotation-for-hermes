@@ -88,7 +88,7 @@ OPTIONAL_MODULES: Tuple[str, ...] = (
     "control.py",
     "envfile.py",
     "gemini_slots.py",
-    "desktop-ui/plugin.js",
+    "desktop/plugin.js",
 )
 
 #: Directories the fingerprint walks past. Generated caches, and the two trees
@@ -169,7 +169,11 @@ def fingerprint(root: str = "") -> str:
                 relative = os.path.relpath(full, base).replace(os.sep, "/")
                 digest.update(relative.encode("utf-8"))
                 digest.update(b"\0")
-                digest.update(_read(full))
+                # 1.8.1.0: line endings are not the build. A git checkout on
+                # Windows writes CRLF where the repository holds LF, so the
+                # same release fingerprinted differently depending on who
+                # cloned it -- a handshake that disagrees with itself.
+                digest.update(_read(full).replace(b"\r\n", b"\n"))
                 digest.update(b"\0")
     except Exception:
         return "unknown"

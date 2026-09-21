@@ -76,7 +76,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-PANEL = PLUGIN_DIR / "desktop-ui" / "plugin.js"
+PANEL = PLUGIN_DIR / "desktop" / "plugin.js"
 PACKAGE = "kame_v1601_under_test"
 
 

@@ -23,7 +23,7 @@ hermes plugins enable hermes-kame-api-rotation
 
 (Or straight from GitHub: `hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation`.)
 
-Restart Hermes once. Then paste your keys, comma separated, into one provider field:
+Restart Hermes once. The Desktop panel ships in `desktop/plugin.js`; turn it on in Desktop Settings → Plugins. Then paste your keys, comma separated, into one provider field:
 
 ```
 GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc
@@ -52,6 +52,6 @@ GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc
 - `/kame doctor` — is it rotating correctly, and what only a person can fix
 - `/kame get` · `/kame set <key> <value>` · `/kame reset <key>` — settings, live
 - `/kame-quota` — the quota picture per key and per model
-- `/kame-keys` — add and inspect keys in bulk
+- `/kame-keys` — add and inspect keys in bulk. `add` and `import` write to `~/.hermes/auth.json`, after saving a plaintext backup `auth.json.kame-<timestamp>.bak` beside it (last 5 kept)
 
 MIT licence. Issues: <https://github.com/Kame696/kame-api-rotation-for-hermes/issues>

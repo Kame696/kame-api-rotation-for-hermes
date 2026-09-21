@@ -173,7 +173,7 @@ def to_host_reason(kind: Any) -> str:
 #: Every value that can reach an Events row's ``sized_by`` field.
 #:
 #: 1.7.0.5, and it exists because the panel and the engine had drifted with
-#: nothing to notice. ``desktop-ui/plugin.js`` keeps a label for each of these
+#: nothing to notice. ``desktop/plugin.js`` keeps a label for each of these
 #: and renders the chip only when it finds one — so a value the map had never
 #: heard of produced **no chip at all**, silently. Two were missing: ``window``
 #: and ``text``.

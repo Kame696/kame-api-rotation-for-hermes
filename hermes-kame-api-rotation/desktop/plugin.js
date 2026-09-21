@@ -35,12 +35,11 @@
  * that freezes for twenty seconds and then jumps is the same freeze the whole
  * feature exists to remove.
  *
- * WHERE IT LIVES ON DISK. `<hermes home>/desktop-plugins/hermes-kame-api-rotation/plugin.js`
- * — the standalone runtime door, which loads default-on. The unified door
- * (`plugins/<name>/desktop/plugin.js`) is deliberately NOT used: it ships
- * `defaultEnabled: false` to match the Python half's installed-but-inert
- * posture, so the chip would be invisible until someone found the toggle,
- * which is the exact problem 1.1.0 was fixing.
+ * WHERE IT LIVES ON DISK. `<hermes home>/plugins/hermes-kame-api-rotation/desktop/plugin.js`
+ * — the unified-package door, since 1.8.1.0. Desktop lists it in Settings >
+ * Plugins, off until the user turns it on; how far Desktop trusts a plugin is
+ * the app's decision, not this plugin's (NousResearch/hermes-agent#117966).
+ * Releases before 1.8.1.0 copied it into `desktop-plugins/` instead.
  *
  * This file is plain ESM. It may import `@hermes/plugin-sdk` and `react` and
  * nothing else — the loader rewrites those two specifiers and rejects the

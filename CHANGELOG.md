@@ -53,11 +53,19 @@ Versions follow `major.minor.patch.build`; the newest is at the top.
 
 - A status-bar chip, a Desktop panel (overview, events, settings) and the
   `/kame` and `/kame-keys` commands. A key is never printed in full.
+- The Desktop panel ships inside the package at `desktop/plugin.js` and is
+  turned on in Desktop **Settings → Plugins**; KAME writes nothing outside its
+  own install folder to put it there.
+- **Clear pool** starts every key from zero: it also releases the holds in the
+  shared health file, KAME's ledger on disk and Hermes' own "exhausted" mark on
+  each pooled key.
+- `/kame-keys add|import` write to `~/.hermes/auth.json`, after saving a
+  plaintext backup `auth.json.kame-<timestamp>.bak` beside it (last 5 kept).
 
 **Verified**
 
-- Works on Hermes **0.21.1 and 0.21.3**. 2,829 offline tests;
+- Works on Hermes **0.21.1 and 0.21.3**. 2,834 offline tests;
   `hermes plugins validate` passes with the security scan **safe**; Hermes'
   own pool and error-classification suites are unchanged by KAME; 12/12
   runtime contracts against the real turn loop.
-- Build fingerprint `289a14cea373`, shown in `/kame` and the panel header.
+- Build fingerprint `0101a50d447a` (the same on every copy, whatever its line endings), shown in `/kame` and the panel header.

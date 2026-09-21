@@ -353,8 +353,8 @@ class MenuCommand:
             return []
         lines = ["The live panel:", ""]
         lines.append("  Sidebar > KAME API Rotation for the page, and the status bar")
-        lines.append("  chip for pool health at a glance — both are on at all times,")
-        lines.append("  not only mid-turn.")
+        lines.append("  chip for pool health at a glance. Turn it on once in")
+        lines.append("  Desktop: Settings > Plugins > KAME API Rotation.")
         try:
             from . import desktop_ui
 
@@ -362,6 +362,10 @@ class MenuCommand:
             if not installed.get("installed"):
                 lines.append("")
                 lines.append(_row("panel", f"NOT installed: {installed.get('reason') or 'unknown'}"))
+            if installed.get("legacy_copy"):
+                lines.append("")
+                lines.append(_row("old copy", f"{installed['legacy_copy']} — from a release "
+                                  "before 1.8.1.0; delete it or the panel loads twice"))
         except Exception:
             logger.debug("kame: could not read the desktop install state", exc_info=True)
         if reason:

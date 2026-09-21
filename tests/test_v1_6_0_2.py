@@ -601,7 +601,7 @@ class TestProofOfLife:
 
     def test_the_panel_renders_the_line(self):
         """The component exists and is mounted under the list, not instead of it."""
-        panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+        panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
         assert "function Heartbeat(" in panel
         assert "h(Heartbeat, { key: 'heartbeat'" in panel
         # It must survive the empty case, which is the only case it is for.
@@ -634,14 +634,14 @@ class TestNeighboursShowTheirWork:
     """
 
     def test_the_row_reports_calls_and_installation(self):
-        panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+        panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
         assert "KAME not installed there" in panel
         assert "other.counters?.calls" in panel
         assert "other.installed === false" in panel
 
     def test_the_hook_is_read_before_the_early_return(self):
         """A neighbour appearing must not change how many hooks the component ran."""
-        panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+        panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
         body = panel.split("function Neighbours(", 1)[1]
         hook = body.index("useValue($now)")
         early = body.index("return null")

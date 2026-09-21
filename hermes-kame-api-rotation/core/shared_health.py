@@ -612,6 +612,63 @@ class SharedHealth:
             # that fails changes what OTHER profiles see, never this one.
             pass
 
+    def release_all(self, now: Optional[float] = None) -> Optional[int]:
+        """Release every hold in the file — the *Clear pool* button.
+
+        1.8.1.0 (owner report, 2026-09-21): *Clear pool* forgot the carousel's
+        memory and nothing else, so the very next ``select`` read this file,
+        found every bench fresher than the (now empty) local state, and put
+        each key straight back on it. The button promised "every key starts
+        again as if it had never been tried" and delivered a pool that looked
+        exactly as benched as before.
+
+        Written as releases (``until: 0`` at ``now``) rather than by deleting
+        rows, so the same "newest event wins" rule that lets one profile's
+        success release another's bench carries the reset to every profile
+        sharing the file, instead of leaving their local holds as the only
+        fresher fact. Returns how many rows were released, or ``None`` when
+        the file could not be written (switch off, no root, lock not free).
+        Waits a little longer for the lock than a hot-path write does: this is
+        a button a person pressed, not bookkeeping on a turn.
+        """
+        if not self.active():
+            return None
+        path = self._path()
+        if path is None:
+            return None
+        stamp = time.time() if now is None else float(now)
+        lock_path = path.with_name(path.name + ".lock")
+        try:
+            with self._lock:
+                if not path.exists():
+                    return 0
+                if not _acquire_file_lock(lock_path, spin_s=1.0):
+                    return None
+                try:
+                    document = _read_document(path)
+                    released = 0
+                    for scope in ("model", "account"):
+                        for rows in (document.get(scope) or {}).values():
+                            for fingerprint_key, row in list((rows or {}).items()):
+                                if not isinstance(row, dict):
+                                    continue
+                                rows[fingerprint_key] = {
+                                    "until": 0.0,
+                                    "kind": "",
+                                    "at": max(stamp, float(row.get("at", 0.0) or 0.0)),
+                                    "profile": self._profile(),
+                                }
+                                released += 1
+                    _write_document(path, document)
+                finally:
+                    _release_file_lock(lock_path)
+                self._cache = {"model": {}, "account": {}}
+                self._cache_mtime = None
+                self._cache_checked_at = 0.0
+                return released
+        except Exception:
+            return None
+
     def _write_locked(
         self,
         path: Path,

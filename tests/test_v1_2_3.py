@@ -12,7 +12,7 @@ innocent. The save path is correct and this file proves it: ``control._apply``
 parses the value, puts it in the process environment, and ``settings.effective``
 reports it back immediately. Nothing about the backend loses a setting.
 
-What lost it was ``desktop-ui/plugin.js``. Its ``h`` helper drops falsy children
+What lost it was ``desktop/plugin.js``. Its ``h`` helper drops falsy children
 before React sees the list, so a list holding a conditional element physically
 grows and shrinks. React reconciles a **keyless** child list by position. The
 settings cards sat at one index, and the instant Save was pressed a "Saving…"
@@ -50,7 +50,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-UI = PLUGIN_DIR / "desktop-ui" / "plugin.js"
+UI = PLUGIN_DIR / "desktop" / "plugin.js"
 PACKAGE = "kame_123_under_test"
 
 

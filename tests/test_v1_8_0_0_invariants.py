@@ -776,7 +776,7 @@ class TestI12ThePoolIsAMirrorNotAnArchive:
 
 class TestI13ThePanelsListsAreKeyed:
     """decisions/0001 I13, R48: reversed once by 1.3.x's mangled write to
-    ``desktop-ui/plugin.js`` (backslash/``${}``-eating), which broke
+    ``desktop/plugin.js`` (backslash/``${}``-eating), which broke
     ``EventRow`` and crashed the whole Events tab on the first status-coded
     event. Wired in from ``tests/ui_reconcile.mjs``, the same structural
     check ``test_v1_2_3.py`` already runs -- Node is present on this machine

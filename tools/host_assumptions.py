@@ -616,7 +616,7 @@ def the_sdk_still_exports_what_the_chip_imports(_=None):
     registered. Reading both sides here turns that into a check that runs
     before the deploy rather than a toast after it.
     """
-    plugin = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/desktop-ui/plugin.js"
+    plugin = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/desktop/plugin.js"
     if not plugin.is_file():
         return "desktop/plugin.js is missing", True
     source = plugin.read_text(encoding="utf-8")

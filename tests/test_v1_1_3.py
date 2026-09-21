@@ -443,7 +443,7 @@ class TestTheCounterIsReadable:
         assert document["counters"]["tool_call_cuts"] == 4
 
     def test_the_panel_has_a_field_for_it(self):
-        source = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+        source = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
         assert "counters.tool_call_cuts" in source
 
 

@@ -28,7 +28,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const SOURCE = path.join(HERE, '..', 'hermes-kame-api-rotation', 'desktop-ui', 'plugin.js')
+const SOURCE = path.join(HERE, '..', 'hermes-kame-api-rotation', 'desktop', 'plugin.js')
 
 // -- the fixture the panel is rendered against -------------------------------
 

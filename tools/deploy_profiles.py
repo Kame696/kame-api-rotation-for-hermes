@@ -149,13 +149,14 @@ def main() -> int:
                 print(f"  MISMATCH: {len(mismatched)} file(s), first {mismatched[:3]}")
             else:
                 print("  verified: every file matches the source by digest")
-        if desktop_js.is_file() or desktop_js.parent.is_dir():
-            desktop_js.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(deploy.DESKTOP_SOURCE, desktop_js)
-            same = deploy.digest(desktop_js) == deploy.digest(deploy.DESKTOP_SOURCE)
-            print(f"  panel   : {'verified' if same else 'MISMATCH'}")
-            if not same:
-                failures += 1
+        # 1.8.1.0: the panel travels inside the package (desktop/plugin.js).
+        # A standalone copy an earlier release left here would load it twice.
+        if desktop_js.parent.is_dir():
+            try:
+                shutil.rmtree(desktop_js.parent)
+                print("  panel   : old standalone copy removed (now ships in the package)")
+            except OSError as exc:
+                print(f"  panel   : old standalone copy left behind ({exc})")
 
     if failures:
         print(f"\n{failures} target(s) did not verify")

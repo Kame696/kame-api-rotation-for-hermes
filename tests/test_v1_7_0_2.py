@@ -419,5 +419,5 @@ def test_the_event_names_the_source_the_number_came_from():
     dispatch = importlib.import_module(f"{PACKAGE}.dispatch_binding")
     source = inspect.getsource(dispatch)
     assert '"reprobe" if window_number_declined' in source
-    panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+    panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
     assert "reprobe:" in panel, "the panel has to have a word for it too"

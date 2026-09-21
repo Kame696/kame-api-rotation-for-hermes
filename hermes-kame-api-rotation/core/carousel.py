@@ -2467,7 +2467,7 @@ class Carousel:
         straight into the ``sized_by`` family the desktop panel already
         splits on ``"."`` (``verdict.source`` is the existing example), so a
         new rung needs no new parsing on that side — only a new label, added
-        beside the others in ``desktop-ui/plugin.js``.
+        beside the others in ``desktop/plugin.js``.
         """
         step = self.unsized_backoff_step(identity, key)
         return f"backoff.{step}" if step > 0 else ""
@@ -2505,6 +2505,22 @@ class Carousel:
                 # recovered, so a scoped ``forget`` leaves it standing; only
                 # the global reset above (or this credential's own next
                 # success, on any model) clears it.
+
+    def reset_all(self) -> Optional[int]:
+        """The *Clear pool* button: memory AND the shared file.
+
+        :meth:`forget` alone is what tests want — it never touches disk. The
+        button needs more: with ``share_pool_health`` on (the default) the
+        shared file still held every bench, and being fresher than the
+        emptied memory it won the very next ``select``, so a cleared pool came
+        back exactly as benched. Returns what :meth:`shared_health.
+        SharedHealth.release_all` returned.
+        """
+        self.forget()
+        try:
+            return self._shared.release_all()
+        except Exception:
+            return None
 
 
 def fingerprint(key: Any) -> str:

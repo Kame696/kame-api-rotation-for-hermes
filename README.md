@@ -10,7 +10,7 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 
 [![Version](https://img.shields.io/badge/version-1.8.1.0-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.1_·_0.21.3-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/tests-2829_passing-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/tests-2834_passing-brightgreen.svg)](#verified)
 [![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -55,7 +55,7 @@ hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rota
 hermes plugins enable hermes-kame-api-rotation
 ```
 
-Then **restart Hermes** once. The Desktop panel and the status-bar chip install themselves.
+Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so).
 
 | | |
 |---|---|
@@ -86,6 +86,8 @@ That is all KAME needs. One key works too; there is just nothing to rotate to.
 ```
 
 Commas, spaces, newlines, semicolons and pipes all separate keys. Keys already pooled are skipped. A key is never echoed back — every message shows it as `AIzaSy…q7R8`. Pasting keys into a chat puts them in that chat's transcript; `import <file>` avoids that.
+
+`add` and `import` write the new keys to `~/.hermes/auth.json` (Hermes' own credential store). Before each write KAME saves a plaintext copy of the previous file beside it as `auth.json.kame-<timestamp>.bak`, keeping the last 5 — those backups hold your keys in plain text, like `auth.json` itself.
 </details>
 
 <a id="errors"></a>
@@ -185,7 +187,7 @@ The panel explains every one of them in full, with its environment variable.
 
 | Check | Result |
 |---|---|
-| Offline test suite | **2,829 passing** |
+| Offline test suite | **2,834 passing** |
 | `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
 | Hermes' own credential-pool test suite, with and without KAME | **identical** on Hermes 0.21.1 and 0.21.3, apart from the load spreading KAME exists to add |
 | Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |

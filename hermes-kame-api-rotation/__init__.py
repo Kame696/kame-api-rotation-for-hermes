@@ -801,30 +801,11 @@ def register(ctx) -> None:
             exc_info=True,
         )
 
-    # 1.1.0. The Desktop half of this package, moved into the door Desktop
-    # loads default-on. Shipped inside the package as desktop-ui/plugin.js,
-    # which neither runtime door scans, so this copy is the only install and
-    # there is never a second, stale one racing it. See desktop_ui.py.
-    try:
-        from . import desktop_ui
-
-        desktop_ui.install()
-        # 1.1.1. Whatever writes a file outside its own directory has to be
-        # able to take it back: without this, removing the plugin leaves a
-        # sidebar entry and a status chip reading a snapshot nothing writes.
-        # ``on_unload`` fires on uninstall, disable and reload alike; after a
-        # reload the copy above simply puts it back.
-        try:
-            ctx.on_unload(desktop_ui.uninstall)
-        except Exception:
-            logger.debug(
-                "%s: this Hermes offers no unload hook; the desktop panel "
-                "will have to be removed by hand",
-                PLUGIN_NAME,
-                exc_info=True,
-            )
-    except Exception:
-        logger.debug("%s: could not install the desktop panel", PLUGIN_NAME, exc_info=True)
+    # 1.8.1.0. The Desktop half ships at desktop/plugin.js, Hermes' own
+    # unified-package door, and nothing is copied anywhere any more: a catalog
+    # plugin does not write outside its install directory to change how
+    # Desktop trusts it (NousResearch/hermes-agent#117966). The user turns the
+    # panel on in Settings > Plugins. See desktop_ui.py.
 
     # 1.1.0. The snapshot the Desktop plugin reads. Everything above this line
     # works without it -- it is a readout, and a readout that can break a turn

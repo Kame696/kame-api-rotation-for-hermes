@@ -353,6 +353,6 @@ def test_the_snapshot_schema_and_the_panel_agree():
     # allow a correct change teaches people to edit tests.
     #
     # The floor stays, because a schema going *backwards* is always a mistake.
-    panel = (PLUGIN_DIR / "desktop-ui" / "plugin.js").read_text(encoding="utf-8")
+    panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
     assert state_mod.SCHEMA >= 4
     assert f"const SCHEMA = {state_mod.SCHEMA}" in panel

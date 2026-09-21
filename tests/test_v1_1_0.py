@@ -31,7 +31,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-DESKTOP_PLUGIN = PLUGIN_DIR / "desktop-ui/plugin.js"
+DESKTOP_PLUGIN = PLUGIN_DIR / "desktop/plugin.js"
 PACKAGE = "kame_v110_under_test"
 
 
@@ -518,51 +518,41 @@ class TestTheDesktopHalfHasACheckableContract:
         assert "ctx.onDispose(startReading())" in self._source()
 
 
-class TestTheDesktopHalfInstallsItself:
-    """One install, one copy, no toggle.
+class TestTheDesktopHalfShipsInTheUnifiedDoor:
+    """1.8.1.0: shipped at ``<name>/desktop/plugin.js``, copied nowhere.
 
-    The file ships inside the package under ``desktop-ui/``, a name neither
-    runtime door scans, and the Python half copies it into
-    ``desktop-plugins/<name>/plugin.js`` -- the door that loads default-on.
-    Shipping it at ``<name>/desktop/plugin.js`` instead would have installed
-    it through the unified door, which caps ``defaultEnabled`` to false.
+    Until 1.8.1.0 the file shipped under ``desktop-ui/`` and was copied into
+    ``desktop-plugins/`` to load default-on. The catalog review
+    (NousResearch/hermes-agent#117966) asked for the copy to go: a catalog
+    plugin must not write outside its install directory to change how Desktop
+    trusts it, and the admission lint scans only ``desktop/*.js``.
     """
 
-    def test_it_lands_in_the_door_that_loads_default_on(self, home):
-        assert desktop_ui.install() is True
-        landed = home / "desktop-plugins" / state.PLUGIN_ID / "plugin.js"
-        assert landed.is_file()
-        assert landed.read_text(encoding="utf-8") == DESKTOP_PLUGIN.read_text(encoding="utf-8")
+    def test_it_ships_where_the_unified_door_and_the_lint_look(self):
+        assert (PLUGIN_DIR / "desktop" / "plugin.js").is_file()
+        assert not (PLUGIN_DIR / "desktop-ui").exists()
 
-    def test_it_is_not_shipped_at_the_path_the_unified_door_scans(self):
-        # `plugins/<name>/desktop/plugin.js` would be found and disabled.
-        assert not (PLUGIN_DIR / "desktop" / "plugin.js").exists()
+    def test_registering_writes_nothing_outside_the_package(self, home):
+        source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+        assert "desktop_ui.install" not in source
+        assert not hasattr(desktop_ui, "install")
+        assert not (home / "desktop-plugins").exists()
 
-    def test_an_upgrade_replaces_an_older_copy(self, home):
-        landed = home / "desktop-plugins" / state.PLUGIN_ID / "plugin.js"
-        landed.parent.mkdir(parents=True)
-        landed.write_text("// an older release\n", encoding="utf-8")
-        assert desktop_ui.install() is True
-        assert "an older release" not in landed.read_text(encoding="utf-8")
+    def test_the_report_says_present_and_how_to_turn_it_on(self, home):
+        report = desktop_ui.report()
+        assert report["installed"] is True
+        assert report["reason"] == ""
+        assert "Settings" in report["enable"]
+        assert report["legacy_copy"] == ""
 
-    def test_installing_twice_is_a_no_op_that_still_reports_success(self, home):
-        assert desktop_ui.install() is True
-        assert desktop_ui.install() is True
-        assert desktop_ui.report()["installed"] is True
-        assert desktop_ui.report()["reason"] == ""
+    def test_an_old_copy_is_reported_and_never_deleted(self, home):
+        old = home / "desktop-plugins" / state.PLUGIN_ID / "plugin.js"
+        old.parent.mkdir(parents=True)
+        old.write_text("// an older release", encoding="utf-8")
+        assert desktop_ui.report()["legacy_copy"] == str(old)
+        assert old.is_file()
 
-    def test_it_leaves_no_temporary_file_behind(self, home):
-        desktop_ui.install()
-        directory = home / "desktop-plugins" / state.PLUGIN_ID
-        assert [p.name for p in directory.iterdir()] == ["plugin.js"]
-
-    def test_no_home_is_reported_not_raised(self, monkeypatch):
-        monkeypatch.setattr(state, "_hermes_home", lambda: None)
-        assert desktop_ui.install() is False
-        assert "home" in str(desktop_ui.report()["reason"])
-
-    def test_the_snapshot_carries_the_install_state(self, home):
-        desktop_ui.install()
+    def test_the_snapshot_carries_the_state(self, home):
         assert state.snapshot(None)["desktop_ui"]["installed"] is True
 
 
