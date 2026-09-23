@@ -22,6 +22,7 @@ removing it is the user's call, so it is reported, never deleted.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -44,6 +45,14 @@ def legacy_copy() -> Optional[Path]:
         if home is None:
             return None
         path = home / "desktop-plugins" / PLUGIN_ID / "plugin.js"
+        # Current Desktop materializes unified packages here itself. The host
+        # marker distinguishes that opt-in mirror from a pre-1.8.1.0 copy.
+        try:
+            marker = json.loads((path.parent / ".hermes-package.json").read_text(encoding="utf-8"))
+            if isinstance(marker, dict) and marker.get("package") == PLUGIN_ID:
+                return None
+        except (OSError, ValueError):
+            pass
         return path if path.is_file() else None
     except Exception:
         return None

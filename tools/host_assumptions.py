@@ -304,15 +304,11 @@ def kame_never_writes_the_hosts_stream_variables(_=None):
     shipped plugin and fails if an assignment to one of the host's stream
     variables has come back.
 
-    **The one exception, and its terms.** Since 1.1.1 ``_SilenceTimeout`` in
-    ``dispatch_binding.py`` lowers ``HERMES_STREAM_READ_TIMEOUT`` around a
-    single attempt, because that is how ``stream_silence_timeout_seconds`` is
-    implemented -- the host reads the variable inside the call, so a scoped
-    change is possible and a watchdog of KAME's own would not be. The terms are
-    checked here rather than trusted: the class must name that one variable, it
-    must put the previous value back in ``__exit__``, and nothing else in the
-    package may assign any of the four. 1.0.9 set a host knob without saying
-    so and 1.0.10 had to take it back out; this is what stops the third time.
+    1.8.1.1 removes the old exception entirely. ``_SilenceTimeout`` now carries
+    a ContextVar and KAME wraps the host's per-call ``env_float`` reader, so two
+    simultaneous requests can have different silence budgets without either
+    one changing process-global environment state. The explicit host variable
+    still wins. This probe checks both halves of that contract.
     """
     plugin_dir = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation"
     names = (
@@ -329,25 +325,22 @@ def kame_never_writes_the_hosts_stream_variables(_=None):
                 if "os.environ[" in line or "setdefault" in line or "putenv" in line:
                     return f"{source.name}: {line.strip()}", True
 
-    # The indirect write. ``_SilenceTimeout`` assigns through ``self.VARIABLE``,
-    # which the loop above cannot see, so the class is read on its own terms.
     binding = plugin_dir / "dispatch_binding.py"
     if not binding.is_file():
         return "dispatch_binding.py not found", True
     body = binding.read_text(encoding="utf-8", errors="replace")
-    block = re.search(r"class _SilenceTimeout.*?(?=\n(?:class |def |# ---))", body, re.S)
-    if not block:
-        # No scoped exception at all is a stricter world than the one described
-        # above, and passes for the same reason.
-        return True, True
-    text = block.group(0)
-    if 'VARIABLE = "HERMES_STREAM_READ_TIMEOUT"' not in text:
-        return "_SilenceTimeout no longer names the read timeout", True
-    for marker in ("def __exit__", "os.environ.pop(self.VARIABLE", "os.environ[self.VARIABLE] = self._previous"):
-        if marker not in text:
-            return f"_SilenceTimeout no longer restores what it changed ({marker})", True
-    if "os.environ.get(self.VARIABLE) is not None" not in text:
-        return "_SilenceTimeout no longer stands aside when the user set the variable", True
+    required = (
+        '_SILENCE_TIMEOUT_VALUE = contextvars.ContextVar',
+        'def _scoped_timeout_reader',
+        '_SILENCE_TIMEOUT_VALUE.get()',
+        '_SILENCE_TIMEOUT_VALUE.set(',
+        '_SILENCE_TIMEOUT_VALUE.reset(',
+        'VARIABLE = "HERMES_STREAM_READ_TIMEOUT"',
+        'os.environ.get(self.VARIABLE) is not None',
+    )
+    for marker in required:
+        if marker not in body:
+            return f"scoped stream timeout contract moved ({marker})", True
     return True, True
 
 
@@ -380,10 +373,9 @@ def the_stream_read_timeout_is_read_inside_the_call(text=None):
     """Why ``stream_silence_timeout_seconds`` can be scoped to one attempt.
 
     ``env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)`` is evaluated inside the
-    call rather than at import, so setting the variable around one attempt and
-    putting it back afterwards actually changes that attempt and nothing else.
-    Read at import time, ``_SilenceTimeout`` would be a no-op that looked like
-    a feature.
+    call rather than at import, so KAME can wrap that reader and supply a
+    ContextVar value for exactly one logical attempt. Read at import time, the
+    scoped override would be a no-op that looked like a feature.
     """
     body = read("agent/chat_completion_helpers.py") if text is None else text
     if isinstance(body, list):
@@ -672,24 +664,27 @@ def the_gemini_adapter_still_merges_parallel_tool_calls(_=None):
 
 
 def the_installer_still_stops_at_manifest_version_one(_=None):
-    """Why plugin.yaml says ``manifest_version: 1`` and not 2.
+    """Keep KAME's manifest generation aligned with the host installer.
 
-    Hermes carries two constants with the same job and different values:
-    ``hermes_cli/plugins.py`` (the loader) understands 2, and
-    ``hermes_cli/plugins_cmd.py`` (the installer behind ``hermes plugins
-    install`` and the Desktop plugin dashboard) understands 1 -- and *raises*
-    on anything higher rather than warning. A manifest that declares 2 loads
-    fine once it is on disk and cannot be installed from a repository at all,
-    which is the one thing a marketplace listing has to be able to do.
-
-    This check exists to be the reason the number goes back up: when the
-    installer's own constant reaches 2, this fails, and the manifest can
-    follow it.
+    Older Hermes had a private installer cap of 1 while the loader understood
+    2, so KAME deliberately declared v1. Current Hermes fixed that drift: the
+    installer imports ``SUPPORTED_MANIFEST_VERSION`` from ``plugins_manifest``.
+    This probe verifies that shared gate still exists and that KAME does not
+    declare anything newer than the host accepts. KAME intentionally remains
+    on v1 while it uses no v2-only syntax, preserving older installer support.
+    The old private constant was named ``_SUPPORTED_MANIFEST_VERSION``; keeping
+    that historical marker here also makes the invariant suite prove the old
+    split-gate regression is still represented.
     """
     body = (AGENT / "hermes_cli/plugins_cmd.py").read_text(encoding="utf-8", errors="replace")
-    match = re.search(r"^_SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", body, re.MULTILINE)
+    if "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION" not in body:
+        return "the installer no longer shares the loader's manifest-version gate", True
+    manifest_body = (AGENT / "hermes_cli/plugins_manifest.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    match = re.search(r"^SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", manifest_body, re.MULTILINE)
     if not match:
-        return "the installer no longer gates on manifest_version", True
+        return "the shared manifest-version constant moved", True
     supported = int(match.group(1))
 
     manifest = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/plugin.yaml"
@@ -703,8 +698,6 @@ def the_installer_still_stops_at_manifest_version_one(_=None):
             f"plugin.yaml declares manifest_version {declared.group(1)} and the "
             f"installer refuses anything above {supported}"
         ), True
-    if supported > 1:
-        return f"the installer now supports manifest_version {supported}", True
     return True, True
 
 

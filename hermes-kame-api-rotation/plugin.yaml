@@ -1,20 +1,15 @@
 name: hermes-kame-api-rotation
-version: "1.8.1.0"
+version: "1.8.1.1"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
-# 1.1.2 because the two halves of Hermes disagree about the number and only
-# one of them is in the way of an install:
+# 1.1.2 because older Hermes installers refused anything above 1. Current
+# Hermes now shares one v2-capable constant between loader and installer:
 #
-#   hermes_cli/plugins.py     SUPPORTED_MANIFEST_VERSION = 2  (the loader)
-#   hermes_cli/plugins_cmd.py _SUPPORTED_MANIFEST_VERSION = 1 (the installer)
+#   hermes_cli/plugins_manifest.py  SUPPORTED_MANIFEST_VERSION = 2
+#   hermes_cli/plugins_cmd.py       imports that same constant
 #
-# The installer's copy is what `hermes plugins install <git url>` and the
-# Desktop plugin dashboard both run, and it *raises* rather than warns:
-# "requires manifest_version 2, but this installer only supports up to 1".
-# Every plugin Hermes ships omits the field entirely, which means v1.
-#
-# Nothing is lost by saying 1: _parse_manifest_v2_fields reads license,
-# homepage, tags, api_version and config_schema whatever this number says.
-# It is only worth raising once the installer's own constant catches up.
+# KAME uses no v2-only manifest syntax, so keeping v1 preserves installation on
+# older Hermes releases while remaining fully accepted by current Hermes.
+# `tools/host_assumptions.py` verifies that the installed host still accepts it.
 manifest_version: 1
 # The plugin *API generation*, not the Hermes version — two different numbers
 # that 1.0.9 conflated. `"0.20"` made Hermes log

@@ -843,32 +843,56 @@ class TestTheRenamedTimeout:
 
     def test_it_leaves_the_key_before_the_cut_rather_than_after(self, monkeypatch):
         monkeypatch.setenv("KAME_STREAM_SILENCE_TIMEOUT", "30")
+        monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+        reader = dispatch_binding._scoped_timeout_reader(
+            lambda name, default: float(dispatch_binding.os.environ.get(name, default))
+        )
         agent = Agent()
         with dispatch_binding._SilenceTimeout(agent):
-            assert dispatch_binding.os.environ["HERMES_STREAM_READ_TIMEOUT"] == "30"
+            assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 30
+            assert "HERMES_STREAM_READ_TIMEOUT" not in dispatch_binding.os.environ
 
     def test_the_host_variable_is_put_back_afterwards(self, monkeypatch):
         monkeypatch.setenv("KAME_STREAM_SILENCE_TIMEOUT", "30")
+        monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+        reader = dispatch_binding._scoped_timeout_reader(
+            lambda name, default: float(dispatch_binding.os.environ.get(name, default))
+        )
         with dispatch_binding._SilenceTimeout(Agent()):
-            pass
+            assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 30
+        assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 120
         assert "HERMES_STREAM_READ_TIMEOUT" not in dispatch_binding.os.environ
 
     def test_a_number_the_user_set_themselves_is_never_overruled(self, monkeypatch):
         monkeypatch.setenv("KAME_STREAM_SILENCE_TIMEOUT", "30")
         monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "600")
+        reader = dispatch_binding._scoped_timeout_reader(
+            lambda name, default: float(dispatch_binding.os.environ.get(name, default))
+        )
         with dispatch_binding._SilenceTimeout(Agent()):
-            assert dispatch_binding.os.environ["HERMES_STREAM_READ_TIMEOUT"] == "600"
+            assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 600
 
     def test_a_local_model_is_left_alone(self, monkeypatch):
         monkeypatch.setenv("KAME_STREAM_SILENCE_TIMEOUT", "30")
+        monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+        reader = dispatch_binding._scoped_timeout_reader(
+            lambda name, default: float(dispatch_binding.os.environ.get(name, default))
+        )
         agent = Agent()
         agent.base_url = "http://localhost:11434/v1"
         with dispatch_binding._SilenceTimeout(agent):
             assert "HERMES_STREAM_READ_TIMEOUT" not in dispatch_binding.os.environ
+            assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 120
 
-    def test_off_by_default_changes_nothing(self):
+    def test_off_by_default_changes_nothing(self, monkeypatch):
+        monkeypatch.delenv("KAME_STREAM_SILENCE_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+        reader = dispatch_binding._scoped_timeout_reader(
+            lambda name, default: float(dispatch_binding.os.environ.get(name, default))
+        )
         with dispatch_binding._SilenceTimeout(Agent()):
             assert "HERMES_STREAM_READ_TIMEOUT" not in dispatch_binding.os.environ
+            assert reader("HERMES_STREAM_READ_TIMEOUT", 120) == 120
 
 
 # --- 6. the manifest --------------------------------------------------------

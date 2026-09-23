@@ -757,7 +757,7 @@ CONTENT_POLICY_INDICATORS = (
     "blocked by",
 )
 
-_SERVER_STATUS = frozenset({500, 502, 503, 504, 529})
+_SERVER_STATUS = frozenset({498, 500, 502, 503, 504, 529})
 
 #: Only these, and only after auth and throttling have been ruled out. A 400
 #: from Google is far more often an invalid key than a malformed request, which
@@ -2516,11 +2516,14 @@ class Carousel:
         back exactly as benched. Returns what :meth:`shared_health.
         SharedHealth.release_all` returned.
         """
+        # An enabled store failing to release is different from an opt-out.
+        # Clear persistence first: otherwise the next selection resurrects it.
+        active = self._shared.active()
+        released = self._shared.release_all()
+        if active and released is None:
+            raise RuntimeError("shared pool-health release failed")
         self.forget()
-        try:
-            return self._shared.release_all()
-        except Exception:
-            return None
+        return released
 
 
 def fingerprint(key: Any) -> str:

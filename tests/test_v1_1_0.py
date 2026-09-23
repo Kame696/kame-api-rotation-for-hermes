@@ -552,6 +552,24 @@ class TestTheDesktopHalfShipsInTheUnifiedDoor:
         assert desktop_ui.report()["legacy_copy"] == str(old)
         assert old.is_file()
 
+    def test_host_managed_mirror_is_not_an_old_copy(self, home):
+        old = home / "desktop-plugins" / state.PLUGIN_ID / "plugin.js"
+        old.parent.mkdir(parents=True)
+        old.write_text("// host-managed mirror", encoding="utf-8")
+        marker = old.parent / ".hermes-package.json"
+        marker.write_text('{"package": "hermes-kame-api-rotation"}', encoding="utf-8")
+        assert desktop_ui.report()["legacy_copy"] == ""
+        assert old.is_file() and marker.is_file()
+
+    def test_invalid_host_marker_does_not_hide_an_old_copy(self, home):
+        old = home / "desktop-plugins" / state.PLUGIN_ID / "plugin.js"
+        old.parent.mkdir(parents=True)
+        old.write_text("// older release", encoding="utf-8")
+        marker = old.parent / ".hermes-package.json"
+        for content in ('{broken', '[]', '{"package":"another-plugin"}'):
+            marker.write_text(content, encoding="utf-8")
+            assert desktop_ui.report()["legacy_copy"] == str(old)
+
     def test_the_snapshot_carries_the_state(self, home):
         assert state.snapshot(None)["desktop_ui"]["installed"] is True
 

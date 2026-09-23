@@ -962,14 +962,23 @@ def scenario_self_check(tmp_root: Path) -> Dict[str, Any]:
     that is exactly what decisions/0006 predicts will happen, so this run is
     expected, and required, to come back FAIL.
     """
-    off = _run_three_process_storm(tmp_root, share_pool_health=False, tag="self_check_off")
-    broken_config_detected_failure = off["double_burns"] > 0
+    # Use the same bounded empty-experiment guard as the measured OFF/ON
+    # comparison. A worker starting after the refusal window measures nothing;
+    # do not confuse that with a negative control that exercised the defect.
+    # Worker errors and real zero-double-burn observations are never retried.
+    off = _degenerate_retry(tmp_root, share_pool_health=False, tag="self_check_off")
+    broken_config_detected_failure = (
+        off["double_burns"] > 0 and not off["errors"] and not off["nonzero_exit"]
+    )
     return {
         "name": "self_check",
         "passed": broken_config_detected_failure,
         "measurements": {
             "config": "share_pool_health=False (deliberately broken relative to decisions/0006)",
             "double_burns_observed": off["double_burns"],
+            "empty_storm_retries": off.get("_retries", 0),
+            "process_errors": off["errors"],
+            "process_nonzero_exit": off["nonzero_exit"],
             "gate_correctly_reported_fail": broken_config_detected_failure,
         },
     }

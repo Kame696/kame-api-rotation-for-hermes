@@ -137,7 +137,7 @@ def poll() -> bool:
     return True
 
 
-def _clear_benches_on_disk() -> str:
+def _clear_benches_on_disk() -> "tuple[str, list[str]]":
     """Everything *Clear pool* must drop besides the carousel's memory.
 
     Each step is independent and never raises: a step that fails leaves its
@@ -150,6 +150,7 @@ def _clear_benches_on_disk() -> str:
     (it has its own button), and every setting.
     """
     done = []
+    failed = []
     try:
         from . import _binding  # type: ignore[attr-defined]
     except Exception:
@@ -162,7 +163,10 @@ def _clear_benches_on_disk() -> str:
             try:
                 if store.clear():
                     done.append(label)
+                else:
+                    failed.append(label)
             except Exception:
+                failed.append(label)
                 logger.debug("kame: could not clear the %s", label, exc_info=True)
     # The host's own mark. Hermes writes ``last_status: exhausted`` with its
     # own reset time into the credential store, and that mark outlives every
@@ -178,18 +182,23 @@ def _clear_benches_on_disk() -> str:
             try:
                 reset += int(load_pool(provider).reset_statuses() or 0)
             except Exception:
+                failed.append("host marks")
                 logger.debug("kame: could not reset %s", provider, exc_info=True)
         if reset:
             done.append(f"{reset} host mark{'s' if reset != 1 else ''}")
+    except ImportError:
+        # No host in offline tools: there is no host credential store to reset.
+        pass
     except Exception:
+        failed.append("host credential store")
         logger.debug("kame: host credential store not reachable", exc_info=True)
     try:
         from . import runtime
 
         runtime.forget_bench_model()
     except Exception:
-        pass
-    return ", ".join(done)
+        failed.append("runtime bench")
+    return ", ".join(done), failed
 
 
 def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
@@ -211,14 +220,18 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         # KAME's per-model ledger on disk, the receipts that widen a hold
         # after a deadline proves short, and the host's own "exhausted" mark
         # on each pooled credential. All four are cleared now.
+        failures = []
         try:
             from .core.carousel import ENGINE
 
             ENGINE.reset_all()
         except Exception:
             logger.debug("kame: could not clear the pool", exc_info=True)
-            return False, "the pool could not be cleared — see the log"
-        cleared = _clear_benches_on_disk()
+            failures.append("shared pool health")
+        cleared, disk_failures = _clear_benches_on_disk()
+        failures.extend(disk_failures)
+        if failures:
+            return False, "pool reset incomplete: " + ", ".join(dict.fromkeys(failures)) + "; retry after checking storage access"
         tail = f" ({cleared})" if cleared else ""
         return True, "every key starts again as if it had never been tried" + tail
 

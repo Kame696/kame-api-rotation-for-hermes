@@ -132,6 +132,8 @@ _silenced = False
 
 
 def _redact(text: str) -> str:
+    from .core.redact import redact
+    text = redact(text, limit=0)
     text = _KEY.sub("<KEY>", text)
     return _KEY_FIELD.sub(lambda m: m.group(1) + "<KEY>", text)
 
@@ -307,11 +309,11 @@ def record(
         kind = error_type or (type(error).__name__ if error is not None else "")
         row: Dict[str, Any] = {
             "at": round(time.time(), 3),
-            "provider": str(provider or ""),
-            "model": str(model or ""),
+            "provider": _safe_text(provider, 256),
+            "model": _safe_text(model, 256),
             "status": status_code if isinstance(status_code, int) else None,
-            "type": str(kind),
-            "code": str(error_code or ""),
+            "type": _safe_text(kind, 256),
+            "code": _safe_text(error_code, 256),
             "message": _safe_text(error_message),
             "body": _safe_text(error_body),
             "response": _response_payload(error),

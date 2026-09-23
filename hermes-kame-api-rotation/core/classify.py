@@ -87,6 +87,9 @@ _PERMANENT_AUTH_PATTERNS = (
 # twenty seconds, but a human can fix all of it, so these are benched for
 # re-probing rather than marked permanently dead.
 _DENIAL_PATTERNS = (
+    re.compile(r"insufficient[\s_-]*permissions", re.I),
+    re.compile(r"not[\s_-]*authorized[\s_-]*to[\s_-]*access[\s_-]*(?:the[\s_-]*)?requested[\s_-]*model", re.I),
+    re.compile(r"channel[\s_-]*(?:has[\s_-]*)?been[\s_-]*disabled", re.I),
     re.compile(r"permission[\s_-]*denied", re.I),
     re.compile(r"denied[\s_-]*access", re.I),
     re.compile(r"consumer[\s_-]*suspended", re.I),

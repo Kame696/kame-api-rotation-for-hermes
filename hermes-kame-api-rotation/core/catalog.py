@@ -303,6 +303,10 @@ _put(
     "max_tokens_exceeded", "token_limit_exceeded",
 )
 
+# A missing plan entitlement has no time-based reset.
+_put(Reading(BILLING, window=QuotaWindow.ACCOUNT, scope=QuotaScope.ACCOUNT,
+             why="plan does not include this service"), "usage_not_included")
+
 # --- Google's odd one out. ------------------------------------------------
 # FAILED_PRECONDITION on a 400 means "the free tier is not available in your
 # country; enable billing" — an account problem wearing the status code that

@@ -258,6 +258,20 @@ class TestWorkerSubprocess:
 
 
 class TestSelfCheckHasTeeth:
+    def test_self_check_uses_the_nonempty_storm_driver(self, gate, tmp_path, monkeypatch):
+        def witness(root, share_pool_health, tag):
+            assert root == tmp_path and share_pool_health is False
+            return {"double_burns": 3, "errors": [], "nonzero_exit": [], "_retries": 1}
+        monkeypatch.setattr(gate, "_degenerate_retry", witness)
+        result = gate.scenario_self_check(tmp_path)
+        assert result["passed"] is True
+        assert result["measurements"]["empty_storm_retries"] == 1
+
+    def test_worker_error_is_not_a_successful_negative_control(self, gate, tmp_path, monkeypatch):
+        monkeypatch.setattr(gate, "_degenerate_retry", lambda *a, **k:
+            {"double_burns": 3, "errors": ["worker failed"], "nonzero_exit": [1], "_retries": 0})
+        assert gate.scenario_self_check(tmp_path)["passed"] is False
+
     def test_sharing_off_produces_real_cross_process_double_burns(self, gate, tmp_path):
         """Direct proof, not a mock: three real subprocesses, sharing
         deliberately off, and the storm really does show a different

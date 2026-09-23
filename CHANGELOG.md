@@ -4,6 +4,37 @@ Versions follow `major.minor.patch.build`; the newest is at the top.
 
 ---
 
+## [1.8.1.1] — 2026-09-22 — reliability patch
+
+- **Clear pool reports the truth.** Shared health, the ledger, the receipt
+  journal and Hermes' own exhausted marks must all clear; a persistence or host
+  failure is surfaced instead of returning a successful reset.
+- **Recorder redaction is stricter.** Structured and textual credentials,
+  Authorization values, passwords and refresh tokens are removed before
+  evidence is stored, while quota identifiers remain available to classification.
+- **The optional stream-silence timeout is per call.** It now uses a ContextVar
+  read through Hermes' in-call timeout reader instead of temporarily mutating a
+  process-global environment variable, so concurrent calls cannot race or
+  restore one another's values. An explicit Hermes timeout still wins.
+- **Current Hermes compatibility was re-checked.** The installer now shares the
+  loader's manifest-version cap; KAME stays on manifest v1 because it needs no
+  v2-only syntax and this preserves older installer compatibility.
+- **Dispatch preserves evidence.** HTTP 498 is server capacity; plan entitlement,
+  Gemini billing preconditions and Anthropic spend limits remain account failures
+  even on HTTP 400. Gateway model/channel denials do not retire credentials.
+- **The unsized delay dial is honored.** A generic classifier default is no longer
+  passed off as a provider deadline. Named windows, explicit retry hints and the
+  bare-Gemini 1..64s ladder retain their own rules.
+- Relayed moderation remains terminal; other upstream relay failures retain
+  Hermes host ownership instead of penalizing the aggregator credential.
+- Desktop's host-marked unified-package mirror is no longer reported as an
+  obsolete duplicate. Deployment preserves that host-managed panel.
+- Final validation: 2,883 Hermes tests passed, installed-host gates passed,
+  and short CLI turns answered with Gemini 3.6/3.7/3.8 and NVIDIA Kimi K3.
+  Agent Zero installation and long owner conversations remain separate.
+
+---
+
 ## [1.8.1.0] — 2026-09-21 — first public release
 
 **Picks the key**

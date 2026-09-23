@@ -315,10 +315,10 @@ class TestTheSettingItself:
         assert "one error only" in block.lower()
         assert "resource_exhausted" in block.lower()
 
-    def test_the_version_is_one_eight_one_zero_where_it_is_written(self):
+    def test_the_current_patch_version_is_written_consistently(self):
         manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-        assert 'version: "1.8.1.0"' in manifest
-        assert core_mod.__version__ == "1.8.1.0"
+        assert 'version: "1.8.1.1"' in manifest
+        assert core_mod.__version__ == "1.8.1.1"
 
 
 class _Host:

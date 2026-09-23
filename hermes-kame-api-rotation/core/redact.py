@@ -40,6 +40,7 @@ never in them.
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 #: Everything past this is not the error any more. Provider errors that echo a
@@ -86,11 +87,28 @@ _LONG_TOKEN = re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32,}\b")
 #: looks like. Catches a short or test key that no shape rule would find.
 _SECRET_FIELD = re.compile(
     r'("(?:api[_-]?key|apikey|authorization|access[_-]?token|refresh[_-]?token'
-    r'|secret|password|token)"\s*:\s*)"[^"]*"',
+    r'|secret|password|token|cookie|set-cookie)"\s*:\s*)"(?:\\.|[^"\\])*"',
     re.I,
 )
 
 _PLACEHOLDER = "[redacted]"
+
+_NAMED_TEXT = re.compile(
+    r'''(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|cookie|set-cookie)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer\s+)?[^\s,;&}\]]+)''',
+    re.I,
+)
+_SECRET_NAME = re.compile(r"^(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret|password|token|cookie|set-cookie)$", re.I)
+
+
+def _scrub_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _PLACEHOLDER if _SECRET_NAME.fullmatch(str(k)) else _scrub_fields(v)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_fields(v) for v in value]
+    if isinstance(value, str):
+        return redact(value, limit=0)
+    return value
 
 
 def redact(text: Any, limit: int = DEFAULT_LIMIT) -> str:
@@ -111,8 +129,17 @@ def redact(text: Any, limit: int = DEFAULT_LIMIT) -> str:
     try:
         if text is None:
             return ""
-        raw = text if isinstance(text, str) else str(text)
+        if isinstance(text, (dict, list, tuple)):
+            raw = json.dumps(_scrub_fields(text), ensure_ascii=False, default=str)
+        else:
+            raw = text if isinstance(text, str) else str(text)
+            if raw.lstrip().startswith(("{", "[")):
+                try:
+                    raw = json.dumps(_scrub_fields(json.loads(raw)), ensure_ascii=False, default=str)
+                except (ValueError, TypeError):
+                    pass
         raw = _SECRET_FIELD.sub(r'\1"%s"' % _PLACEHOLDER, raw)
+        raw = _NAMED_TEXT.sub(lambda m: m.group(1) + '"' + _PLACEHOLDER + '"', raw)
         raw = _PREFIXED.sub(_PLACEHOLDER, raw)
         raw = _LONG_TOKEN.sub(_PLACEHOLDER, raw)
         raw = raw.strip()

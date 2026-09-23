@@ -8,9 +8,9 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.1.1-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.1_·_0.21.3-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/tests-2834_passing-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/tests-2883_passing-brightgreen.svg)](#verified)
 [![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -198,12 +198,17 @@ The panel explains every one of them in full, with its environment variable.
 
 | Check | Result |
 |---|---|
-| Offline test suite | **2,834 passing** |
+| Offline test suite | **2,883 passing** (1 skipped, 4 expected failures) |
 | `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
-| Hermes' own credential-pool test suite, with and without KAME | **identical** on Hermes 0.21.1 and 0.21.3, apart from the load spreading KAME exists to add |
+| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.1 on Hermes 0.21.3: baseline 2 environment failures; KAME adds only 2 intentional load-spreading differences; spread-off matches baseline |
 | Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |
 | Runtime contracts against the real Hermes turn loop | **12 / 12**, each proven able to fail |
 | Real use | the author's own traffic: 14 Gemini keys plus other providers, every day |
+
+The 1.8.1.1 release was validated in installed Hermes CLI turns with Gemini
+3.6/3.7/3.8 and NVIDIA Kimi K3, including real 429-to-next-key recovery.
+Daily-traffic evidence and the 0.21.1 gate belong to earlier builds;
+Agent Zero runtime validation remains separate.
 
 <a id="faq"></a>
 ## ❓ FAQ
@@ -265,6 +270,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.0** — *because round-robin was never enough*
+🐢⚡ **KAME 1.8.1.1** — *because round-robin was never enough*
 
 </div>

@@ -138,6 +138,7 @@ import sys
 import re
 import threading
 import time
+import contextvars
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -1393,15 +1394,33 @@ def _looks_local(agent: Any) -> bool:
     return any(mark in base for mark in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.docker.internal"))
 
 
-# Serialises os.environ access across concurrent calls. os.environ is
-# process-wide; without this two tasks could stomp each other's timeout value
-# or restore the wrong previous value. The lock is held only for the duration
-# of one API call, which is already bounded by HERMES_STREAM_READ_TIMEOUT.
-_SILENCE_TIMEOUT_LOCK = threading.Lock()
+_SILENCE_TIMEOUT_VALUE = contextvars.ContextVar("kame_stream_read_timeout", default=None)
+_TIMEOUT_READER_MARK = "__kame_scoped_timeout_reader__"
+
+
+def _scoped_timeout_reader(original: Callable) -> Callable:
+    """Read KAME's per-call timeout without mutating process-global env state.
+
+    Hermes resolves ``HERMES_STREAM_READ_TIMEOUT`` inside the request through
+    ``env_float``.  Wrapping that reader lets one call carry a ContextVar
+    override while another thread/process context sees the host value. An
+    explicit environment value still wins immediately, including one set while
+    the call is in progress.
+    """
+    @functools.wraps(original)
+    def _read(name, default, *args, **kwargs):
+        if name == _SilenceTimeout.VARIABLE and os.environ.get(name) is None:
+            scoped = _SILENCE_TIMEOUT_VALUE.get()
+            if scoped is not None:
+                return float(scoped)
+        return original(name, default, *args, **kwargs)
+
+    setattr(_read, _TIMEOUT_READER_MARK, True)
+    return _read
 
 
 class _SilenceTimeout:
-    """Hermes' own stream read timeout, lowered for one attempt and put back.
+    """Hermes' own stream read timeout, lowered for one logical call context.
 
     The setting behind this is off by default, and the mechanism is worth being
     careful about: a plugin that changes a *host* variable and forgets to say
@@ -1414,7 +1433,8 @@ class _SilenceTimeout:
       this plugin does not overrule it.
     * Nothing happens for a local endpoint, where Hermes raises this same
       timeout on purpose and lowering it would break long prefills.
-    * The variable is restored when the attempt ends, whatever ended it.
+    * No environment variable is written. The scoped value is reset when the
+      attempt ends, whatever ended it.
 
     The host reads it inside the call (``chat_completion_helpers``:
     ``env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)``), which is what makes a
@@ -1424,11 +1444,11 @@ class _SilenceTimeout:
 
     VARIABLE = "HERMES_STREAM_READ_TIMEOUT"
 
-    __slots__ = ("_seconds", "_previous", "_applied")
+    __slots__ = ("_seconds", "_token", "_applied")
 
     def __init__(self, agent: Any, attempt: int = 1) -> None:
         self._seconds = 0.0
-        self._previous: Optional[str] = None
+        self._token = None
         self._applied = False
         seconds = settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0)
         if seconds <= 0 or _looks_local(agent):
@@ -1444,20 +1464,16 @@ class _SilenceTimeout:
     def __enter__(self) -> "_SilenceTimeout":
         if self._seconds <= 0:
             return self
-        with _SILENCE_TIMEOUT_LOCK:
-            self._previous = os.environ.get(self.VARIABLE)
-            os.environ[self.VARIABLE] = f"{self._seconds:g}"
+        self._token = _SILENCE_TIMEOUT_VALUE.set(float(self._seconds))
         self._applied = True
         return self
 
     def __exit__(self, *_exc: Any) -> None:
         if not self._applied:
             return
-        with _SILENCE_TIMEOUT_LOCK:
-            if self._previous is None:
-                os.environ.pop(self.VARIABLE, None)
-            else:
-                os.environ[self.VARIABLE] = self._previous
+        if self._token is not None:
+            _SILENCE_TIMEOUT_VALUE.reset(self._token)
+            self._token = None
         self._applied = False
 
 
@@ -1509,6 +1525,7 @@ class DispatchBinding:
         self._jitter = jitter or (lambda: 0.0)
         self._module: Any = None
         self._originals: Dict[str, Callable] = {}
+        self._timeout_reader_original: Optional[Callable] = None
         self.installed = False
         self.reason = "not installed"
         self.engine = engine or ENGINE
@@ -1627,6 +1644,10 @@ class DispatchBinding:
 
         self._module = module
         self._originals = originals
+        reader = getattr(module, "env_float", None)
+        if callable(reader) and not getattr(reader, _TIMEOUT_READER_MARK, False):
+            self._timeout_reader_original = reader
+            setattr(module, "env_float", _scoped_timeout_reader(reader))
         for name, original in originals.items():
             setattr(module, name, self._wrap(original))
         self.installed = True
@@ -1643,6 +1664,11 @@ class DispatchBinding:
         for name, original in self._originals.items():
             if getattr(getattr(self._module, name, None), _MARK, False):
                 setattr(self._module, name, original)
+        if self._timeout_reader_original is not None:
+            current = getattr(self._module, "env_float", None)
+            if getattr(current, _TIMEOUT_READER_MARK, False):
+                setattr(self._module, "env_float", self._timeout_reader_original)
+        self._timeout_reader_original = None
         self._module = None
         self._originals = {}
         self.installed = False
@@ -2662,7 +2688,15 @@ class DispatchBinding:
         # would reread the upstream auth/quota prose and bench or retire the
         # aggregator credential. Preserve the original exception for Hermes'
         # model/provider fallback without changing this credential's health.
-        if looks_like_upstream_wrapper(resolve_evidence_body(ev.body, exc)):
+        body = resolve_evidence_body(ev.body, exc)
+        envelope = body.get("error") if isinstance(body, dict) else None
+        metadata = envelope.get("metadata") if isinstance(envelope, dict) else None
+        if isinstance(metadata, dict) and (
+            "flagged_input" in metadata or "reasons" in metadata
+            or metadata.get("error_type") == "content_policy_violation"
+        ):
+            return "raise", "content_filter", ev.status_code
+        if looks_like_upstream_wrapper(body):
             return "raise", "upstream_error", ev.status_code
 
         verdict = classify(
@@ -2845,7 +2879,9 @@ class DispatchBinding:
                 _HOST_BREAKER_THRESHOLD,
             )
             return "raise", kind, status
-        if is_terminal(exc, message):
+        # A proven billing verdict is a credential problem even on HTTP 400.
+        # Do not let the weaker status-only fallback discard that evidence.
+        if is_terminal(exc, message) and not (verdict is not None and kind == "insufficient_quota"):
             logger.info(
                 "kame: %s %s — the request itself was refused, not the key", label, type(exc).__name__
             )
@@ -2876,6 +2912,12 @@ class DispatchBinding:
         # what makes it that payload is judged here, from the evidence this
         # refusal carried — never from the provider's name (R01).
         bare = is_bare_resource_exhausted(ev, stated=stated)
+        if (kind in ("rate_limit", "per_minute") and not stated and not calendar_reset
+                and quota_window in ("", "unknown")):
+            # This number was a classifier default, not a provider deadline.
+            # Let the engine apply learned timing, the bare-Gemini ladder or
+            # the configured unsized dial instead of laundering default 20s.
+            delay = 0.0
         if calendar_reset:
             applied = self.engine.mark(identity, key, False, delay, kind,
                                        stated=True, calendar_reset=True, scope=account_scope)
