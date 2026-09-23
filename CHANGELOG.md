@@ -1,6 +1,9 @@
 # Changelog — KAME API Rotation for Hermes
 
-Versions follow `major.minor.patch.build`; the newest is at the top.
+Versions follow `major.minor.patch.build`; the newest is at the top. The
+[README version history](README.md#history) also summarizes earlier Hermes
+versions and development candidates; this file gives the full notes for the
+current 1.8.1.x public releases.
 
 ---
 
@@ -35,7 +38,7 @@ Versions follow `major.minor.patch.build`; the newest is at the top.
 
 ---
 
-## [1.8.1.0] — 2026-09-21 — first public release
+## [1.8.1.0] — 2026-09-21 — error-reader release baseline
 
 **Picks the key**
 

@@ -16,7 +16,7 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
 
-**[Install](#install) · [Why not round-robin](#vs) · [How it reads errors](#errors) · [Screenshots](#screens) · [Settings](#settings) · [FAQ](#faq) · [Changelog](CHANGELOG.md) · [Agent Zero version](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
+**[Install](#install) · [Why not round-robin](#vs) · [How it reads errors](#errors) · [Screenshots](#screens) · [Settings](#settings) · [FAQ](#faq) · [Version history](#history) · [Changelog](CHANGELOG.md) · [Agent Zero version](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
 
 </div>
 
@@ -247,6 +247,73 @@ Yes: the right wait for each error, stream continuation, the live countdown and 
 <summary><b>How do I know it is actually running?</b></summary>
 
 `/kame` and the panel header show a 12-character build fingerprint computed from the files on disk. If a part of the plugin is missing, the panel says so in the loudest line on the page.
+</details>
+
+---
+
+<a id="history"></a>
+## 🪪 Version history
+
+The previous README had an **Evolution** table. It disappeared during the
+1.8.1.0 README rewrite; the plugin's older work did not disappear. Restored
+below with the newer milestones added. The 1.7.x and 1.8.0.x entries were
+development candidates, not public release tags. See [CHANGELOG.md](CHANGELOG.md)
+for the full notes on the current public releases.
+
+<details>
+<summary><b>Versions and what changed (click to open)</b></summary>
+
+| Version | Focus | What changed |
+|---|---|---|
+| **1.8.1.1** | Reliability patch | Reset reports persistence failures; account holds, per-call timeout, classification and redaction are hardened. |
+| **1.8.1.0** | Error evidence | Refusals are sized from provider evidence; Gemini's bare 429 uses a 1–64s ladder, daily labels re-probe, 5xx stays short. |
+| **1.8.0.2** | Corrected measurement | An unsized throttle rests 30s, correcting the earlier double-counted 45s estimate. |
+| **1.8.0.1** | First live 429 measurement | Added a configurable unsized rest after observing no successful retry below 30s; its 45s default was later corrected. |
+| **1.8.0.0** | Bounded, shared health | One-hour maximum hold, shared health across profiles, account-wide limits and timeout rotation. |
+| **1.7.0.6** | Scope and timing | Daily inference stays with its account; subscription reset fields and elapsed-time reporting are corrected. |
+| **1.7.0.5** | Complete Events labels | Source chips appear for all supported cooldown evidence labels. |
+| **1.7.0.4** | Server errors stay short | Repeated 5xx responses no longer climb a cooldown ladder. |
+| **1.7.0.3** | Milliseconds are milliseconds | A retry hint ending in `ms` no longer becomes a wait measured in minutes. |
+| **1.7.0.2** | Daily-label re-probe | A daily quota label triggers a short re-probe, not an automatic one-hour hold. |
+| **1.7.0.1** | Distinct key identities | Multi-key credentials no longer share one health identity. |
+| **1.7.0.0** | Rebuilt error reader | Refusal rules were rebuilt against recorded errors and an independent answer key. |
+| **1.6.0.4** | Thinking is not an answer | Reasoning tokens no longer suppress rotation after an empty answer. |
+| **1.6.0.3** | Honor stated waits | Provider retry hints no longer get multiplied by prior failures. |
+| **1.6.0.2** | Evidence precedence | Stronger quota evidence is no longer overridden by weaker or absent signals. |
+| **1.6.0.1** | Multi-process status | Desktop and gateway keep separate status sections; invalid-key and model-only refusals are handled distinctly. |
+| **1.6.0.0** | Host integration | Pool holds, streamed continuations and the visible panel follow Hermes' real call path. |
+| **1.5.0** | Exception evidence | The exception type is read; transport failures rest briefly and Settings avoids a disabled-controls freeze. |
+| **1.4.0** | Machine-readable cooldowns | Structured provider fields size waits; Events names their source. |
+| **1.3.3** | Rotate on stream drops | An unstitched mid-stream connection loss rotates rather than ending the turn. |
+| **1.3.2** | Exhausted-pool handling | A pool of 429s waits instead of crashing; terminal failures reach Events and the UI. |
+| **1.3.1** | Gemini stream hotfix | A response body that cannot be read no longer crashes error classification. |
+| **1.3.0** | Terminal-error shield | Non-retryable errors stop cleanly; payload inspection opens in the Desktop UI. |
+| **1.2.9** | Correct provider names | NVIDIA and other providers are no longer classified under a hard-coded Gemini name. |
+| **1.2.8** | Quieter rotation | Status says `rotating…` rather than flickering through key names. |
+| **1.2.7** | Empty 429 bodies | A throttle without exception text no longer becomes a zero-second rest. |
+| **1.2.6** | Header-based waiting | Modern classification is wired into the dispatch path. |
+| **1.2.5** | Outage handling | Adaptive storm timeout, circuit breaker and less blocking between concurrent agents. |
+| **1.2.4** | Daily cap fix | Removed the US/Pacific midnight guess that over-held Google keys. |
+| **1.2.3** | Stable Settings form | Saving no longer remounts the form under the cursor. |
+| **1.2.2** | Pool mirrors config | A removed key stops being retried and a comma-joined row is not sent as one key. |
+| **1.2.1** | Gemini stream recovery | SDK-wrapped stream read timeouts rotate instead of ending the turn. |
+| **1.2.0** | Readable Settings | Three labelled shelves distinguish core rotation from optional extras. |
+| **1.1.3** | Avoid needless benching | The only healthy key is not benched by a rest that buys nothing. |
+| **1.1.2** | Provider refusal during continuation | Gemini continuation adapts instead of handing back a turn it cannot accept. |
+| **1.1.1** | Whole answers | Stream stitching and a usable panel with real switches and fields. |
+| **1.1.0** | Desktop panel | `/kame` gains a panel; merged Gemini tool calls are repaired. |
+| **1.0.10** | Visible status | KAME formats its status in the shape Hermes actually displays. |
+| **1.0.9** | Host ownership | Several stopped/frozen-turn symptoms are traced to their host causes. |
+| **1.0.8** | Trust the connection | The stream watchdog that harmed rewind/edit/resend is removed. |
+| **1.0.2** | Stable baseline | Storm-log collapse, quota-period ordering and regression coverage. |
+| **1.0.1** | Wait for recovery | Removed a ten-minute cap on a fully resting pool. |
+| **1.0.0** | First carousel | A failed call moves to another key rather than ending the turn. |
+| **0.2.4–0.2.6** | End-to-end harness | Early rotation and integration tests. |
+| **0.1.0** | Per-key backoff | Different keys and refusal types get independent rests. |
+| **0.0.4** | Model isolation | Health is tracked separately for each model. |
+| **0.0.3** | Provider-agnostic rules | Decisions come from the refusal, not a provider allowlist. |
+| **0.0.1** | Initial port | First Hermes integration of KAME's key rotation. |
+
 </details>
 
 ---
