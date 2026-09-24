@@ -1052,13 +1052,20 @@ def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None
         return False
     if _matches(text, TIMEOUT_INDICATORS):
         return False
-    if _matches(text, CONTENT_POLICY_INDICATORS):
-        return True
     status = _status_of(error, status_code)
     if status in _SERVER_STATUS:
         return False
     if status == 429 or _names_a_throttle(text):
         return False
+    # 1.8.1.4: the wide content words after the throttle, as this docstring
+    # always said ("a 429 is never terminal"). Read before it, "blocked by"
+    # and "safety" ended the turn on real rate limits -- "Request blocked by
+    # rate limiting rule", "Too many requests: blocked by rate limiter", a 429
+    # "for safety tier" -- and on a 503 that named a filtering service. The
+    # narrow REQUEST_CONTENT_BLOCK_INDICATORS above still settle a filtered
+    # prompt on any status.
+    if _matches(text, CONTENT_POLICY_INDICATORS):
+        return True
     return status in _TERMINAL_STATUS
 
 

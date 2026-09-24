@@ -281,3 +281,24 @@ def test_the_answer_keys_real_01_shape_rests_on_the_ladder_not_thirty_seconds():
                         "x", 1, False)
     rest = engine._pools["gemini:gemini-3.8-flash"]["AIzaSy-bare-1"]["sick_until"] - before
     assert rest < 5
+
+
+@pytest.mark.parametrize("message", [
+    "Request blocked by rate limiting rule",
+    "Too many requests: blocked by rate limiter",
+    "Rate limit exceeded for safety tier",
+])
+def test_a_429_in_content_words_is_still_a_throttle_not_the_end_of_the_turn(message):
+    # "a 429 is never terminal" -- is_terminal's own docstring. The wide
+    # content list used to be read before the throttle check.
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, kind, _ = binding._on_failure(
+        "p:m", "sk-robustness-0007", _Worded(message, 429), "x", 1, False,
+    )
+    assert verdict == "rotate"
+
+
+def test_a_503_in_the_wide_content_words_is_a_busy_server():
+    # Only the wide words ("safety", "blocked by"); the narrow request-block
+    # phrases are a separate, deliberate rule.
+    assert carousel.is_terminal(_Worded("safety service unavailable, blocked by maintenance", 503)) is False
