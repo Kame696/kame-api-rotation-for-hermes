@@ -73,7 +73,6 @@ SUITES = (
     "tests/agent/test_credential_pool_oat_authtype.py",
     "tests/agent/test_credential_pool_oauth_writethrough.py",
     "tests/agent/test_credential_pool_provider_boundary.py",
-    "tests/agent/test_credential_pool_quarantine_locking.py",
     "tests/agent/test_credential_pool_routing.py",
     "tests/agent/test_credential_pool_sole_cooldown.py",
     "tests/agent/test_credential_pool_unmatched_rotation_bound.py",
@@ -138,6 +137,30 @@ if os.environ.get("KAME_POOL_SABOTAGE") == "1":
 '''
 
 
+# Pool suites that exist on some Hermes releases only. Each runs when the
+# checkout has it and is named when it does not, so a release that folds one
+# file into another (0.21.5 moved the quarantine-locking tests into
+# ``test_credential_pool_terminal_refresh_visibility.py``) cannot stop the
+# whole witness with "suite files missing" -- and a release that adds pool
+# tests KAME's wrappers sit under gets them run instead of ignored.
+VERSIONED_SUITES = (
+    "tests/agent/test_credential_pool_quarantine_locking.py",  # up to 0.21.3
+    "tests/agent/test_credential_pool_terminal_refresh_visibility.py",  # 0.21.5
+    "tests/agent/test_credential_pool_sole_rotate_recovery.py",
+    "tests/agent/test_credential_pool_codex_singleton_isolation.py",
+    "tests/agent/test_credential_pool_seed_existing_env_sources.py",
+    "tests/agent/test_credential_pool_plugin_seam.py",
+    "tests/agent/test_pool_revert_after_cooldown.py",
+    "tests/agent/test_pool_rotation_endpoint_veto.py",
+    "tests/agent/test_codex_soft_failure_pool_rotation.py",
+)
+
+
+def present_suites() -> tuple:
+    """Every required suite, plus the versioned ones this checkout has."""
+    return SUITES + tuple(name for name in VERSIONED_SUITES if (HERMES / name).is_file())
+
+
 def run(
     *,
     with_kame: bool,
@@ -146,7 +169,7 @@ def run(
     spread: bool = True,
 ) -> tuple[int, str]:
     argv = [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider"]
-    argv.extend(SUITES)
+    argv.extend(present_suites())
     if with_kame:
         argv.extend(["-p", "kame_pool_interpose"])
 
@@ -199,7 +222,12 @@ def main() -> int:
     (workdir / "kame_pool_interpose.py").write_text(INTERPOSER, encoding="utf-8")
     (workdir / "plugin_dir.txt").write_text(str(PLUGIN_DIR), encoding="utf-8")
 
-    print(f"[1] the host's own pool suites ({len(SUITES)} files) on their own")
+    absent = [name for name in VERSIONED_SUITES if not (HERMES / name).is_file()]
+    if absent:
+        print("versioned suites this Hermes does not ship (skipped):")
+        for name in absent:
+            print(f"        {name}")
+    print(f"[1] the host's own pool suites ({len(present_suites())} files) on their own")
     base_rc, base_out = run(with_kame=False, workdir=workdir)
     print(f"        {summary_line(base_out)}")
 
