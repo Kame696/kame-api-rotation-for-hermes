@@ -7,6 +7,58 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.4] — safer with your keys, wiser about errors
+
+**In one line:** the agent still never stops on a quota; KAME now never loses
+a key on a failed write, never mistakes a token count for a rate limit, and
+never mistakes a rate limit for the end of the turn.
+
+**Your keys**
+
+- **The `.env` cannot be left half-written.** `/kame set` and every panel save
+  rewrite Hermes' `.env` — the file with all your provider keys. A write that
+  failed midway (a full disk, a killed process) used to truncate it: measured,
+  46 of 61 key lines gone. It is now written beside, flushed and swapped in one
+  step, keeping the file's permissions, its symlink and its line endings.
+- **Key backups are owner-only from the first byte** (they used to exist for a
+  moment with default permissions).
+- **A key in a URL** (`?key=`, `api_key=`, `token=`) is redacted from the
+  refusal file whatever it looks like.
+
+**Reading errors**
+
+- **A context-too-long error is handed back**, not rotated. A token count like
+  `142935` contains the digits 429 and was read as a rate limit — every key was
+  rested while the oversized request was sent again. `429` now counts only as a
+  number on its own, and a certain request-fault field
+  (`context_length_exceeded`, `model_not_found`) ends the turn first.
+- **A rate limit never ends the turn**, whatever words it uses ("Request blocked
+  by rate limiting rule" used to), and a malformed request that merely mentions
+  "quota" or "429" is handed back instead of going round every key.
+- **A flagged prompt is not resent on every key**: a `content_policy_violation`
+  code, or a prompt "blocked by the safety filter", is handed back even on a 403.
+  A key denial that happens to say "blocked by" still rotates.
+- **A scalar `error.details`** (`1`, `true`) no longer crashes the failure
+  handler into a failed turn.
+- **Gemini's host footer comes off whole** even when only its opening is known,
+  so a 21-second per-minute throttle is no longer read as billing for an hour.
+- **Gemini's bare `RESOURCE_EXHAUSTED`** takes the 1-2-4…64s ladder in the
+  SDK's `429 RESOURCE_EXHAUSTED:` rendering too.
+
+**Hermes 0.21.4+**
+
+- **Per-model cooldowns are watched.** Hermes now benches an Anthropic 429 per
+  model on its own path; KAME carries its reading there (an unsized 429 rests
+  30s, not the host's hour) and the cooldown appears in `/kame events`.
+- **The journal records the deadline that governed** — a host-set 24h hold is
+  no longer written down as one hour.
+
+**Verified:** 2,970 offline tests (Linux); host witnesses green on Hermes
+0.21.3, 0.21.4 and 0.21.5; a cross-port replay of the 877 refusal shapes this
+suite exercises gives the Agent Zero port's decision on 860 (the rest are
+documented port differences); a fuzz of 26,164 odd payloads through both ports'
+failure paths raises nothing. Not yet run live on a gateway with real keys.
+
 ## [1.8.1.3] — checked against Hermes 0.21.4 and 0.21.5
 
 **In one line:** nothing the agent does changes; KAME was re-checked against the
