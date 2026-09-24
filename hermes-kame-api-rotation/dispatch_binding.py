@@ -2757,11 +2757,20 @@ class DispatchBinding:
         # ``classify`` already declined it (test_v1_8_0_0_same_code:
         # "surfaces as request fault"); the request, not the key, is the fault.
         from .core.classify import structured_error_values
-        if any(
-            _CONTENT_POLICY_FIELD.search(str(value))
-            for value in structured_error_values(body, exc, None)
-        ):
+        structured = structured_error_values(body, exc, None)
+        if any(_CONTENT_POLICY_FIELD.search(str(value)) for value in structured):
             return "raise", "content_filter", ev.status_code
+        # 1.8.1.4: a field that certainly names the REQUEST as the fault --
+        # ``context_length_exceeded``, ``model_not_found`` and the other certain
+        # TERMINAL rows -- ends the turn before any prose is weighed. ``classify``
+        # already declines these; what followed it (the legacy table and
+        # ``is_terminal``) still read the words, and a stray "quota" or "429" in
+        # them made an oversized prompt rotate every key. The Agent Zero port
+        # has checked this first since 1.8.1.0 (``kame_evidence.catalog_terminal``).
+        from .core.catalog import TERMINAL as _TERMINAL, look_up as _look_up
+        _reading = _look_up(*structured) if structured else None
+        if _reading is not None and _reading.family == _TERMINAL and getattr(_reading, "certain", False):
+            return "raise", "other", ev.status_code
         if looks_like_upstream_wrapper(body):
             return "raise", "upstream_error", ev.status_code
 

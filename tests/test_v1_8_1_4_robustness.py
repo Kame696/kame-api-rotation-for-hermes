@@ -149,3 +149,51 @@ def test_a_bare_403_key_denial_in_moderation_words_still_rotates(message):
         "openai:gpt-x", "sk-robustness-0005", _Worded(message, 403), "x", 1, False,
     )
     assert verdict == "rotate"
+
+
+# ---------------------------------------------------------------------------
+# "429" is a status only when it stands alone: token counts are not throttles.
+# ---------------------------------------------------------------------------
+
+_CONTEXT_LENGTH = [
+    ("This model's maximum context length is 128000 tokens. However, your messages resulted in 142935 tokens.",
+     {"error": {"message": "...142935 tokens.", "type": "invalid_request_error", "code": "context_length_exceeded"}}),
+    ("This model's maximum context length is 32768 tokens. However, you requested 34290 tokens.",
+     {"error": {"message": "...34290 tokens.", "type": "invalid_request_error"}}),
+    ("prompt is too long: 214290 tokens > 200000 maximum",
+     {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long: 214290 tokens > 200000 maximum"}}),
+    ("The input token count (1429000) exceeds the maximum number of tokens allowed (1048576).",
+     {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": "The input token count (1429000) exceeds the maximum"}}),
+]
+
+
+class _Bodied(Exception):
+    def __init__(self, message, status, body=None):
+        super().__init__(message)
+        self.status_code = status
+        if body is not None:
+            self.body = body
+
+
+@pytest.mark.parametrize("message,body", _CONTEXT_LENGTH, ids=["openai-coded", "openai-compat", "anthropic", "gemini"])
+def test_a_context_length_400_with_429_in_a_token_count_is_handed_back(message, body):
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, _kind, status = binding._on_failure(
+        "p:m", "sk-robustness-0006", _Bodied(message, 400, body), "x", 1, False,
+    )
+    assert (verdict, status) == ("raise", 400)
+
+
+@pytest.mark.parametrize("text", [
+    "Error code: 429 - {'status': 429, 'title': 'Too Many Requests'}",
+    "HTTP 429 Too Many Requests",
+    "upstream answered (429)",
+    "429",
+])
+def test_a_429_written_as_a_status_is_still_a_throttle(text):
+    assert carousel._names_a_throttle(text.lower()) is True
+
+
+@pytest.mark.parametrize("text", ["142935 tokens", "34290", "token count (1429000)", "version 4.29", "id 04290"])
+def test_429_inside_another_number_is_not(text):
+    assert carousel._names_a_throttle(text) is False

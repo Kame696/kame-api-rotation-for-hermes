@@ -631,7 +631,8 @@ RATE_LIMIT_INDICATORS = (
     "resource exhausted",
     "too many requests",
     "quota",
-    "429",
+    # "429" is read by ``_names_a_throttle`` as a number on its own, never as
+    # three digits inside another number -- see ``_STATUS_429_IN_TEXT``.
     # 1.7.0.0: the rest of the Agent Zero list, which the port had left behind.
     # Measured 04/09/2026: nine phrasings this plugin met in the wild, and it
     # classified all nine wrong. A throttle a provider spells without the words
@@ -867,6 +868,20 @@ def _matches(text: str, indicators: Sequence[str]) -> bool:
     return any(indicator in text for indicator in indicators)
 
 
+#: 1.8.1.4. The status code written in the text ("Error code: 429", "HTTP 429",
+#: "(429)"), and only that: not the digits inside a larger number. As a plain
+#: substring, "429" matched "142935 tokens", "prompt is too long: 214290
+#: tokens" and "token count (1429000)" -- so a context-length 400 read as a
+#: throttle, was never terminal, and every key was rested while the oversized
+#: request was sent again, even beside ``code: context_length_exceeded``. The
+#: Agent Zero port had the same substring and gets the same rule.
+_STATUS_429_IN_TEXT = re.compile(r"(?<![0-9.])429(?![0-9])")
+
+
+def _names_a_throttle(text: str) -> bool:
+    return _matches(text, RATE_LIMIT_INDICATORS) or bool(_STATUS_429_IN_TEXT.search(text))
+
+
 def parse_duration(text: str) -> Optional[float]:
     """Seconds named by a compound duration like ``6m 11.52s``, or ``None``.
 
@@ -1006,7 +1021,7 @@ def is_auth_failure(error: Any, message: str = "", status_code: Optional[int] = 
         return True
     # A 403 is auth only when it is not a throttle wearing a 403 — some
     # providers return 403 for spending limits, which is a quota, not a key.
-    return status == 403 and not _matches(text, RATE_LIMIT_INDICATORS)
+    return status == 403 and not _names_a_throttle(text)
 
 
 def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None) -> bool:
@@ -1034,7 +1049,7 @@ def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None
     status = _status_of(error, status_code)
     if status in _SERVER_STATUS:
         return False
-    if status == 429 or _matches(text, RATE_LIMIT_INDICATORS):
+    if status == 429 or _names_a_throttle(text):
         return False
     return status in _TERMINAL_STATUS
 
@@ -1162,7 +1177,7 @@ def classify(
         )
         return _stated_or(error, text, headers, base), "auth", (status or 401)
 
-    if status == 429 or _matches(text, RATE_LIMIT_INDICATORS):
+    if status == 429 or _names_a_throttle(text):
         if _matches(text, DAILY_INDICATORS):
             kind = "insufficient_quota" if "insufficient" in text else "daily"
             # The parsed delay is deliberately dropped here. See the module
