@@ -402,10 +402,27 @@ def _validate_pool_health_json(path: Path) -> Tuple[bool, str]:
 
 # --- scenario 1 + 2: three real processes, one pool; double-burn count ------
 
-def _count_double_burns(events: List[Dict[str, Any]], hold_s: float) -> int:
+def _count_double_burns(
+    events: List[Dict[str, Any]], hold_s: float, *, while_exhausted: bool = False
+) -> int:
     """How many times a key one profile was JUST refused on is selected and
     refused again by a DIFFERENT profile while that hold should still be
     active. See the module docstring, scenario 2.
+
+    A turn whose ``select`` said ``"EXHAUSTED"`` is not counted (1.8.1.3).
+    That status is the carousel saying *every key is resting and this one is
+    merely the soonest back* -- the production caller waits for it rather
+    than spending the call, and no amount of sharing can make a key that is
+    known to be resting look healthy. The driver spends it anyway, and on a
+    machine whose three workers drain all seventeen keys inside the refuse
+    window those turns were nearly every burn left with sharing ON: measured
+    on Linux, 143 of 144 sharing-ON burns were on EXHAUSTED turns (1 on a
+    turn the carousel called healthy), against 102 healthy-turn burns with
+    sharing OFF. Counting them made the ON median sit within noise of OFF
+    (``on=[52, 53, 55, 55, 55, 55, 51]`` vs ``off=55`` failed the gate one
+    run in a few) while measuring the simulator, not the plugin.
+    ``while_exhausted=True`` counts exactly those turns instead, for the
+    diagnostic the scenario still reports.
     """
     events = sorted(events, key=lambda e: e["t"])
     last_refusal: Dict[str, Tuple[str, float]] = {}
@@ -417,7 +434,13 @@ def _count_double_burns(events: List[Dict[str, Any]], hold_s: float) -> int:
         profile = event["profile"]
         t = event["t"]
         prior = last_refusal.get(key)
-        if prior is not None and prior[0] != profile and t < prior[1] + hold_s:
+        exhausted = event.get("status") == "EXHAUSTED"
+        if (
+            prior is not None
+            and prior[0] != profile
+            and t < prior[1] + hold_s
+            and exhausted == while_exhausted
+        ):
             burns += 1
         last_refusal[key] = (profile, t)
     return burns
@@ -483,6 +506,7 @@ def _run_three_process_storm(
     pool_health_path = homes["base"] / "plugin-data" / "hermes-kame-api-rotation" / "pool-health.json"
     file_ok, file_detail = _validate_pool_health_json(pool_health_path)
     double_burns = _count_double_burns(events, hold_s)
+    exhausted_turn_burns = _count_double_burns(events, hold_s, while_exhausted=True)
     idle_violations = sum(1 for e in events if e.get("idle_violation"))
     return {
         "events": events,
@@ -491,6 +515,7 @@ def _run_three_process_storm(
         "file_ok": file_ok,
         "file_detail": file_detail,
         "double_burns": double_burns,
+        "exhausted_turn_burns": exhausted_turn_burns,
         "idle_violations": idle_violations,
         "homes": {k: str(v) for k, v in homes.items()},
         "pool_health_path": str(pool_health_path),
@@ -658,6 +683,8 @@ def scenario_double_burn(tmp_root: Path) -> Dict[str, Any]:
     """
     off_samples: List[int] = []
     on_samples: List[int] = []
+    exhausted_off: List[int] = []
+    exhausted_on: List[int] = []
     errors: List[str] = []
     degenerate_retries = 0
     for i in range(DOUBLE_BURN_REPEATS):
@@ -675,6 +702,8 @@ def scenario_double_burn(tmp_root: Path) -> Dict[str, Any]:
         degenerate_retries += off_run.pop("_retries", 0) + on_run.pop("_retries", 0)
         off_samples.append(off_run["double_burns"])
         on_samples.append(on_run["double_burns"])
+        exhausted_off.append(off_run.get("exhausted_turn_burns", 0))
+        exhausted_on.append(on_run.get("exhausted_turn_burns", 0))
         errors.extend(off_run["errors"])
         errors.extend(on_run["errors"])
 
@@ -696,6 +725,12 @@ def scenario_double_burn(tmp_root: Path) -> Dict[str, Any]:
             "on": on_stats,
             "sharing_off_is_baseline": True,
             "sharing_on_median_must_be_lower": passed,
+            # Diagnostic only, never part of the verdict: burns on turns the
+            # carousel itself called EXHAUSTED -- see _count_double_burns.
+            "exhausted_turn_burns_diagnostic_only": {
+                "off": exhausted_off,
+                "on": exhausted_on,
+            },
             "process_errors": errors,
             "degenerate_repeats_retried": degenerate_retries,
             "timing": {

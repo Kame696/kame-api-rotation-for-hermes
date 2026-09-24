@@ -52,13 +52,20 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_PATH = ROOT / "tools" / "clock_gate.py"
-OUT_DIR = ROOT / "research" / "1.8.0.0" / "clock"
+# Where the gate really writes: tests/conftest.py points KAME_GATE_OUT_DIR at
+# this run's sandbox (1.8.1.2). Reading the old research/ path instead passed
+# on a machine that still held files from before that move -- stale evidence,
+# never this run's -- and failed on every fresh clone, where research/ (git-
+# ignored) does not exist.
+OUT_DIR = (Path(os.environ["KAME_GATE_OUT_DIR"]) / "clock" if os.environ.get("KAME_GATE_OUT_DIR")
+           else ROOT / "research" / "1.8.0.0" / "clock")
 
 
 def _load_tool():
@@ -281,6 +288,7 @@ class TestPaddingCostWithoutCorpus:
 class TestFullGateEndToEnd:
     def test_the_cli_runs_all_measurements_and_exits_zero_on_pass(self, gate):
         before = _snapshot_real_corpus(gate)
+        started = time.time()
 
         env = dict(os.environ)
         result = subprocess.run(
@@ -294,6 +302,7 @@ class TestFullGateEndToEnd:
         for name in expected:
             path = OUT_DIR / f"{name}.json"
             assert path.is_file(), f"missing {path}"
+            assert path.stat().st_mtime >= started - 1.0, f"{path} predates this run"
             payload = json.loads(path.read_text(encoding="utf-8"))
             assert "passed" in payload
             assert "measurements" in payload

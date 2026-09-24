@@ -45,7 +45,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
 TOOL_PATH = ROOT / "tools" / "continuity_gate.py"
-OUT_DIR = ROOT / "research" / "1.8.0.0" / "continuity"
+# Where the gate really writes: tests/conftest.py points KAME_GATE_OUT_DIR at
+# this run's sandbox (1.8.1.2). Reading the old research/ path instead passed
+# on a machine that still held files from before that move -- stale evidence,
+# never this run's -- and failed on every fresh clone, where research/ (git-
+# ignored) does not exist.
+OUT_DIR = (Path(os.environ["KAME_GATE_OUT_DIR"]) / "continuity" if os.environ.get("KAME_GATE_OUT_DIR")
+           else ROOT / "research" / "1.8.0.0" / "continuity")
 
 
 def _load_tool():
@@ -118,6 +124,25 @@ class TestCountDoubleBurns:
             {"t": 100.0, "key": "k1", "refused": True, "profile": "base"},
         ]
         assert gate._count_double_burns(events, hold_s=2.0) == 1
+
+    def test_a_turn_the_carousel_called_exhausted_is_not_a_double_burn(self, gate):
+        # Every key was resting and select() said so; the production caller
+        # waits instead of spending that call, so sharing cannot prevent it.
+        events = [
+            {"t": 100.0, "key": "k1", "refused": True, "profile": "base", "status": "SUCCESS"},
+            {"t": 100.5, "key": "k1", "refused": True, "profile": "k", "status": "EXHAUSTED"},
+        ]
+        assert gate._count_double_burns(events, hold_s=2.0) == 0
+        assert gate._count_double_burns(events, hold_s=2.0, while_exhausted=True) == 1
+
+    def test_a_healthy_turn_is_still_counted_beside_an_exhausted_one(self, gate):
+        events = [
+            {"t": 100.0, "key": "k1", "refused": True, "profile": "base", "status": "SUCCESS"},
+            {"t": 100.4, "key": "k1", "refused": True, "profile": "k", "status": "SUCCESS"},
+            {"t": 100.8, "key": "k1", "refused": True, "profile": "lo1", "status": "EXHAUSTED"},
+        ]
+        assert gate._count_double_burns(events, hold_s=2.0) == 1
+        assert gate._count_double_burns(events, hold_s=2.0, while_exhausted=True) == 1
 
     def test_separate_keys_never_interact(self, gate):
         events = [
@@ -295,6 +320,7 @@ class TestSelfCheckHasTeeth:
 class TestFullGateEndToEnd:
     def test_the_cli_runs_all_scenarios_and_exits_zero_on_pass(self):
         before = _snapshot_real_pool_health()
+        started = time.time()
 
         env = dict(os.environ)
         env.pop("HERMES_HOME", None)  # prove the tool never inherits a real HERMES_HOME by accident
@@ -312,6 +338,7 @@ class TestFullGateEndToEnd:
         for name in expected:
             path = OUT_DIR / f"{name}.json"
             assert path.is_file(), f"missing {path}"
+            assert path.stat().st_mtime >= started - 1.0, f"{path} predates this run"
             payload = json.loads(path.read_text(encoding="utf-8"))
             assert "passed" in payload
             assert "measurements" in payload
