@@ -92,3 +92,62 @@ class TestAPanelRequestThatCrashesIsStillAnswered:
         assert control.poll() is True
         assert recorded[-1]["id"] == "req-1"
         assert recorded[-1]["ok"] is False
+
+
+# --------------------------------------------------------------------------
+# The shared pool-health file heals after damage on disk.
+#
+# Every write reads the file first. Bytes that were not UTF-8 raised past
+# ``except OSError``, and a row the prune or the newest-event comparison could
+# not do arithmetic on raised inside the write -- so the damaged file was never
+# replaced: sharing between profiles stayed off for good, silently, and *Clear
+# pool* reported that it could not write. Measured before the fix: 5 of 11
+# damage shapes never healed (experiments/shared_health_corruption.py).
+# --------------------------------------------------------------------------
+
+shared_health = importlib.import_module(f"{PACKAGE}.core.shared_health")
+_SCHEMA = shared_health.SCHEMA
+
+
+def _doc(model):
+    return json.dumps({"schema": _SCHEMA, "model": model, "account": {}}).encode()
+
+
+NEVER_HEALED = {
+    "invalid utf-8": b"\xff\xfe\x80garbage",
+    "latin-1 json": _doc({"café": {}}).replace(b"\\u00e9", b"\xe9"),
+    "at is text": _doc({"m": {"fp": {"until": 9e9, "at": "yesterday"}}}),
+    "at is an object": _doc({"m": {"other": {"until": 1, "at": {"x": 1}}}}),
+    "rows are a list": _doc({"m": [1, 2]}),
+    "at is NaN": b'{"schema": ' + json.dumps(_SCHEMA).encode()
+    + b', "model": {"m": {"other": {"until": 1, "at": NaN}}}, "account": {}}',
+}
+
+
+def _health(path, profile):
+    return shared_health.SharedHealth(path=path, profile=profile, enabled_fn=lambda: True)
+
+
+@pytest.mark.parametrize("damage", sorted(NEVER_HEALED))
+def test_the_next_write_replaces_a_damaged_file(tmp_path, damage):
+    path = tmp_path / "pool_health.json"
+    path.write_bytes(NEVER_HEALED[damage])
+    now = 1_000_000.0
+    _health(path, "base").record(
+        scope="model", subject="m", fingerprint_key="fp", until=now + 60, kind="rl", at=now
+    )
+    assert _health(path, "k").model_entry("m", "fp", now=now + 1) == (now + 60, now)
+
+
+@pytest.mark.parametrize("damage", sorted(NEVER_HEALED))
+def test_clear_pool_still_writes_through_damage(tmp_path, damage):
+    path = tmp_path / "pool_health.json"
+    path.write_bytes(NEVER_HEALED[damage])
+    assert _health(path, "base").release_all(now=1_000_000.0) is not None
+
+
+def test_a_damaged_row_costs_that_row_and_keeps_its_neighbours(tmp_path):
+    path = tmp_path / "pool_health.json"
+    path.write_bytes(_doc({"m": {"bad": {"until": 1, "at": "x"}, "good": {"until": 50.0, "at": 5.0}}}))
+    assert _health(path, "k").model_entry("m", "good", now=10.0) == (50.0, 5.0)
+    assert _health(path, "k").model_entry("m", "bad", now=10.0) == (0.0, 0.0)

@@ -69,6 +69,7 @@ before it reaches this module is a bug in the caller, not in this one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -294,7 +295,10 @@ def _read_document(path: Path) -> Dict[str, Any]:
     """
     try:
         raw_text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # 1.8.1.5: bytes that are not UTF-8 raised straight past ``OSError``,
+        # and since every write reads first, no write could ever replace them
+        # -- sharing stayed off for good and *Clear pool* reported failure.
         return _fresh_document()
     try:
         document = json.loads(raw_text)
@@ -302,13 +306,42 @@ def _read_document(path: Path) -> Dict[str, Any]:
         return _fresh_document()
     if not isinstance(document, dict) or document.get("schema") != SCHEMA:
         return _fresh_document()
-    model = document.get("model")
-    account = document.get("account")
     return {
         "schema": SCHEMA,
-        "model": model if isinstance(model, dict) else {},
-        "account": account if isinstance(account, dict) else {},
+        "model": _usable_rows(document.get("model")),
+        "account": _usable_rows(document.get("account")),
     }
+
+
+def _usable_rows(bucket: object) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Only the rows every reader and writer below can do arithmetic on.
+
+    1.8.1.5: one damaged row -- a subject holding a list, an ``at`` that is
+    text or an object, a ``NaN`` (which ``json`` accepts) -- raised inside the
+    prune or the newest-event comparison of *every* later write, so the file
+    was never rewritten and one bad row turned sharing off for good. A damaged
+    row now costs that row: it is dropped, and the next write heals the file.
+    """
+    usable: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    if not isinstance(bucket, dict):
+        return usable
+    for subject, rows in bucket.items():
+        if not isinstance(rows, dict):
+            continue
+        kept = {}
+        for fingerprint_key, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            try:
+                until = float(row.get("until", 0.0) or 0.0)
+                at = float(row.get("at", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(until) and math.isfinite(at):
+                kept[fingerprint_key] = row
+        if kept:
+            usable[subject] = kept
+    return usable
 
 
 def _write_document(path: Path, document: Dict[str, Any]) -> None:
