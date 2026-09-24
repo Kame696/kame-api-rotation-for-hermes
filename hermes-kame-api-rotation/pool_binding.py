@@ -873,7 +873,10 @@ class PoolBinding:
             # of its own, and never past the owner's ceiling.
             if model and failure_reason != "model_entitlement":
                 try:
-                    error_context = binding._carry_deadline(pool, error_context, model=model)
+                    error_context = binding._carry_deadline(
+                        pool, error_context, model=model,
+                        status_code=429, failure_reason=failure_reason,
+                    )
                 except Exception:
                     logger.debug("kame: could not size a per-model cooldown", exc_info=True)
             result = original(
@@ -947,7 +950,9 @@ class PoolBinding:
             failure_reason: Optional[str] = None,
             **host_options: Any,
         ):
-            error_context = binding._carry_deadline(pool, error_context)
+            error_context = binding._carry_deadline(
+                pool, error_context, status_code=status_code, failure_reason=failure_reason
+            )
             updated = original(
                 pool,
                 entry,
@@ -969,7 +974,15 @@ class PoolBinding:
         setattr(_kame_mark_exhausted, _MARK, True)
         return _kame_mark_exhausted
 
-    def _carry_deadline(self, pool: Any, error_context: Any, model: str = "") -> Any:
+    def _carry_deadline(
+        self,
+        pool: Any,
+        error_context: Any,
+        model: str = "",
+        *,
+        status_code: Any = None,
+        failure_reason: Optional[str] = None,
+    ) -> Any:
         """Put KAME's deadline where the pool will actually read it.
 
         This is the one line the whole plugin was missing, and the journal
@@ -1005,7 +1018,9 @@ class PoolBinding:
 
         * **Only when the host has none.** A ``reset_at`` the host did derive
           came from the provider's own header, and the provider outranks
-          anything inferred. This adds; it never overwrites.
+          anything *inferred* -- up to the owner's ceiling and no further
+          (1.8.1.6, :meth:`_within_ceiling`). KAME's own reading never
+          overwrites the provider's number; the ceiling bounds both.
         * **Only for this call.** ``peek_judgement`` matches on provider and
           on the model in flight, and expires after 30 seconds, so a verdict
           left over from a failure that never became a bench cannot attach
@@ -1016,23 +1031,24 @@ class PoolBinding:
         nothing to inject and ``_is_terminal_auth_failure`` still sees the
         context it would have seen.
         """
-        if isinstance(error_context, dict) and error_context.get("reset_at") not in (None, ""):
-            return error_context
-        provider = getattr(pool, "provider", "")
         now = self._clock()
+        host_terms = dict(status_code=status_code, failure_reason=failure_reason)
+        if isinstance(error_context, dict) and error_context.get("reset_at") not in (None, ""):
+            return self._within_ceiling(pool, error_context, now, **host_terms)
+        provider = getattr(pool, "provider", "")
         # 1.8.1.4: the per-model cooldown path names its model outright; the
         # credential-wide path still reads the model in flight.
         model = model or self._benching_model(provider, now)
         if not model:
-            return error_context
+            return self._within_ceiling(pool, error_context, now, **host_terms)
         judgement = runtime.peek_judgement(provider, model, now=now)
         if judgement is None:
-            return error_context
+            return self._within_ceiling(pool, error_context, now, **host_terms)
         deadline = judgement.reset_at
         if deadline is None:
             deadline = self._floor_for_unsized(judgement, now)
         if deadline is None:
-            return error_context
+            return self._within_ceiling(pool, error_context, now, **host_terms)
         # G8 (PLAN_1.8.0.0.md, settled 2026-09-15): no hold outlives the
         # owner's ceiling, and this is the one place that matters most. What
         # gets written here becomes ``last_error_reset_at`` eleven lines
@@ -1042,13 +1058,79 @@ class PoolBinding:
         # (OpenRouter's ``free-models-per-day`` names nine), and capping it
         # here is what actually shortens the credential's real hold, rather
         # than only recording that it should have been shorter. Where the
-        # host derived its own deadline instead — this function returns
-        # before reaching this line whenever it did — that number is the
-        # provider's own header, not KAME's, and is outside what this method
-        # ever touches; see the docstring above.
+        # host derived its own deadline instead, this function returns
+        # before reaching this line, through :meth:`_within_ceiling`, which
+        # bounds that number the same way (1.8.1.6 -- until then a host-derived
+        # deadline was left past the ceiling, against G8's "on any path").
         deadline = min(float(deadline), now + _ceiling_s())
         carried = dict(error_context) if isinstance(error_context, dict) else {}
         carried["reset_at"] = float(deadline)
+        return carried
+
+    def _within_ceiling(
+        self,
+        pool: Any,
+        error_context: Any,
+        now: float,
+        *,
+        status_code: Any = None,
+        failure_reason: Optional[str] = None,
+    ) -> Any:
+        """``error_context``, with the deadline the host would derive from it
+        cut to the owner's ceiling.
+
+        1.8.1.6, owner decision (2026-09-24): no hold outlives
+        ``max_hold_seconds``, whoever set it -- the provider's ``Retry-After``,
+        a reset named in the message, Codex's ``resets_in_seconds``, or the
+        host's own fixed TTL when the ceiling is set below it. Until 1.8.1.5
+        the provider's number was obeyed past the ceiling on purpose, which
+        made the README's promise false: measured on Hermes 0.21.5, a 24h
+        ``reset_at`` kept the key out 24h under a 1h ceiling
+        (``experiments/hold_ceiling_24h.py``).
+
+        The host's own parser decides what it would have read, so nothing is
+        guessed; and nothing is lengthened -- a deadline already inside the
+        ceiling, or a TTL inside it, goes through untouched.
+        """
+        module = self._module
+        cap = now + _ceiling_s()
+        derived = None
+        normalize = getattr(module, "_normalize_error_context", None)
+        if callable(normalize):
+            try:
+                derived = normalize(error_context).get("reset_at")
+            except Exception:
+                derived = None
+        if derived is None:
+            ttl = getattr(module, "_exhausted_ttl", None)
+            if callable(ttl):
+                try:
+                    sole = bool(pool._is_sole_credential())
+                except Exception:
+                    sole = False
+                try:
+                    derived = now + float(
+                        ttl(status_code, sole_credential=sole, failure_reason=failure_reason)
+                    )
+                except TypeError:
+                    try:
+                        derived = now + float(ttl(status_code, sole_credential=sole))
+                    except Exception:
+                        derived = None
+                except Exception:
+                    derived = None
+        try:
+            derived = float(derived) if derived is not None else None
+        except (TypeError, ValueError, OverflowError):
+            return error_context
+        if derived is None or derived <= cap:
+            return error_context
+        logger.info(
+            "kame: %s asked for a %.0fs hold; holding to the %.0fs ceiling",
+            getattr(pool, "provider", "?"), derived - now, cap - now,
+        )
+        carried = dict(error_context) if isinstance(error_context, dict) else {}
+        carried["reset_at"] = cap
         return carried
 
     @staticmethod
@@ -1231,9 +1313,9 @@ class PoolBinding:
             # ``reset_at`` verbatim as the fingerprint and takes
             # ``max(reset_at, extend_to)`` for the deadline that actually
             # governs (``core/ledger.py``), so a raw host deadline already
-            # past the ceiling — one ``_carry_deadline`` above did not size,
-            # because the host had already derived its own — is a case this
-            # line cannot reach. What it does bound is KAME's own
+            # past the ceiling is a case this line cannot reach -- since 1.8.1.6
+            # ``_carry_deadline`` cuts one to the ceiling before the host stores
+            # it (``_within_ceiling``). What it does bound is KAME's own
             # contribution: ``escalate.stretch``'s widening never pushes the
             # journalled, ledger-extending number past the ceiling.
             #
@@ -1636,6 +1718,12 @@ class PoolBinding:
                 pool, clear_expired=clear_expired, refresh=refresh, **host_options
             )
             try:
+                available = binding._release_past_ceiling(
+                    pool, available, refresh=refresh, model=host_options.get("model")
+                )
+            except Exception:
+                logger.debug("kame: ceiling release skipped", exc_info=True)
+            try:
                 available = [
                     entry for entry in available if not binding._supersedes(entry)
                 ]
@@ -1654,6 +1742,56 @@ class PoolBinding:
 
         setattr(_kame_available_entries, _MARK, True)
         return _kame_available_entries
+
+    def _release_past_ceiling(
+        self, pool: Any, available: List[Any], *, refresh: bool, model: Any = None
+    ) -> List[Any]:
+        """Hand back a key the host has held longer than the owner's ceiling.
+
+        1.8.1.6. :meth:`_within_ceiling` bounds every hold as it is written;
+        this bounds the ones written before it -- a deadline stored by an
+        older KAME or by Hermes alone, and every hold still running when the
+        owner lowers ``max_hold_seconds``. Anchored at the moment the host
+        benched the key (``last_status_at``), so it releases rather than
+        moving with the clock. A dead credential, one the host would not hand
+        over for another reason, and one under a per-model cooldown for the
+        model asked about stay where they are.
+        """
+        module = self._module
+        if module is None:
+            return available
+        now = self._clock()
+        ceiling = _ceiling_s()
+        have = {getattr(entry, "id", "") for entry in available}
+        released = []
+        for entry in list(getattr(pool, "_entries", None) or []):
+            if getattr(entry, "id", "") in have:
+                continue
+            if getattr(entry, "last_status", None) != module.STATUS_EXHAUSTED:
+                continue
+            try:
+                began = float(getattr(entry, "last_status_at", None))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if now - began < ceiling:
+                continue
+            cooldowns = getattr(entry, "model_cooldowns", None) or {}
+            if isinstance(cooldowns, dict) and any(
+                isinstance(until, (int, float)) and until > now
+                for name, until in cooldowns.items()
+                if not model or name == model
+            ):
+                continue
+            if not self._is_usable(pool, entry, refresh=refresh):
+                continue
+            released.append(entry)
+        if not released:
+            return available
+        logger.info(
+            "kame: %s — %d key(s) held past the %.0fs ceiling handed back",
+            getattr(pool, "provider", "?"), len(released), ceiling,
+        )
+        return list(available) + released
 
     # -- which of the healthy ones ---------------------------------------
 
@@ -1762,7 +1900,9 @@ class PoolBinding:
             # answer is the only defensible one.
             return available
 
-        ledger = self._store.load()
+        # 1.8.1.6: read through the owner's ceiling, so a bench recorded
+        # before it applied cannot hold a key past it (see ``Ledger.within``).
+        ledger = self._store.load().within(_ceiling_s())
         if not len(ledger):
             return available
 

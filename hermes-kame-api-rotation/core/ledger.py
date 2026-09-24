@@ -153,6 +153,11 @@ class Bench:
     # a second job: it is the fingerprint, and it has to keep matching the
     # number the host is holding or this bench stops being provably ours.
     extended_to: float = 0.0
+    #: 1.8.1.6. Read-side only, never stored: the owner's ceiling measured
+    #: from ``recorded_at``, set by :meth:`Ledger.within`. Kept apart from
+    #: ``reset_at`` for the reason just above -- that number is the
+    #: fingerprint and must stay what the host stored.
+    ceiling_at: float = 0.0
 
     @property
     def key(self) -> Tuple[str, str]:
@@ -161,7 +166,8 @@ class Bench:
     @property
     def until(self) -> float:
         """When KAME stops withholding this key. The deadline that decides."""
-        return max(self.reset_at, self.extended_to)
+        deadline = max(self.reset_at, self.extended_to)
+        return min(deadline, self.ceiling_at) if self.ceiling_at > 0.0 else deadline
 
     @property
     def is_extended(self) -> bool:
@@ -294,6 +300,24 @@ class Ledger:
 
     def benches(self) -> List[Bench]:
         return list(self._benches.values())
+
+    def within(self, ceiling_s: float) -> "Ledger":
+        """This ledger with no bench outlasting ``ceiling_s`` from when it was recorded.
+
+        1.8.1.6, the owner's rule: no hold outlives ``max_hold_seconds``,
+        whoever set it. New benches are recorded inside it; this bounds the
+        ones recorded before -- by an older build that obeyed a provider's 24h,
+        or under a ceiling the owner has since lowered. Anchored at
+        ``recorded_at``, so a bound bench ends rather than moving with the
+        clock. A read-side view: nothing is written back.
+        """
+        bounded = []
+        for bench in self._benches.values():
+            limit = _coerce_float(bench.recorded_at)
+            if limit is not None and bench.until > limit + ceiling_s:
+                bench = replace(bench, ceiling_at=limit + ceiling_s)
+            bounded.append(bench)
+        return Ledger(bounded)
 
     def find(self, credential_id: str, model: Any) -> Optional[Bench]:
         return self._benches.get((str(credential_id or ""), normalize_model(model)))

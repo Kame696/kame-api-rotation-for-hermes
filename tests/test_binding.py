@@ -2171,11 +2171,13 @@ class TestTheRealOpenRouterPayloadEndToEnd:
             window=verdict.quota_window, source=verdict.source,
             reset_at=verdict.reset_at, now=clock.now, scope=verdict.quota_scope,
         )
+        # 1.8.1.6: the pool's clock set before the bench, as the real pool's
+        # ``time.time()`` is -- ``last_status_at`` anchors the ceiling.
+        pool.now = clock.now
         pool._mark_exhausted(
             pool.by_id(key), 429,
             {"reset_at": verdict.reset_at, "reason": verdict.reason},
         )
-        pool.now = clock.now
         return verdict
 
     def test_the_daily_cap_is_benched_to_the_moment_openrouter_named(self, openrouter):
@@ -2243,21 +2245,27 @@ class TestTheDailyWaitTheProviderSpelledOut:
             window=verdict.quota_window, source=verdict.source,
             reset_at=verdict.reset_at, now=clock.now, scope=verdict.quota_scope,
         )
+        pool.now = clock.now
         pool._mark_exhausted(
             pool.by_id("k0"), 429,
             {"reset_at": verdict.reset_at, "reason": verdict.reason},
         )
-        pool.now = clock.now
 
         bench = binding._store.load(force=True).find("k0", MAIN)
         assert bench is not None
         assert bench.until == pytest.approx(clock.now + 6 * 3600 + 12 * 60)
 
-        # Not back at the hour, which is where the flat re-probe would have
-        # put it — and where it would have been refused again.
-        _tick(pool, clock, 3600.0 + 60.0)
+        # Not back at 58 seconds, which is what the per-minute header said.
+        _tick(pool, clock, 60.0)
         runtime.note_call("openai", MAIN)
         assert "k0" not in available(pool)
+
+        # 1.8.1.6, owner decision: back at the ceiling (one hour by default),
+        # however long the provider asked for. Before, this key sat out the
+        # whole 6h12m -- past the ``max_hold_seconds`` the owner had set.
+        _tick(pool, clock, 3600.0)
+        runtime.note_call("openai", MAIN)
+        assert "k0" in available(pool)
 
 
 class TestOneCredentialHoldingSeveralKeys:

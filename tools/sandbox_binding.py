@@ -100,6 +100,12 @@ def main() -> int:
 
     home = Path(tempfile.mkdtemp(prefix="kame-sandbox-"))
     os.environ["HERMES_HOME"] = str(home)
+    # 1.8.1.6: no hold outlives the owner's ceiling, the provider's own
+    # deadline included. Sections 3-18 exercise the per-model machinery on
+    # 9-24h deadlines, so they run under the largest ceiling the owner can
+    # set, where those deadlines pass through intact; [18c] witnesses the
+    # ceiling itself at its default.
+    os.environ["KAME_MAX_HOLD"] = str(24 * HOUR)
     sys.path.insert(0, str(HERMES))
     print(f"sandbox home: {home}")
 
@@ -1040,6 +1046,62 @@ def main() -> int:
         )
         single._current_id = "solo01"
         check("a row that is a key is still returned", single.current().id, "solo01")
+
+        print("\n[18c] no hold outlives the owner's ceiling, whoever set it (1.8.1.6)")
+        os.environ.pop("KAME_MAX_HOLD", None)
+        binding._clock = time.time  # sections 15-18 left a hand-driven clock
+        capped_entries = [
+            cp.PooledCredential(
+                provider="gemini",
+                id=uuid.uuid4().hex[:6],
+                label=f"cap-{i}",
+                auth_type=cp.AUTH_TYPE_API_KEY,
+                priority=i,
+                source="manual",
+                access_token=f"AIza-sandbox-cap-{i}",
+            )
+            for i in range(3)
+        ]
+        capped = cp.CredentialPool("gemini", capped_entries)
+        cap_labels = {e.id: e.label for e in capped_entries}
+
+        def cap_usable():
+            got, _pending = capped._available_entries()
+            return sorted(cap_labels[e.id] for e in got)
+
+        runtime.note_call("gemini", MAIN)
+        marked_at = time.time()
+        capped._mark_exhausted(
+            capped_entries[0], 429, {"reason": "rate_limit", "reset_at": marked_at + 24 * HOUR}
+        )
+        stored = next(e for e in capped.entries() if e.id == capped_entries[0].id)
+        check(
+            "a provider's 24h is stored as the 1h ceiling",
+            abs(stored.last_error_reset_at - (marked_at + HOUR)) < 5.0,
+            True,
+        )
+        check("and the key is out for now", cap_usable(), ["cap-1", "cap-2"])
+        # A hold written before this rule applied -- by an older build, or by
+        # Hermes alone -- still standing an hour after it began.
+        legacy = replace(
+            stored,
+            last_status_at=time.time() - HOUR - 1.0,
+            last_error_reset_at=time.time() + 23 * HOUR,
+        )
+        capped._replace_entry(stored, legacy)
+        check("an older 24h hold is handed back at the hour", cap_usable(), ["cap-0", "cap-1", "cap-2"])
+        # The owner lowers the dial mid-hold.
+        os.environ["KAME_MAX_HOLD"] = "600"
+        runtime.note_call("gemini", MAIN)
+        capped._mark_exhausted(capped_entries[1], 503, {"reason": "server_error"})
+        second = next(e for e in capped.entries() if e.id == capped_entries[1].id)
+        check(
+            "the host's own 1h TTL is held to a 10-minute ceiling",
+            abs((second.last_error_reset_at or 0.0) - (time.time() + 600.0)) < 5.0,
+            True,
+        )
+        os.environ.pop("KAME_MAX_HOLD", None)
+        runtime.forget_call()
 
         print("\n[19] uninstall leaves Hermes exactly as found")
         names = (
