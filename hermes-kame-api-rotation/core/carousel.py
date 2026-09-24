@@ -372,7 +372,15 @@ def is_bare_resource_exhausted(evidence: Any, *, stated: bool = False) -> bool:
         structured = str(getattr(evidence, "code", "") or "")
     if structured.strip().upper() == "RESOURCE_EXHAUSTED":
         return True
-    return bool(re.search(r"HTTP 429 \(RESOURCE_EXHAUSTED\)", str(getattr(evidence, "raw_message", "") or "")))
+    # 1.8.1.4: both renderings of the same status line. The host writes
+    # "HTTP 429 (RESOURCE_EXHAUSTED)"; the google-genai SDK writes "429
+    # RESOURCE_EXHAUSTED." / "429 RESOURCE_EXHAUSTED:" -- the shape of the
+    # independent answer key's real-01 row (tests/test_expected_gate.py), which
+    # took a flat 30s here while the Agent Zero port, reading both, laddered it.
+    return bool(re.search(
+        r"(?:HTTP )?(?<![0-9])429 \(?RESOURCE_EXHAUSTED\)?(?![A-Z_])",
+        str(getattr(evidence, "raw_message", "") or ""),
+    ))
 
 #: Kinds that name a counter longer than a rolling minute. Only these teach
 #: ``Carousel._named_window``; a per-minute throttle names a window that has

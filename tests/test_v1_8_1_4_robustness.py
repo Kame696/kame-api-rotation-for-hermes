@@ -244,3 +244,40 @@ def test_a_per_minute_throttle_under_the_footer_is_not_billing_on_the_fallback(m
     rest = engine._pools["gemini:gemini-3.7-flash"]["AIzaSy-footer-1"]["sick_until"]
     import time as _time
     assert rest - _time.time() < 60
+
+
+# ---------------------------------------------------------------------------
+# Gemini's bare RESOURCE_EXHAUSTED in either rendering takes the 1-2-4s ladder.
+# ---------------------------------------------------------------------------
+
+
+class _GeminiAPIError(Exception):
+    status_code = 429
+
+
+@pytest.mark.parametrize("message", [
+    "429 RESOURCE_EXHAUSTED: Resource has been exhausted (e.g. check quota).",   # answer key real-01
+    "429 RESOURCE_EXHAUSTED. Resource has been exhausted (e.g. check quota).",
+    "Gemini HTTP 429 (RESOURCE_EXHAUSTED): Resource has been exhausted (e.g. check quota).",
+])
+def test_a_bare_resource_exhausted_is_bare_in_either_rendering(message):
+    ev = evidence.harvest(_GeminiAPIError(message))
+    assert carousel.is_bare_resource_exhausted(ev) is True
+
+
+def test_a_rendering_that_names_a_quota_id_is_not_bare():
+    ev = evidence.harvest(_GeminiAPIError(
+        "429 RESOURCE_EXHAUSTED: quotaId GenerateRequestsPerMinutePerProjectPerModel-FreeTier"))
+    assert carousel.is_bare_resource_exhausted(ev) is False
+
+
+def test_the_answer_keys_real_01_shape_rests_on_the_ladder_not_thirty_seconds():
+    engine = carousel.Carousel()
+    binding = dispatch_binding.DispatchBinding(engine=engine)
+    import time as _time
+    before = _time.time()
+    binding._on_failure("gemini:gemini-3.8-flash", "AIzaSy-bare-1",
+                        _GeminiAPIError("429 RESOURCE_EXHAUSTED: Resource has been exhausted (e.g. check quota)."),
+                        "x", 1, False)
+    rest = engine._pools["gemini:gemini-3.8-flash"]["AIzaSy-bare-1"]["sick_until"] - before
+    assert rest < 5
