@@ -138,3 +138,29 @@ class TestTheFileKeepsItsShape:
         envfile.write("KAME_DAILY_COOLDOWN", "300")
         assert link.is_symlink()
         assert b"KAME_DAILY_COOLDOWN=300" in real.read_bytes()
+
+
+commands = importlib.import_module(f"{PACKAGE}.commands")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+class TestTheAuthStoreBackupIsBornPrivate:
+    """``/kame-keys add|import`` copies auth.json aside first. The copy used to
+    be opened at the umask's 0644 by ``shutil.copy2`` and only then given
+    auth.json's 0600."""
+
+    def test_the_backup_is_owner_only_from_the_moment_it_exists(self, tmp_path, monkeypatch):
+        auth = tmp_path / "auth.json"
+        auth.write_text('{"credential_pool": {"openai": [{"access_token": "sk-x"}]}}')
+        auth.chmod(0o600)
+        monkeypatch.setattr(commands, "_auth_store_path", lambda: auth)
+        # Without the mode copy, what the file was born with is what remains.
+        monkeypatch.setattr(commands.shutil, "copystat", lambda *a, **k: None)
+        old = os.umask(0o022)
+        try:
+            name = commands._backup_auth_store()
+        finally:
+            os.umask(old)
+        backup = tmp_path / name
+        assert backup.read_bytes() == auth.read_bytes()
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600

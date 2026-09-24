@@ -19,6 +19,7 @@ the file is copied to a timestamped backup before the first write of a run.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import time
@@ -173,7 +174,13 @@ def _backup_auth_store() -> Optional[str]:
             return None
         stamp = time.strftime("%Y%m%d-%H%M%S")
         target = path.with_name(f"auth.json.kame-{stamp}.bak")
-        shutil.copy2(path, target)
+        # 1.8.1.4: created owner-only. ``shutil.copy2`` opened the copy at the
+        # umask's 0644 and only then copied auth.json's 0600 onto it, so for
+        # that moment every key sat in a world-readable file.
+        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with path.open("rb") as source, os.fdopen(fd, "wb") as dest:
+            shutil.copyfileobj(source, dest)
+        shutil.copystat(path, target)
         _prune_backups(path)
         return target.name
     except Exception:
