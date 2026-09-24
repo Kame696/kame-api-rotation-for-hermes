@@ -1,0 +1,79 @@
+# Does KAME still fit the Hermes that just shipped?
+#
+# Weekly, and on demand with any Hermes tag or branch. Installs that Hermes
+# into a throwaway HERMES_HOME and runs the host witnesses from tools/:
+# the host's own error corpus and credential-pool suites with and without
+# KAME, the runtime contracts (each with its mutation control), the host
+# facts KAME's non-decisions rest on, and the sandbox binding against the
+# real CredentialPool. No provider is contacted and no credential exists.
+#
+# A red run here is news about Hermes, not necessarily a bug in KAME: read
+# the failing tool's own output, then DESIGN.md and HOST_ALERTS.md.
+name: host-compat
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: "Hermes tag or branch (default: newest release tag)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+jobs:
+  witnesses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch Hermes
+        run: |
+          REF="${{ github.event.inputs.hermes_ref || 'latest' }}"
+          if [ "$REF" = "latest" ]; then
+            REF=$(git ls-remote --tags --refs https://github.com/NousResearch/hermes-agent.git \
+                  | awk -F/ '{print $3}' | sort -V | tail -1)
+          fi
+          echo "Hermes ref: $REF"
+          HOME_DIR="$RUNNER_TEMP/hermes-home"
+          mkdir -p "$HOME_DIR"
+          git clone --depth 1 --branch "$REF" https://github.com/NousResearch/hermes-agent.git "$HOME_DIR/hermes-agent"
+          echo "HERMES_REF=$REF" >> "$GITHUB_ENV"
+          echo "HERMES_HOME=$HOME_DIR" >> "$GITHUB_ENV"
+          echo "KAME_HERMES_ROOT=$HOME_DIR/hermes-agent" >> "$GITHUB_ENV"
+
+      - name: Install Hermes into its own venv
+        run: |
+          cd "$KAME_HERMES_ROOT"
+          python -m venv venv
+          venv/bin/python -m pip install --upgrade pip
+          venv/bin/python -m pip install -e ".[dev,anthropic,messaging]"
+          grep -m1 '^version' pyproject.toml
+
+      - name: Host facts, runtime and Gemini contracts
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_assumptions.py
+
+      - name: Host error corpus with and without KAME
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_corpus.py
+
+      - name: Host credential-pool suites with and without KAME
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_pool_suite.py
+
+      - name: Host prose stripping
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_prose.py
+
+      - name: Gemini error transport
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_gemini_error_transport.py --host "$KAME_HERMES_ROOT" --out "$RUNNER_TEMP/gemini_error_transport.json"
+
+      - name: Sandbox binding on the real CredentialPool
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/sandbox_binding.py

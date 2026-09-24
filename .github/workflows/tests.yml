@@ -1,0 +1,38 @@
+# Offline suite on every push and pull request.
+#
+# The plugin needs nothing but the standard library at runtime and pytest to
+# test, so each job is: checkout, Python, pytest. Three operating systems
+# because the plugin runs on all three and two of its hardest bugs were
+# platform-shaped (Windows AppData redirection, POSIX drive-less paths).
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: offline suite (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Hermes itself supports >=3.11,<3.14 (its pyproject.toml).
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: Run the offline suite
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest -q -p no:cacheprovider
