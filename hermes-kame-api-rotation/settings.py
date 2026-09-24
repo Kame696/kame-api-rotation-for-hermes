@@ -30,6 +30,7 @@ failure mode of a switch must never be worse than the feature it switches.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import Dict, Optional, Tuple
@@ -474,6 +475,11 @@ def _as_number(value: object, key: str) -> Optional[float]:
     try:
         number = float(str(value).strip())
     except (TypeError, ValueError):
+        return None
+    # ``float`` reads "nan". Clamping it lands on whatever side ``max`` and
+    # ``min`` happen to return, which is not a reading of anything the person
+    # wrote -- so it says nothing, like any other unreadable value.
+    if math.isnan(number):
         return None
     low, high = _NUMBER_RANGE.get(key, (float("-inf"), float("inf")))
     number = max(low, min(number, high))
@@ -1070,6 +1076,10 @@ def parse(key: str, raw: object) -> Tuple[Optional[str], str]:
         try:
             number = float(text)
         except (TypeError, ValueError):
+            number = math.nan
+        if math.isnan(number):
+            # "nan" parses as a float and then passes every range check,
+            # because every comparison with it is false.
             unit = UNITS.get(key, "seconds")
             return None, f"{key} takes a number of {unit}; {text!r} is not one"
         low, high = _NUMBER_RANGE.get(key, (float("-inf"), float("inf")))

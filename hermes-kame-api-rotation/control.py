@@ -128,7 +128,13 @@ def poll() -> bool:
     key = str(request.get("key") or "")
     value = request.get("value")
 
-    ok, detail = _apply(action, key, value)
+    try:
+        ok, detail = _apply(action, key, value)
+    except Exception:
+        # ``poll`` promises never to raise, and the panel waits on this id:
+        # an unrecorded crash reads there as "the backend is not running".
+        logger.warning("kame: panel request %s failed", action, exc_info=True)
+        ok, detail = False, "KAME could not apply that — see the log"
     _record({"id": identifier, "action": action, "key": key, "ok": ok, "detail": detail})
     if identifier:
         _applied.append(identifier)
