@@ -452,7 +452,11 @@ def the_desktop_shows_only_a_wait_notice_that_opens_the_right_way(_=None):
     if not ui.is_file():
         return "provider-wait.ts not found", True
     body = ui.read_text(encoding="utf-8", errors="replace")
-    match = re.search(r"return\s+/(\^.+?)/i\.test\(value\)", body)
+    # The literal sits on one line; the call around it need not. Hermes 0.21.5
+    # wrapped ``.test(value)`` across three lines when it widened the gate to
+    # ``(?:still\s+)?waiting on`` -- the same single test, reformatted, and a
+    # probe that insisted on one line reported the gate as gone.
+    match = re.search(r"return\s+/(\^[^\n]+?)/i\.test\(\s*value\s*\)", body)
     if not match:
         return "the gate is no longer a single regex test", True
     host_pattern = match.group(1).replace("(?:", "(?:")
@@ -700,15 +704,25 @@ def the_installer_still_stops_at_manifest_version_one(_=None):
     split-gate regression is still represented.
     """
     body = (AGENT / "hermes_cli/plugins_cmd.py").read_text(encoding="utf-8", errors="replace")
-    if "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION" not in body:
+    # Two installer shapes are both real, released Hermes: the tagged 0.21.3
+    # (v2026.9.14) still carries the private ``_SUPPORTED_MANIFEST_VERSION = 1``,
+    # and 0.21.4+ imports the loader's shared constant. What the invariant
+    # needs is not which shape the host has but that KAME's declaration fits
+    # under whichever cap this installer enforces -- so each shape yields its
+    # cap, and only a missing cap or a declaration above it fails.
+    private = re.search(r"^_SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", body, re.MULTILINE)
+    if "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION" in body:
+        manifest_body = (AGENT / "hermes_cli/plugins_manifest.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        match = re.search(r"^SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", manifest_body, re.MULTILINE)
+        if not match:
+            return "the shared manifest-version constant moved", True
+        supported = int(match.group(1))
+    elif private:
+        supported = int(private.group(1))
+    else:
         return "the installer no longer shares the loader's manifest-version gate", True
-    manifest_body = (AGENT / "hermes_cli/plugins_manifest.py").read_text(
-        encoding="utf-8", errors="replace"
-    )
-    match = re.search(r"^SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", manifest_body, re.MULTILINE)
-    if not match:
-        return "the shared manifest-version constant moved", True
-    supported = int(match.group(1))
 
     manifest = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/plugin.yaml"
     declared = re.search(
