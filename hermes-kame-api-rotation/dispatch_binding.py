@@ -835,6 +835,11 @@ class _Spinner:
 STATUS_SYMBOLS = ("⏳", "⚠", "↻")
 STATUS_OPENERS = ("waiting on", "no output", "no response", "model returned")
 
+#: A structured code or type that names a moderation refusal (1.8.1.4). Field
+#: values only -- prose such as "blocked by" also names ordinary key denials.
+_CONTENT_POLICY_FIELD = re.compile(r"content[\s_-]*(?:policy|filter)", re.I)
+
+
 _STATUS_GATE = re.compile(
     r"^(?:⏳|⚠|↻)\s*(?:waiting on|no (?:output|response)|model returned)",
     re.IGNORECASE,
@@ -2741,6 +2746,20 @@ class DispatchBinding:
         if isinstance(metadata, dict) and (
             "flagged_input" in metadata or "reasons" in metadata
             or metadata.get("error_type") == "content_policy_violation"
+        ):
+            return "raise", "content_filter", ev.status_code
+        # 1.8.1.4: the same fact in the provider's own code/type field, not only
+        # in OpenRouter's metadata. OpenAI files a moderation refusal as
+        # ``code: "content_policy_violation"``, Azure as ``code:
+        # "content_filter"`` -- and on a 403, ``is_terminal`` reads auth first,
+        # so the legacy table below called it ``auth``: the key rested 20s and
+        # the flagged prompt was sent again on every other key in the pool.
+        # ``classify`` already declined it (test_v1_8_0_0_same_code:
+        # "surfaces as request fault"); the request, not the key, is the fault.
+        from .core.classify import structured_error_values
+        if any(
+            _CONTENT_POLICY_FIELD.search(str(value))
+            for value in structured_error_values(body, exc, None)
         ):
             return "raise", "content_filter", ev.status_code
         if looks_like_upstream_wrapper(body):

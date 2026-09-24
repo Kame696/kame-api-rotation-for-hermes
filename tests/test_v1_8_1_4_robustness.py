@@ -76,3 +76,42 @@ def test_an_error_info_reason_is_still_found_in_a_real_details_list():
     _details, reason = evidence._read_details(exc, exc.body, notes)
     assert reason == "RATE_LIMIT_EXCEEDED"
     assert "reason:body" in notes
+
+
+# ---------------------------------------------------------------------------
+# A moderation refusal named in the provider's own code field is the request's
+# fault on any status -- never a key to rest and a prompt to resend.
+# ---------------------------------------------------------------------------
+
+
+class _Coded(Exception):
+    def __init__(self, message, status, code):
+        super().__init__(message)
+        self.status_code = status
+        self.body = {"error": {"code": code, "message": message}}
+
+
+@pytest.mark.parametrize("status,code", [
+    (403, "content_policy_violation"),   # OpenAI moderation (the case that rotated)
+    (400, "content_policy_violation"),
+    (400, "content_filter"),             # Azure OpenAI
+    (403, "ContentFilter"),
+])
+def test_a_coded_content_policy_refusal_is_handed_back_not_rotated(status, code):
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, kind, got = binding._on_failure(
+        "openai:gpt-x", "sk-robustness-0002", _Coded("Your request was flagged", status, code),
+        "x", 1, False,
+    )
+    assert (verdict, kind, got) == ("raise", "content_filter", status)
+
+
+def test_a_key_denial_that_merely_says_blocked_by_still_rotates():
+    # The prose indicators ("blocked by", "safety") also appear in key
+    # denials; only a structured field may call the request the fault.
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, kind, _ = binding._on_failure(
+        "openai:gpt-x", "sk-robustness-0003",
+        _Coded("API key blocked by admin", 403, "permission_denied"), "x", 1, False,
+    )
+    assert verdict == "rotate"
