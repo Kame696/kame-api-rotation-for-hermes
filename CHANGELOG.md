@@ -7,6 +7,44 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.5] — the ceiling holds, whatever the clock does
+
+**In one line:** `max_hold_seconds` now bounds every rest for real, and four
+inputs that could break KAME's bookkeeping are read safely instead.
+
+**The ceiling**
+
+- **A clock that steps back no longer stretches a rest.** Rests are wall-clock
+  deadlines; after the computer's clock stepped back two hours (NTP, a resume,
+  a hand-set clock) a 30-second rest had become two hours, on every key resting
+  at that moment. A rest is now trimmed to the ceiling from the moment it is
+  next looked at.
+- **Another profile's longer hold is released at this profile's ceiling.** With
+  pool-health sharing on, a sibling profile allowed 9h holds a key for 9h here
+  too, even with a 1h ceiling: the ceiling was re-applied from *now* on every
+  read, so it moved with the clock and released nothing, while the ETA always
+  said "one hour". It is now fixed at the first read of that hold.
+
+**Read safely**
+
+- **A number too large to read** (`retryDelay`, `X-RateLimit-Reset` or
+  `retry_after` of hundreds of digits, from a provider or a proxy) is ignored
+  instead of ending the turn with an `OverflowError`; the same for a damaged row
+  in KAME's own stored benches.
+- **A damaged shared pool-health file heals** on the next write. Five kinds of
+  damage (bytes that are not UTF-8, a row with a non-numeric time) used to
+  switch sharing off for good, silently, and make *Clear pool* fail.
+- **`/kame set <setting> nan`** is refused with a sentence instead of a
+  traceback, and `KAME_…=nan` in the environment means "not set" instead of the
+  lowest allowed value. A panel request that fails for any reason is answered
+  as failed instead of looking like a stopped backend.
+
+**Verified:** 3,032 offline tests (Linux); host witnesses green on Hermes
+0.21.3, 0.21.4 and 0.21.5; the cross-port replay still agrees with the Agent
+Zero port on 860 of 877 refusal shapes; the failure-path fuzz with huge
+numbers added raises nothing (26,164 + 23,416 runs). Not yet run live on a
+gateway with real keys.
+
 ## [1.8.1.4] — safer with your keys, wiser about errors
 
 **In one line:** the agent still never stops on a quota; KAME now never loses

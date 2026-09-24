@@ -271,6 +271,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.1.5** | The ceiling holds, whatever the clock does | No key sits out longer than `max_hold_seconds` any more when the computer's clock steps back (a 30s rest had become two hours), and a longer hold set by another Hermes profile is now actually released at this profile's ceiling instead of only being reported as if it were. A provider number too large to read, a damaged shared pool-health file or `/kame set … nan` no longer end a turn, turn sharing off for good or print a traceback. |
 | **1.8.1.4** | Safer with your keys, wiser about errors | Hermes' `.env` can no longer be left half-written (a failed write used to lose keys); key backups are owner-only from the first byte. A context-too-long error is no longer mistaken for a rate limit because a token count contains 429; a rate limit is never mistaken for the end of the turn; a flagged prompt is not resent on every key. Anthropic per-model 429s on Hermes 0.21.4+ rest 30s, not an hour, and show in `/kame events`. Same decisions as Agent Zero on 860 of 877 recorded refusal shapes (the rest are documented). |
 | **1.8.1.3** | Checked against Hermes 0.21.4 and 0.21.5 | No runtime change. Every host witness passes on 0.21.3–0.21.5; four of them were fixed where they mistook a reformatted or reorganised Hermes for a broken one; the gate tests read this run's evidence instead of stale files; CI workflows added. |
 | **1.8.1.2** | The provider's number wins again | A wait the provider states in prose or a body field ("try again in 7s", Codex `resets_in_seconds`) is obeyed again instead of a flat 30s; a billing refusal no wait fixes ends the turn once every key said so; same decisions as Agent Zero on all 1,984 recorded refusals. |
@@ -346,6 +347,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.4** — *because round-robin was never enough*
+🐢⚡ **KAME 1.8.1.5** — *because round-robin was never enough*
 
 </div>
