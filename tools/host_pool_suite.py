@@ -64,6 +64,26 @@ EXPECTED_DIVERGENCE = {
     "tests/agent/test_credential_pool_routing.py::TestFailureAttribution::test_auth_refresh_targets_failing_key_not_pointer",
 }
 
+# 1.8.1.6, owner decision: no hold outlives ``max_hold_seconds``, the
+# provider's own deadline included. This host test stores a Codex weekly reset
+# seven days out and asserts the key stays unavailable; with the ceiling it
+# comes back after an hour and is probed (and held again if still refused).
+# It must fail with the plugin -- if it passes, the ceiling has stopped
+# releasing anything -- and it must pass without it, which [1] shows.
+CEILING_DIVERGENCE = {
+    "tests/agent/test_credential_pool.py::test_explicit_reset_timestamp_overrides_default_429_ttl",
+}
+
+
+def _ships(test_id: str) -> bool:
+    """Whether this Hermes has the named test at all."""
+    path, _, name = test_id.partition("::")
+    try:
+        return f"def {name.split('::')[-1]}(" in (HERMES / path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 SUITES = (
     "tests/agent/test_credential_pool.py",
     "tests/agent/test_credential_pool_deferred_refresh.py",
@@ -245,6 +265,8 @@ def main() -> int:
 
     base_failures = failed_tests(base_out)
     caused = sorted(failed_tests(kame_out) - base_failures)
+    ceiling_caused = sorted(set(caused) & CEILING_DIVERGENCE)
+    caused = [name for name in caused if name not in CEILING_DIVERGENCE]
     print()
     if base_failures:
         # Said out loud rather than subtracted in silence: a reader who sees
@@ -264,11 +286,25 @@ def main() -> int:
         print(kame_out[-5000:])
         return 1
 
+    silent = sorted(name for name in CEILING_DIVERGENCE if _ships(name) and name not in ceiling_caused)
+    if silent:
+        print(f"{len(silent)} ceiling divergence(s) did not happen:")
+        for name in silent:
+            print(f"        {name}")
+        print("        a hold past max_hold_seconds is no longer being released.")
+        return 1
+    if ceiling_caused:
+        print(f"{len(ceiling_caused)} of the host's tests hold a key past the owner's ceiling")
+        print("        (1.8.1.6: no hold outlives max_hold_seconds) and pass without KAME:")
+        for name in ceiling_caused:
+            print(f"        {name}")
+        print()
+
     if EXPECTED_DIVERGENCE:
         print("[2b] the same suites again with load spreading switched off")
         _, flat_rc_out = run(with_kame=True, workdir=workdir, spread=False)
         print(f"        {summary_line(flat_rc_out)}")
-        flat_caused = failed_tests(flat_rc_out) - base_failures
+        flat_caused = failed_tests(flat_rc_out) - base_failures - CEILING_DIVERGENCE
         print()
 
         stale = sorted(EXPECTED_DIVERGENCE - set(caused))
@@ -307,7 +343,7 @@ def main() -> int:
     print("[3] the same suites with one credential deliberately hidden")
     _, bad_out = run(with_kame=True, workdir=workdir, sabotage=True)
     print(f"        {summary_line(bad_out)}")
-    caught = sorted(failed_tests(bad_out) - base_failures - EXPECTED_DIVERGENCE)
+    caught = sorted(failed_tests(bad_out) - base_failures - EXPECTED_DIVERGENCE - CEILING_DIVERGENCE)
     print()
     if not caught:
         print("a broken binding passed these suites - they cannot prove the")
@@ -320,7 +356,7 @@ def main() -> int:
         print(f"        ... and {len(caught) - 3} more")
     print()
 
-    print("apart from the named fill_first assertions, KAME changed nothing")
+    print("apart from the named fill_first and ceiling assertions, KAME changed nothing")
     print("        the host tests about its own pool: persistence, refresh,")
     print("        quarantine, routing, provider boundaries, sole-credential")
     print("        cooldown and rotation bounds answer exactly as they do")
