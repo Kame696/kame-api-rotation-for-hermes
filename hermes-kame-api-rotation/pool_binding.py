@@ -1112,7 +1112,17 @@ class PoolBinding:
             # line cannot reach. What it does bound is KAME's own
             # contribution: ``escalate.stretch``'s widening never pushes the
             # journalled, ledger-extending number past the ceiling.
-            held_to = min(held_to, now + _ceiling_s())
+            #
+            # 1.8.1.3: and never below ``reset_at`` itself. The ceiling bounds
+            # what KAME *adds*; it cannot take away what the host is already
+            # holding. Without the floor, a host-derived 24h deadline was
+            # journalled as ``now + 1h`` while the pool (and the ledger,
+            # ``max(reset_at, extend_to)``) kept the key out for the full 24h
+            # -- ``Block.reset_at`` is "the deadline the key was actually held
+            # to", and ``/kame events`` showed a key "back in 1h" that stayed
+            # out all day. ``tools/sandbox_binding.py`` [11] caught it against
+            # the real CredentialPool on Hermes 0.21.3, 0.21.4 and 0.21.5.
+            held_to = max(float(reset_at), min(held_to, now + _ceiling_s()))
 
         # The ledger first: it is what the next selection reads, and it must
         # not be at the mercy of a bookkeeping bug in the half that only

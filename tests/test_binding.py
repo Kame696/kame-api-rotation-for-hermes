@@ -1911,6 +1911,44 @@ class TestTheDailyAnchorThatRepeatsForever:
 # --------------------------------------------------------------------------
 
 
+class TestTheJournalRecordsTheHoldThatGoverned:
+    """1.8.1.3. ``Block.reset_at`` is the deadline the key was actually held to.
+
+    G8's ceiling bounds what KAME *adds* to a bench. When the host derived a
+    deadline past the ceiling on its own (a ``Retry-After``, a Codex
+    ``resets_in_seconds``, prose Hermes parses itself), ``_carry_deadline``
+    rightly leaves it alone and the pool holds the key for all of it -- so the
+    journal must say so too. It used to record ``now + ceiling``: a key
+    ``/kame events`` called "back in 1h" stayed out for the day.
+    """
+
+    def test_a_host_deadline_past_the_ceiling_is_journalled_as_held(self, journaling):
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        pool._mark_exhausted(
+            pool.by_id("k0"), 429,
+            {"reset_at": clock.now + 24 * HOUR, "reason": "rate_limit"},
+        )
+        rows = [row for row in journal_of(binding).blocks() if row.credential_id == "k0"]
+        assert len(rows) == 1
+        assert rows[0].reset_at == clock.now + 24 * HOUR
+        # The ledger was already right and is untouched: the host's own number,
+        # not extended.
+        bench = binding._store.load(force=True).find("k0", MAIN)
+        assert bench.is_extended is False
+        assert bench.until == bench.reset_at == clock.now + 24 * HOUR
+
+    def test_a_host_deadline_inside_the_ceiling_is_journalled_verbatim(self, journaling):
+        binding, pool, _state, clock = journaling
+        runtime.note_call("gemini", MAIN)
+        pool._mark_exhausted(
+            pool.by_id("k0"), 429,
+            {"reset_at": clock.now + 40.0, "reason": "rate_limit"},
+        )
+        rows = [row for row in journal_of(binding).blocks() if row.credential_id == "k0"]
+        assert [row.reset_at for row in rows] == [clock.now + 40.0]
+
+
 GOOGLE_BILLING_SENTENCE = (
     "You exceeded your current quota, please check your plan and billing "
     "details. For more information on this error, read the docs: "
