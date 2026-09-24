@@ -325,3 +325,32 @@ def test_a_query_parameter_credential_is_redacted_whatever_its_shape(url):
 def test_quota_evidence_in_a_query_string_survives():
     out = redact_mod.redact("see https://x.example/rate-limits?quotaId=PerDay&model=gemini", limit=0)
     assert "quotaId=PerDay" in out
+
+
+# ---------------------------------------------------------------------------
+# Under a status that already blames the request, only a throttle PHRASE keeps
+# it from being handed back -- not the bare noun "quota" or a bare number 429.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("message", [
+    "Invalid request: could not parse: 'we have exceeded your current quota'",   # echoed user text
+    "Invalid value 429 for parameter max_tokens",
+    "Unknown field 'quota' in generation_config",
+])
+def test_a_request_fault_that_mentions_quota_or_429_is_terminal(message):
+    assert carousel.is_terminal(_Worded(message, 400)) is True
+
+
+@pytest.mark.parametrize("message", [
+    "Quota exceeded for quota metric 'Generate Content API requests per minute'",
+    "upstream returned 429 Too Many Requests",
+    "Rate limit reached for requests",
+])
+def test_a_throttle_phrase_on_a_400_still_rotates(message):
+    assert carousel.is_terminal(_Worded(message, 400)) is False
+
+
+def test_a_bare_noun_still_counts_when_the_status_blames_nothing():
+    # Non-strict path unchanged: no status, the word alone keeps it rotating.
+    assert carousel.is_terminal(_Worded("quota", None)) is False

@@ -886,8 +886,27 @@ def _matches(text: str, indicators: Sequence[str]) -> bool:
 _STATUS_429_IN_TEXT = re.compile(r"(?<![0-9.])429(?![0-9])")
 
 
-def _names_a_throttle(text: str) -> bool:
+def _names_a_throttle(text: str, *, strict: bool = False) -> bool:
+    """Whether the words name a throttle.
+
+    ``strict`` (1.8.1.4) drops the one indicator that is a bare noun,
+    ``"quota"``, for a caller whose status already says the REQUEST is at
+    fault: a 400 ``invalid_request_error`` that echoes the user's own text --
+    "could not parse: 'we have exceeded your current quota'" -- was read as a
+    throttle there, never terminal, and the same malformed request went round
+    every key (measured: 4 attempts in 6s and still going). Every phrase that
+    actually names a spent counter ("quota exceeded", "quota_exceeded", "no
+    quota", "quota left", ...) is still read. The Agent Zero port never had
+    the bare noun. Strict also drops the bare number: under a 400 status,
+    "Invalid value 429 for parameter max_tokens" is a value, not a status; a
+    relayed throttle still says "too many requests" or "rate limit".
+    """
+    if strict:
+        return _matches(text, _STRICT_RATE_LIMIT_INDICATORS)
     return _matches(text, RATE_LIMIT_INDICATORS) or bool(_STATUS_429_IN_TEXT.search(text))
+
+
+_STRICT_RATE_LIMIT_INDICATORS = tuple(i for i in RATE_LIMIT_INDICATORS if i != "quota")
 
 
 def parse_duration(text: str) -> Optional[float]:
@@ -1055,7 +1074,7 @@ def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None
     status = _status_of(error, status_code)
     if status in _SERVER_STATUS:
         return False
-    if status == 429 or _names_a_throttle(text):
+    if status == 429 or _names_a_throttle(text, strict=status in _TERMINAL_STATUS):
         return False
     # 1.8.1.4: the wide content words after the throttle, as this docstring
     # always said ("a 429 is never terminal"). Read before it, "blocked by"
