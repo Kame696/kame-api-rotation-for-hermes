@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -490,6 +491,10 @@ class TestTheDeployHasASecondRoad:
         spec.loader.exec_module(module)
         return module
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="a drive letter is a Windows path: elsewhere Path('C:\\...') has no drive",
+    )
     def test_a_drive_letter_becomes_an_administrative_share(self):
         deploy = self._deploy_module()
         view = deploy.unc_view(Path(r"C:\Users\someone\AppData\Local\hermes"))
