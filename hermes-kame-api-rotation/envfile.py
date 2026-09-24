@@ -25,6 +25,9 @@ many: they drift, and the half that drifts is the half nobody reads.
 from __future__ import annotations
 
 import logging
+import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -50,6 +53,72 @@ def path() -> Optional[Path]:
         return None
 
 
+def _read_lines(target: Path) -> Tuple[List[str], str]:
+    """The file's lines and the line ending it already uses.
+
+    Read as bytes so the ending is observed rather than guessed: Hermes writes
+    ``.env`` in text mode, which is CRLF on Windows and LF elsewhere, and a
+    rewrite that changed every ending would not be "every other line survives
+    byte for byte". A file that does not exist yet gets the platform's ending,
+    which is what a text-mode write would have given it.
+    """
+    raw = target.read_bytes() if target.is_file() else b""
+    if b"\r\n" in raw:
+        newline = "\r\n"
+    elif b"\n" in raw:
+        newline = "\n"
+    else:
+        newline = os.linesep
+    return raw.decode("utf-8").splitlines(), newline
+
+
+def _replace_contents(target: Path, text: str) -> None:
+    """Put ``text`` in ``target`` without ever leaving it half-written.
+
+    1.8.1.4. This file holds every provider key the user has, and it used to be
+    rewritten with ``write_text``: truncate, then write. A write that failed in
+    between -- a full disk, a killed process -- left ``.env`` empty or cut, on
+    every ``/kame set`` and every panel save. Now the bytes go to a temporary
+    file beside it, are flushed to disk, and replace it in one rename, the same
+    way Hermes' own ``_write_env_lines`` does. The file keeps its mode (0600
+    stays 0600; a new file starts at 0600, not the umask's 0644), and a
+    symlinked ``.env`` is written through, so the link survives.
+
+    Where the rename itself is refused -- Windows, while another process holds
+    the file open -- the old in-place write is the fallback, so this is never
+    worse than before and usually much better.
+    """
+    real = Path(os.path.realpath(target)) if target.is_symlink() else target
+    try:
+        mode = stat.S_IMODE(real.stat().st_mode)
+    except OSError:
+        mode = 0o600
+    data = text.encode("utf-8")
+    handle, temporary = tempfile.mkstemp(
+        dir=str(real.parent), prefix=f".{real.name}.kame-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.chmod(temporary, mode)
+        except OSError:
+            pass
+        try:
+            os.replace(temporary, real)
+        except OSError:
+            real.write_bytes(data)
+            os.unlink(temporary)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def write(name: str, value: str) -> Tuple[bool, str]:
     """Set one ``KAME_*`` line. Returns ``(ok, detail)`` and never raises.
 
@@ -67,7 +136,7 @@ def write(name: str, value: str) -> Tuple[bool, str]:
     if target is None:
         return False, "this Hermes exposes no .env path, so the change applies to this session only"
     try:
-        lines = target.read_text(encoding="utf-8").splitlines() if target.is_file() else []
+        lines, newline = _read_lines(target)
     except Exception as exc:
         return False, f"could not read {target}: {type(exc).__name__}"
 
@@ -91,7 +160,7 @@ def write(name: str, value: str) -> Tuple[bool, str]:
         out.append(f"{name}={value}")
 
     try:
-        target.write_text("\n".join(out) + "\n", encoding="utf-8")
+        _replace_contents(target, newline.join(out) + newline)
     except Exception as exc:
         return False, f"could not write {target}: {type(exc).__name__}"
     return True, f"{'updated' if replaced else 'added'} in {target}"
@@ -150,7 +219,7 @@ def forget(name: str) -> Tuple[bool, str]:
     if not target.is_file():
         return True, "nothing to remove"
     try:
-        lines = target.read_text(encoding="utf-8").splitlines()
+        lines, newline = _read_lines(target)
     except Exception as exc:
         return False, f"could not read {target}: {type(exc).__name__}"
     kept = [
@@ -161,7 +230,7 @@ def forget(name: str) -> Tuple[bool, str]:
     if len(kept) == len(lines):
         return True, "nothing to remove"
     try:
-        target.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        _replace_contents(target, (newline.join(kept) + newline) if kept else "")
     except Exception as exc:
         return False, f"could not write {target}: {type(exc).__name__}"
     return True, f"removed from {target}"
