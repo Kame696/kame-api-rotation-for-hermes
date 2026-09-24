@@ -93,6 +93,15 @@ _SECRET_FIELD = re.compile(
 
 _PLACEHOLDER = "[redacted]"
 
+#: 1.8.1.4. A credential passed as a URL query parameter -- Google's own
+#: ``?key=``, and the ``api_key``/``token`` spellings other gateways use -- is
+#: a secret by where it sits, whatever it looks like. The shape rules miss a
+#: key with no vendor prefix and no digit; this one does not need either.
+_QUERY_SECRET = re.compile(
+    r"([?&](?:key|api[_-]?key|apikey|access[_-]?token|token|auth)=)[^&\s#\"'<>]+",
+    re.I,
+)
+
 _NAMED_TEXT = re.compile(
     r'''(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|cookie|set-cookie)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer\s+)?[^\s,;&}\]]+)''',
     re.I,
@@ -142,6 +151,7 @@ def redact(text: Any, limit: int = DEFAULT_LIMIT) -> str:
                     raw = json.dumps(_scrub_fields(json.loads(raw)), ensure_ascii=False, default=str)
                 except (ValueError, TypeError):
                     pass
+        raw = _QUERY_SECRET.sub(lambda m: m.group(1) + _PLACEHOLDER, raw)
         raw = _SECRET_FIELD.sub(r'\1"%s"' % _PLACEHOLDER, raw)
         raw = _NAMED_TEXT.sub(lambda m: m.group(1) + '"' + _PLACEHOLDER + '"', raw)
         raw = _PREFIXED.sub(_PLACEHOLDER, raw)

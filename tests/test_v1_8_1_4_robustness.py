@@ -302,3 +302,26 @@ def test_a_503_in_the_wide_content_words_is_a_busy_server():
     # Only the wide words ("safety", "blocked by"); the narrow request-block
     # phrases are a separate, deliberate rule.
     assert carousel.is_terminal(_Worded("safety service unavailable, blocked by maintenance", 503)) is False
+
+
+# ---------------------------------------------------------------------------
+# A key in a URL query parameter is a secret by where it sits.
+# ---------------------------------------------------------------------------
+redact_mod = importlib.import_module(f"{PACKAGE}.core.redact")
+
+
+@pytest.mark.parametrize("url", [
+    "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent?key={k}",
+    "https://api.example.com/v1/chat?model=m&api_key={k}&stream=true",
+    "https://gw.example.com/v1?token={k}#frag",
+])
+def test_a_query_parameter_credential_is_redacted_whatever_its_shape(url):
+    key = "NoDigitsNoPrefixJustLettersHereOk"   # beats every shape rule
+    out = redact_mod.redact(f"POST {url.format(k=key)} returned 429", limit=0)
+    assert key not in out
+    assert "[redacted]" in out
+
+
+def test_quota_evidence_in_a_query_string_survives():
+    out = redact_mod.redact("see https://x.example/rate-limits?quotaId=PerDay&model=gemini", limit=0)
+    assert "quotaId=PerDay" in out
