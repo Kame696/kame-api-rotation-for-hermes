@@ -7,6 +7,25 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.2] — 2026-09-24 — smarter reading, same non-stop agent
+
+**In one line:** the agent still never stops on a quota; KAME now reads the
+wait time in more places and wastes fewer calls.
+
+- **Better detection.** When a provider says how long to wait — in a header,
+  in the error body, or in plain words like "try again in 7s" — KAME obeys it.
+  1.8.1.1 missed the plain-words and body cases and waited a fixed 30s instead.
+- **Fewer wasted calls.** A ChatGPT/Codex plan that says "back in 3.5 hours"
+  is no longer re-tried every 30 seconds; the key rests up to the one-hour cap.
+- **Better judgment.** If *every* key says "your plan does not include this"
+  or "your country needs billing", the turn shows that message instead of
+  waiting forever — waiting can never fix those. Quota and rate limits still
+  wait and come back on their own, exactly as before.
+- **Same brain as Agent Zero.** Both ports now give the same answer on all
+  1,984 real errors recorded by the author (checked by a new tool).
+- **Tested for real:** hours of live agent turns on 14 Gemini and 2 NVIDIA
+  keys through the running Hermes gateway, plus every existing test suite.
+
 ## [1.8.1.1] — 2026-09-22 — reliability patch
 
 - **Clear pool reports the truth.** Shared health, the ledger, the receipt

@@ -129,6 +129,10 @@ def redact(text: Any, limit: int = DEFAULT_LIMIT) -> str:
     try:
         if text is None:
             return ""
+        if isinstance(text, (bytes, bytearray)):
+            # 1.8.1.2: a raw response body. Decoded, so a JSON body is scrubbed
+            # field by field below instead of stored as "b'...'".
+            text = bytes(text).decode("utf-8", "replace")
         if isinstance(text, (dict, list, tuple)):
             raw = json.dumps(_scrub_fields(text), ensure_ascii=False, default=str)
         else:

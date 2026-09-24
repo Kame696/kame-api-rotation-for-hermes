@@ -131,6 +131,7 @@ rotation in charge.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import random
@@ -236,6 +237,22 @@ _WINDOW_TAG = {
     "per_day": " {PER-DAY}",
     "per_hour": " {per-hour}",
 }
+
+
+def _no_clock_fixes(body: Any, message: str) -> bool:
+    """Whether a billing refusal names a missing entitlement, not an empty balance.
+
+    Evidence only (R01): the structured code ``usage_not_included`` (the plan
+    does not include this service) or the status ``FAILED_PRECONDITION`` (the
+    free tier is not available where the account is). Both are read from the
+    payload the provider sent, never from its name.
+    """
+    try:
+        text = json.dumps(body, default=str) if isinstance(body, (dict, list)) else str(body or "")
+    except Exception:
+        text = str(body or "")
+    text = (text + " " + str(message or "")).lower()
+    return "usage_not_included" in text or "failed_precondition" in text
 
 
 _NEVER_PROMOTED = frozenset(
@@ -1545,6 +1562,9 @@ class DispatchBinding:
         self.rotations = 0
         self.recovered = 0
         self.surfaced = 0
+        #: 1.8.1.2. ``(identity, key)`` whose latest refusal was a billing
+        #: refusal that no clock fixes (see :func:`_no_clock_fixes`).
+        self._no_clock_fix: Dict[Tuple[str, str], bool] = {}
         # Since 1.0.1 the carousel can wait for hours, so how much of a turn
         # was spent waiting is the number that explains a slow session.
         self.waited_s = 0.0
@@ -2122,7 +2142,8 @@ class DispatchBinding:
                     _clear_host_stale_streak(agent)
                     self.rotations += 1
                     continue
-                if self._pool_agrees_it_is_the_request(verdicts, keys, kind, status):
+                if self._pool_agrees_it_is_the_request(verdicts, keys, kind, status) or (
+                        self._pool_agrees_no_clock_fixes_it(identity, verdicts, keys, kind)):
                     if the_answer_is_worth_more_than_this_exit():
                         # The pool agreeing is a statement about the request,
                         # and the request it agrees about is the *continuation*
@@ -2548,6 +2569,32 @@ class DispatchBinding:
         except Exception:  # pragma: no cover — settings clamps before this
             return int(fallback)
 
+    def _pool_agrees_no_clock_fixes_it(
+        self,
+        identity: str,
+        verdicts: Dict[str, Tuple[str, Optional[int]]],
+        keys: Sequence[str],
+        kind: str,
+    ) -> bool:
+        """1.8.1.2 (owner decision): end the turn on an entitlement refusal.
+
+        Credit and spend exhaustion keep waiting, as ``_NEVER_PROMOTED``
+        says — time or a top-up fixes them. Two billing refusals are
+        different: the plan does not include the service
+        (``usage_not_included``) or the account's country needs billing
+        (``FAILED_PRECONDITION``). No wait ever fixes those, and the eternal
+        carousel would sit on them forever with nothing on screen. Same proof
+        as the unanimity rule: every key tried this run, every one refused
+        this way, none answered. Each key still keeps its one-hour rest.
+        """
+        if kind != "insufficient_quota":
+            return False
+        pool = [k for k in keys if k]
+        if not pool or len(verdicts) < len(pool):
+            return False
+        return all(verdicts.get(k, ("",))[0] == "insufficient_quota"
+                   and self._no_clock_fix.get((identity, k), False) for k in pool)
+
     @staticmethod
     def _pool_agrees_it_is_the_request(
         verdicts: Dict[str, Tuple[str, Optional[int]]],
@@ -2747,6 +2794,7 @@ class DispatchBinding:
             if kind == "billing":
                 kind = "insufficient_quota"
                 delay = self.engine.daily_cooldown_s
+                self._no_clock_fix[(identity, key)] = _no_clock_fixes(resolve_evidence_body(ev.body, exc), message)
             elif kind == "auth_permanent":
                 # ``revoked``, not ``auth``, and the difference is the whole
                 # of what this branch is for. ``classify`` reaches
@@ -2898,7 +2946,19 @@ class DispatchBinding:
             stated = bool(_stated_delay(exc, message, ev.headers))
         except Exception:
             stated = False
-        calendar_reset = (verdict is not None and getattr(verdict, "window_scoped_reset", False) and delay > 0)
+        # 1.8.1.2. The classifier already read this refusal with the one
+        # canonical cascade (``core.quota``, R16), and its ``source`` says
+        # where its number came from (``vocabulary.provider_timed`` is the one
+        # function that answers this). When that source is the provider's own
+        # answer — an SDK attribute, a header, a body field, the prose — the
+        # number was stated, whatever the narrower legacy reader above could
+        # parse. 1.8.1.1 asked only the legacy reader, which needs the word
+        # "retry": "Please try again in 7s" and Codex's
+        # ``resets_in_seconds: 12660`` were both treated as unsized and rested
+        # 30s (R12). A number KAME derived itself (``window``) stays unstated.
+        if not stated and verdict is not None and getattr(verdict, "reset_at", None):
+            stated = vocabulary.provider_timed(getattr(verdict, "source", ""))
+        calendar_reset =(verdict is not None and getattr(verdict, "window_scoped_reset", False) and delay > 0)
         # ``verdict.quota_scope`` is ``core.classify.classify()``'s own
         # ``detect_quota_scope`` reading of THIS refusal — untouched by the
         # ``kind`` relabelling above (billing/revoked/denied all keep the

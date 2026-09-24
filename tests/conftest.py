@@ -45,6 +45,9 @@ SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="kame-tests-home-"))
 os.environ["HERMES_HOME"] = str(SANDBOX_HOME)
 os.environ.setdefault("KAME_RECORDER_DISABLED", "1")
 os.environ.setdefault("KAME_CALL_TIMINGS_DISABLED", "1")
+# 1.8.1.2: tools/clock_gate.py and tools/continuity_gate.py write their
+# reports here instead of over the committed research/1.8.0.0 evidence.
+os.environ.setdefault("KAME_GATE_OUT_DIR", str(SANDBOX_HOME / "gate-out"))
 
 
 import pytest

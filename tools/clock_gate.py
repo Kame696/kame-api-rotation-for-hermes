@@ -67,6 +67,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import os
 import random
 import statistics
 import sys
@@ -78,7 +79,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-OUT_DIR = ROOT / "research" / "1.8.0.0" / "clock"
+# 1.8.1.2: the test suite points this at a temp dir (tests/conftest.py), so
+# running the tests no longer rewrites the committed 1.8.0.0 evidence.
+OUT_DIR = (Path(os.environ["KAME_GATE_OUT_DIR"]) / "clock" if os.environ.get("KAME_GATE_OUT_DIR")
+           else ROOT / "research" / "1.8.0.0" / "clock")
 PACKAGE = "kame_clock_gate_under_test"
 REPLAY_TOOL_PATH = ROOT / "tools" / "replay_timeline.py"
 

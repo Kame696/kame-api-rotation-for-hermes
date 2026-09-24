@@ -85,8 +85,11 @@ def provider_timed(source: Any) -> bool:
     provider number, never again to gate one.
     """
     word = str(source or "").strip().lower()
+    # 1.8.1.2: ``text.reset_at`` (a clock time in the provider's prose) is
+    # the provider's number too; it now answers the dispatch's "was this
+    # stated?" as well as the replay's measurement.
     return word in {"header", "retryinfo", "exception", "text"} or word.startswith(
-        ("header.", "body.", "exception.")
+        ("header.", "body.", "exception.", "text.")
     )
 
 

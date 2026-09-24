@@ -387,6 +387,29 @@ def the_stream_read_timeout_is_read_inside_the_call(text=None):
     return True, True
 
 
+def the_stream_worker_inherits_the_callers_context(text=None):
+    """Why the 1.8.1.2 ContextVar timeout reaches the request at all.
+
+    KAME sets ``stream_silence_timeout_seconds`` in a ContextVar around one
+    attempt. The host runs the streaming request on a worker thread, and a new
+    ``threading.Thread`` starts with an EMPTY context unless its target is
+    wrapped. Hermes wraps every worker target in ``_context_thread_target``
+    (``contextvars.copy_context().run``). If a release starts that thread
+    without the wrapper, the scoped timeout silently stops existing.
+    """
+    body = read("agent/chat_completion_helpers.py") if text is None else text
+    if isinstance(body, list):
+        body = "\n".join(body)
+    if not body:
+        return "chat_completion_helpers.py not found", True
+    if "def _context_thread_target" not in body:
+        return "the host no longer defines _context_thread_target", True
+    if "copy_context" not in body:
+        return "_context_thread_target no longer copies the caller's context", True
+    if body.count("target=_context_thread_target(") < 1:
+        return "no worker thread is started through _context_thread_target", True
+    return True, True
+
 def the_agent_still_funnels_visible_text_through_one_method(_=None):
     """Legacy entrypoint; actual current-host behavior and negative control."""
     return _runtime_executed_contract("visible_delivery")
@@ -865,6 +888,7 @@ CHECKS = (
     ("agent/chat_completion_helpers.py", "a mid-stream drop is returned, not raised", a_mid_stream_drop_is_returned_and_not_raised),
     ("agent/chat_completion_helpers.py", "a tool-argument drop is still tagged apart", a_tool_argument_drop_is_still_tagged_apart),
     ("agent/chat_completion_helpers.py", "the stream read timeout is read inside the call", the_stream_read_timeout_is_read_inside_the_call),
+    ("agent/chat_completion_helpers.py", "the stream worker inherits the caller's context", the_stream_worker_inherits_the_callers_context),
     # v1.4.0. The three facts behind reading evidence off the exception: the
     # guidance the host appends and KAME has to take back off, the fields the
     # error carries, and the one member of `details` the host drops.

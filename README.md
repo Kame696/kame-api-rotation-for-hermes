@@ -8,7 +8,7 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.1.2-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.1_·_0.21.3-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/tests-2883_passing-brightgreen.svg)](#verified)
 [![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
@@ -198,15 +198,17 @@ The panel explains every one of them in full, with its environment variable.
 
 | Check | Result |
 |---|---|
-| Offline test suite | **2,883 passing** (1 skipped, 4 expected failures) |
+| Offline test suite | **2,893 passing** (1 skipped, 4 expected failures) |
 | `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
-| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.1 on Hermes 0.21.3: baseline 2 environment failures; KAME adds only 2 intentional load-spreading differences; spread-off matches baseline |
+| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.2 on Hermes 0.21.3: baseline 2 environment failures; KAME adds only 2 intentional load-spreading differences; spread-off matches baseline |
 | Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |
 | Runtime contracts against the real Hermes turn loop | **12 / 12**, each proven able to fail |
+| Same decision as the Agent Zero port | **1,984 / 1,984** of the author's recorded refusals give the same decision on both ports |
 | Real use | the author's own traffic: 14 Gemini keys plus other providers, every day |
 
-The 1.8.1.1 release was validated in installed Hermes CLI turns with Gemini
-3.6/3.7/3.8 and NVIDIA Kimi K3, including real 429-to-next-key recovery.
+1.8.1.2 was validated on the running Hermes gateway with real agent turns on
+Gemini 3.8 and NVIDIA Kimi K3 across a real daily-quota wall and reset, with a
+separate probe measuring how Gemini's per-minute and per-day limits behave.
 Daily-traffic evidence and the 0.21.1 gate belong to earlier builds;
 Agent Zero runtime validation remains separate.
 
@@ -265,6 +267,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.1.2** | The provider's number wins again | A wait the provider states in prose or a body field ("try again in 7s", Codex `resets_in_seconds`) is obeyed again instead of a flat 30s; a billing refusal no wait fixes ends the turn once every key said so; same decisions as Agent Zero on all 1,984 recorded refusals. |
 | **1.8.1.1** | Reliability patch | Reset reports persistence failures; account holds, per-call timeout, classification and redaction are hardened. |
 | **1.8.1.0** | Error evidence | Refusals are sized from provider evidence; Gemini's bare 429 uses a 1–64s ladder, daily labels re-probe, 5xx stays short. |
 | **1.8.0.2** | Corrected measurement | An unsized throttle rests 30s, correcting the earlier double-counted 45s estimate. |
@@ -337,6 +340,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.1** — *because round-robin was never enough*
+🐢⚡ **KAME 1.8.1.2** — *because round-robin was never enough*
 
 </div>

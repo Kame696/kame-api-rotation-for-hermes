@@ -75,7 +75,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
-OUT_DIR = ROOT / "research" / "1.8.0.0" / "continuity"
+# 1.8.1.2: the test suite points this at a temp dir (tests/conftest.py), so
+# running the tests no longer rewrites the committed 1.8.0.0 evidence.
+OUT_DIR = (Path(os.environ["KAME_GATE_OUT_DIR"]) / "continuity" if os.environ.get("KAME_GATE_OUT_DIR")
+           else ROOT / "research" / "1.8.0.0" / "continuity")
 PACKAGE = "kame_continuity_gate_under_test"
 
 #: The one real directory this gate must never touch, whatever else goes
