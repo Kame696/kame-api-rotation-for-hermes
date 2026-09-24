@@ -1506,9 +1506,11 @@ class Carousel:
         # a key past the ceiling forever — an absolute ``until`` written
         # before the step sits further into the future in the new frame, and
         # nothing here re-derives it until this reader's own ``mark`` runs.
-        # Re-bounding by THIS reader's ceiling on every read, not only on
-        # write, is what makes "no credential sits out longer than this"
-        # true regardless of whose number produced the hold.
+        # Re-bounding by THIS reader's ceiling on read, not only on write, is
+        # what makes "no credential sits out longer than this" true regardless
+        # of whose number produced the hold -- provided the bound is anchored
+        # at the first read (1.8.1.5, :meth:`_bounded_shared`), not recomputed
+        # from ``now`` each time.
         if shared_at > local_at:
             return self._bounded_shared(
                 ("model", identity, fingerprint(key)), shared_until, shared_at, now
