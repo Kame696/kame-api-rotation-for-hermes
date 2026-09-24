@@ -115,3 +115,37 @@ def test_a_key_denial_that_merely_says_blocked_by_still_rotates():
         _Coded("API key blocked by admin", 403, "permission_denied"), "x", 1, False,
     )
     assert verdict == "rotate"
+
+
+class _Worded(Exception):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        if status is not None:
+            self.status_code = status
+
+
+@pytest.mark.parametrize("message,status", [
+    ("The prompt was blocked by the safety filter", 403),   # rotated as auth before 1.8.1.4
+    ("The response was blocked by the content filter", 403),
+    ("response blocked by safety filter", None),
+])
+def test_a_worded_block_of_the_request_is_handed_back_even_on_a_403(message, status):
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, _kind, _ = binding._on_failure(
+        "openai:gpt-x", "sk-robustness-0004", _Worded(message, status), "x", 1, False,
+    )
+    assert verdict == "raise"
+
+
+@pytest.mark.parametrize("message", [
+    "API key blocked by admin",
+    "Your access is blocked by your organization's policy",
+    "Your API key was suspended for violating our content policy",
+    "Organization safety settings prevent this key from calling the model",
+])
+def test_a_bare_403_key_denial_in_moderation_words_still_rotates(message):
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, _kind, _ = binding._on_failure(
+        "openai:gpt-x", "sk-robustness-0005", _Worded(message, 403), "x", 1, False,
+    )
+    assert verdict == "rotate"

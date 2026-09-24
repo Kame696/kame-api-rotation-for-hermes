@@ -749,6 +749,21 @@ TIMEOUT_INDICATORS = (
 )
 
 #: Phrases that mean the request itself is wrong, so no key can answer it.
+#: 1.8.1.4. The subset that can only describe the REQUEST: the prompt or the
+#: response was filtered. Read before the auth check in ``is_terminal``, because
+#: a 403 is read as auth first and "The prompt was blocked by the safety
+#: filter" on a 403 was rested as a bad key and resent on every other key. The
+#: wider words below stay after auth: "blocked by", "safety" and "content
+#: policy" also name key denials ("API key blocked by admin", "key suspended
+#: for violating our content policy"), which the next key may answer. The Agent
+#: Zero port uses exactly this list.
+REQUEST_CONTENT_BLOCK_INDICATORS = (
+    "content_policy_violation",
+    "content filter",
+    "content_filter",
+    "safety filter",
+)
+
 CONTENT_POLICY_INDICATORS = (
     "content_policy",
     "content policy",
@@ -1007,6 +1022,8 @@ def is_terminal(error: Any, message: str = "", status_code: Optional[int] = None
     if _matches(text, HOST_BREAKER_INDICATORS):
         # Checked before auth because it carries no status and no credential:
         # it is the host refusing to make the call at all.
+        return True
+    if _matches(text, REQUEST_CONTENT_BLOCK_INDICATORS):
         return True
     if is_auth_failure(error, message, status_code):
         return False
