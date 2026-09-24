@@ -382,7 +382,12 @@ def retry_info_seconds(body: Any) -> Optional[float]:
         if raw is None:
             continue
         if isinstance(raw, (int, float)):
-            return float(raw)
+            try:
+                return float(raw)
+            except OverflowError:
+                # 1.8.1.5: an integer too large for a float raised out of the
+                # failure handler, and the turn died instead of rotating.
+                continue
         text = str(raw).strip()
         if text.endswith("s"):
             text = text[:-1]
@@ -399,7 +404,7 @@ def _read_retry_after(error: Any, body: Any, notes: List[str]) -> Optional[float
     if value is not None:
         try:
             seconds = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             seconds = None
         if seconds is not None and seconds > 0:
             notes.append("retry_after:exception")

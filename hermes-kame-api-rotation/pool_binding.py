@@ -1748,7 +1748,7 @@ class PoolBinding:
                 continue
             try:
                 lapsed = now - float(reset_at)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if 0.0 <= lapsed <= dispersion.JUST_RELEASED_SECONDS:
                 recent.add(_mark_id(entry))

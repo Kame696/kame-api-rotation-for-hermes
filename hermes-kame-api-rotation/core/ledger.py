@@ -105,7 +105,8 @@ def normalize_model(model: Any) -> str:
 def _coerce_float(value: Any) -> Optional[float]:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: an integer too large for a float, which JSON can hold.
         return None
     # NaN fails every comparison, so a NaN reset_at would make a bench neither
     # live nor expired — it would sit in the ledger forever and match nothing.

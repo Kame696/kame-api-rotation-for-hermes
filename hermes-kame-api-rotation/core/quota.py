@@ -486,7 +486,12 @@ def parse_absolute_timestamp(value: Any) -> Optional[float]:
         return None
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _epoch_from_number(float(value))
+        try:
+            return _epoch_from_number(float(value))
+        except OverflowError:
+            # 1.8.1.5: an integer too large for a float, which JSON and a
+            # parsed header both carry happily. Not a moment in time.
+            return None
 
     raw = str(value).strip().strip("\"'")
     if not raw:
@@ -545,7 +550,7 @@ def _bounded_relative(seconds: Optional[float]) -> Optional[float]:
         return None
     try:
         value = float(seconds)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not (0 < value <= MAX_RELATIVE_DELAY_SECONDS):
         return None
@@ -606,7 +611,7 @@ def extract_from_exception(error: Any) -> Tuple[Optional[float], str]:
                     float(getattr(retry_delay, "seconds", 0) or 0)
                     + float(getattr(retry_delay, "nanos", 0) or 0) / 1e9
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 value = None
             seconds = _bounded_relative(value)
             if seconds is not None:
@@ -746,7 +751,7 @@ def _duration_message(value: Any) -> Optional[float]:
             float(value.get("seconds", 0) or 0)
             + float(value.get("nanos", 0) or 0) / 1e9
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

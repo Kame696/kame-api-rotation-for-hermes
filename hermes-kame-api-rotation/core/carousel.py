@@ -949,13 +949,15 @@ def extract_delay(error: Any, message: str = "", headers: Any = None) -> Optiona
         if seconds is not None:
             try:
                 total = float(seconds) + float(getattr(value, "nanos", 0) or 0) / 1e9
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 total = None
             if total is not None and 0 < total <= HARD_DELAY_CAP_S:
                 return total
             continue
         try:
             total = float(value)
+        except OverflowError:
+            continue
         except (TypeError, ValueError):
             total = parse_duration(str(value))
         if total is not None and 0 < total <= HARD_DELAY_CAP_S:

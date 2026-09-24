@@ -151,3 +151,100 @@ def test_a_damaged_row_costs_that_row_and_keeps_its_neighbours(tmp_path):
     path.write_bytes(_doc({"m": {"bad": {"until": 1, "at": "x"}, "good": {"until": 50.0, "at": 5.0}}}))
     assert _health(path, "k").model_entry("m", "good", now=10.0) == (50.0, 5.0)
     assert _health(path, "k").model_entry("m", "bad", now=10.0) == (0.0, 0.0)
+
+
+# --------------------------------------------------------------------------
+# A ledger or journal holding an integer too large for a float decodes.
+#
+# ``_coerce_float`` caught TypeError and ValueError; ``float(10**400)`` raises
+# OverflowError, and JSON holds such integers happily, so one hand-edited or
+# damaged row raised out of ``LedgerStore.load`` -- which runs on every
+# credential selection. Found by experiments/state_decode_fuzz.py (650 runs).
+# --------------------------------------------------------------------------
+
+ledger = importlib.import_module(f"{PACKAGE}.core.ledger")
+journal = importlib.import_module(f"{PACKAGE}.core.journal")
+HUGE = 10 ** 400
+
+
+def test_a_huge_deadline_drops_that_bench_only():
+    good = {"credential_id": "c2", "provider": "openai", "model": "m", "reset_at": 2.0e9, "recorded_at": 1.0e9}
+    payload = {
+        "version": ledger.SCHEMA_VERSION,
+        "benches": [dict(good, credential_id="c1", reset_at=HUGE), good],
+    }
+    rebuilt = ledger.Ledger.from_dict(payload)
+    assert [row["credential_id"] for row in rebuilt.to_dict()["benches"]] == ["c2"]
+
+
+def test_a_huge_journal_moment_drops_that_block_only():
+    payload = {
+        "version": journal.SCHEMA_VERSION,
+        "blocks": [{"at": HUGE, "provider": "openai", "model": "m", "credential_id": "c1"},
+                   {"at": 1.0e9, "provider": "openai", "model": "m", "credential_id": "c2"}],
+        "recoveries": [{"credential_id": "c1", "model": "m", "blocked_at": HUGE, "recovered_at": 1.0}],
+    }
+    rebuilt = journal.Journal.from_dict(payload).to_dict()
+    assert [row["credential_id"] for row in rebuilt["blocks"]] == ["c2"]
+    assert rebuilt["recoveries"] == []
+
+
+# --------------------------------------------------------------------------
+# A provider number too large for a float is read as no number, not raised.
+#
+# ``float(10**400)`` raises OverflowError, which none of the retry-hint readers
+# caught. A body with ``"retryDelay": <huge int>`` or an ``X-RateLimit-Reset``
+# of the same raised out of ``DispatchBinding._on_failure`` -- the handler in
+# the ``except`` around the host's API call -- so the turn died on a KAME
+# OverflowError instead of the key being rotated. Found by the failure-path
+# fuzz with huge integers added (27 crashes in 26,164 runs; 0 after; the
+# Agent Zero port had none).
+# --------------------------------------------------------------------------
+
+dispatch_binding = importlib.import_module(f"{PACKAGE}.dispatch_binding")
+carousel = importlib.import_module(f"{PACKAGE}.core.carousel")
+evidence = importlib.import_module(f"{PACKAGE}.core.evidence")
+quota = importlib.import_module(f"{PACKAGE}.core.quota")
+
+
+class _HugeRefusal(Exception):
+    status_code = 429
+
+    def __init__(self, body, retry_after=None):
+        super().__init__("Rate limit exceeded")
+        self.body = body
+        if retry_after is not None:
+            self.retry_after = retry_after
+
+
+HUGE_BODIES = {
+    "retryDelay": {"error": {"code": 429, "details": [
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": HUGE}]}},
+    "X-RateLimit-Reset": {"error": {"code": 429, "message": "Rate limit exceeded: free-models-per-day",
+                                    "metadata": {"headers": {"X-RateLimit-Reset": -HUGE}}}},
+    "retry_delay seconds": {"error": {"code": 429, "retry_delay": {"seconds": HUGE}}},
+}
+
+
+@pytest.mark.parametrize("shape", sorted(HUGE_BODIES))
+def test_the_failure_handler_rotates_on_a_huge_number(shape):
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, kind, status = binding._on_failure(
+        "openrouter:m", "sk-huge-0001", _HugeRefusal(HUGE_BODIES[shape]), "x", 1, False
+    )
+    assert verdict != "raise"
+    assert status == 429
+
+
+def test_a_huge_retry_after_attribute_is_ignored():
+    binding = dispatch_binding.DispatchBinding(engine=carousel.Carousel())
+    verdict, _kind, _status = binding._on_failure(
+        "openai:m", "sk-huge-0002", _HugeRefusal({}, retry_after=HUGE), "x", 1, False
+    )
+    assert verdict != "raise"
+
+
+def test_the_readers_answer_none():
+    assert quota.parse_absolute_timestamp(HUGE) is None
+    assert quota._bounded_relative(HUGE) is None
+    assert evidence.retry_info_seconds(HUGE_BODIES["retryDelay"]) is None
