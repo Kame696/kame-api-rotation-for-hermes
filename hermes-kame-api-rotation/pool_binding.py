@@ -258,6 +258,14 @@ class PoolBinding:
         # handed out. Labels only: this map is one more place a key must not
         # be, and it is bounded because a long run walks many credentials.
         self._names: Dict[str, str] = {}
+        # 1.8.1.4. Hermes 0.21.4+ benches an Anthropic 429 and a Codex model
+        # entitlement refusal per model, through ``_cool_down_model``, without
+        # ever calling ``_mark_exhausted``. Whether that door is watched, and
+        # which wrapped names the host defines on a base class rather than on
+        # ``CredentialPool`` itself (uninstall deletes those instead of pinning
+        # a copy of the base-class function onto the subclass).
+        self.watching_model_cooldowns = False
+        self._inherited: set = set()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -304,6 +312,7 @@ class PoolBinding:
         self._guard_persist(pool_class)
         self._expand_on_construction(pool_class)
         self._guard_current(pool_class)
+        self._watch_model_cooldowns(pool_class)
         self.installed = True
         self.reason = "active"
         # 1.6.0.3. Open the journal's other half. Registered rather than
@@ -798,8 +807,13 @@ class PoolBinding:
         runtime.set_rotation_recorder(None)
         for name, original in self._originals.items():
             if getattr(getattr(pool_class, name, None), _MARK, False):
-                setattr(pool_class, name, original)
+                if name in self._inherited and name in vars(pool_class):
+                    delattr(pool_class, name)
+                else:
+                    setattr(pool_class, name, original)
         self._originals = {}
+        self._inherited = set()
+        self.watching_model_cooldowns = False
         self._module = None
         self.installed = False
         self.watching_selection = False
@@ -809,6 +823,114 @@ class PoolBinding:
         self.seen_pools = {}
         self.blamed_another_key = 0
         self.reason = "uninstalled"
+
+    # -- wrapper: the host's own per-model cooldowns (Hermes 0.21.4+) ------
+
+    def _watch_model_cooldowns(self, pool_class: Any) -> None:
+        """Watch ``_cool_down_model`` when the host has one, and shrug if not.
+
+        Hermes 0.21.4 learned to bench a credential for one model only: an
+        Anthropic 429 (Anthropic meters per model) and a Codex ChatGPT-plan
+        ``model_entitlement`` refusal go to ``_cool_down_model`` instead of
+        ``_mark_exhausted`` (``agent/credential_pool_model_cooldowns.py``).
+        That is the right bench, and KAME leaves it the host's. What the new
+        door skipped is everything KAME does on the old one: the deadline KAME
+        read off the refusal never reached the cooldown (an Anthropic 429 with
+        no ``Retry-After`` rested an hour, ``EXHAUSTED_TTL_429_SECONDS``,
+        where KAME's own reading would have said 20-30s), and the refusal never
+        reached the journal, so ``/kame events`` and ``/kame doctor`` never
+        saw it.
+
+        Outside ``inspect_module`` for the same reason as selection: a host
+        without the method (0.21.3 and older) loses nothing, and a host whose
+        method changed shape must not cost the rest of the binding.
+        """
+        original = getattr(pool_class, "_cool_down_model", None)
+        if not callable(original) or getattr(original, _MARK, False):
+            return
+        try:
+            _check_signature(original, ("entry", "model", "error_context"))
+        except Incompatible as exc:
+            logger.debug("kame: not watching per-model cooldowns — %s", exc)
+            return
+        if "_cool_down_model" not in vars(pool_class):
+            self._inherited.add("_cool_down_model")
+        self._originals["_cool_down_model"] = original
+        pool_class._cool_down_model = self._build_cool_down_model(original)
+        self.watching_model_cooldowns = True
+
+    def _build_cool_down_model(self, original: Callable) -> Callable:
+        binding = self
+
+        def _kame_cool_down_model(
+            pool, entry, model, error_context=None, failure_reason=None, **host_options: Any
+        ):
+            # An entitlement refusal is a property of the plan, not a window:
+            # the host benches it until an explicit reset and ignores any
+            # deadline, so there is nothing for KAME to size. Everything else
+            # on this door is a throttle, and gets KAME's reading exactly as
+            # ``_mark_exhausted`` does -- only when the host has no deadline
+            # of its own, and never past the owner's ceiling.
+            if model and failure_reason != "model_entitlement":
+                try:
+                    error_context = binding._carry_deadline(pool, error_context, model=model)
+                except Exception:
+                    logger.debug("kame: could not size a per-model cooldown", exc_info=True)
+            result = original(
+                pool, entry, model, error_context, failure_reason=failure_reason, **host_options
+            )
+            try:
+                binding._remember_model_cooldown(pool, entry, model, failure_reason)
+            except Exception:
+                # The cooldown is written and correct; only the record of it
+                # is missing. Never the host's recovery.
+                logger.debug("kame: could not journal a per-model cooldown", exc_info=True)
+            return result
+
+        setattr(_kame_cool_down_model, _MARK, True)
+        return _kame_cool_down_model
+
+    def _remember_model_cooldown(
+        self, pool: Any, entry: Any, model: Any, failure_reason: Optional[str]
+    ) -> None:
+        """Journal a per-model cooldown the host just wrote.
+
+        Journal only, never the ledger. The ledger is how KAME proves a
+        credential-wide bench is its own before releasing it; a per-model
+        cooldown lives in ``model_cooldowns``, the host clears it itself when
+        it lapses, and KAME has nothing to release.
+
+        Reads the pool's ``_entries`` directly rather than ``entries()``: the
+        host calls ``_cool_down_model`` with its lock held.
+        """
+        if not model:
+            return
+        provider = str(getattr(pool, "provider", "") or "")
+        now = self._clock()
+        entry_id = getattr(entry, "id", "")
+        current = next(
+            (e for e in list(getattr(pool, "_entries", []) or []) if getattr(e, "id", "") == entry_id),
+            entry,
+        )
+        cooldowns = getattr(current, "model_cooldowns", None) or {}
+        until = cooldowns.get(model) if isinstance(cooldowns, dict) else None
+        until = float(until) if isinstance(until, (int, float)) else None
+        # Claimed here because this door never reaches ``_remember``, which is
+        # where a verdict is otherwise consumed; left unclaimed it would sit
+        # for its thirty seconds and could attach itself to the next bench.
+        judgement = runtime.take_judgement(provider, model, now=now)
+        entitlement = failure_reason == "model_entitlement"
+        self._record_block(
+            updated=current,
+            provider=provider,
+            model=str(model),
+            held_to=until,
+            host_reset_at=until,
+            status_code=400 if entitlement else 429,
+            reason=str(failure_reason or "rate_limit"),
+            now=now,
+            judgement=judgement,
+        )
 
     # -- wrapper: recording ----------------------------------------------
 
@@ -847,7 +969,7 @@ class PoolBinding:
         setattr(_kame_mark_exhausted, _MARK, True)
         return _kame_mark_exhausted
 
-    def _carry_deadline(self, pool: Any, error_context: Any) -> Any:
+    def _carry_deadline(self, pool: Any, error_context: Any, model: str = "") -> Any:
         """Put KAME's deadline where the pool will actually read it.
 
         This is the one line the whole plugin was missing, and the journal
@@ -898,7 +1020,9 @@ class PoolBinding:
             return error_context
         provider = getattr(pool, "provider", "")
         now = self._clock()
-        model = self._benching_model(provider, now)
+        # 1.8.1.4: the per-model cooldown path names its model outright; the
+        # credential-wide path still reads the model in flight.
+        model = model or self._benching_model(provider, now)
         if not model:
             return error_context
         judgement = runtime.peek_judgement(provider, model, now=now)

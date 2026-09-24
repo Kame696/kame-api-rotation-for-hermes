@@ -2963,3 +2963,152 @@ class TestTheJournalSeesTheInTurnPath:
             credential_id="k0", model=MAIN, window="unknown", now=at
         )
         assert streak >= 1
+
+
+# --------------------------------------------------------------------------
+# 1.8.1.4 -- Hermes 0.21.4+'s own per-model cooldowns
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FakeCredentialWithModelCooldowns(FakeCredential):
+    model_cooldowns: Dict[str, float] = field(default_factory=dict)
+
+
+class _ModelCooldownMixin:
+    """``agent/credential_pool_model_cooldowns.py``, reduced: defined on a base
+    class, exactly where the host defines it."""
+
+    def _cool_down_model(self, entry, model, error_context, failure_reason=None):
+        if failure_reason == "model_entitlement":
+            until = self.now + 365 * 24 * HOUR
+        else:
+            until = (error_context or {}).get("reset_at") or (self.now + HOUR)
+        for scoped in list(self._entries):
+            if scoped.id == entry.id:
+                cooldowns = dict(scoped.model_cooldowns)
+                cooldowns[model] = until
+                self._replace(scoped, replace(scoped, model_cooldowns=cooldowns))
+
+
+def _module_with_model_cooldowns():
+    module = _fresh_module()
+    module.CredentialPool = type("Pool", (_ModelCooldownMixin, FakePool), {})
+    module.PooledCredential = FakeCredentialWithModelCooldowns
+    return module
+
+
+def _anthropic_keys():
+    return [
+        FakeCredentialWithModelCooldowns(
+            id=f"k{i}", label=f"key-{i}", runtime_api_key=f"sk-ant-{i}", provider="anthropic"
+        )
+        for i in range(2)
+    ]
+
+
+@pytest.fixture
+def cooling():
+    module = _module_with_model_cooldowns()
+    state = FakeState()
+    clock = Clock()
+    binding = PoolBinding(
+        LedgerStore(state, ttl_seconds=0.0, clock=clock),
+        journal=JournalStore(state, ttl_seconds=0.0, clock=clock),
+        clock=clock,
+    )
+    assert binding.install(module) is True
+    pool = module.CredentialPool("anthropic", _anthropic_keys())
+    pool.now = clock.now
+    yield binding, pool, module, clock
+    binding.uninstall()
+
+
+CLAUDE = "claude-sonnet-5"
+
+
+class TestTheHostsPerModelCooldownsAreWatched:
+    """An Anthropic 429 and a Codex entitlement refusal reach
+    ``_cool_down_model`` on Hermes 0.21.4+, never ``_mark_exhausted``. The
+    deadline KAME read off the refusal and the journal row both used to be
+    lost on that door; an unsized 429 rested an hour."""
+
+    def test_the_door_is_watched_when_the_host_has_it(self, cooling):
+        binding, _pool, _module, _clock = cooling
+        assert binding.watching_model_cooldowns is True
+
+    def test_an_unsized_throttle_rests_kames_floor_not_the_hosts_hour(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        runtime.note_judgement(
+            "anthropic", CLAUDE, window="per_minute", source="status",
+            reset_at=None, now=clock.now, reason="rate_limit",
+        )
+        pool._cool_down_model(pool.by_id("k0"), CLAUDE, {})
+        assert pool.by_id("k0").model_cooldowns[CLAUDE] == clock.now + 30.0
+
+    def test_a_stated_deadline_reaches_the_cooldown_bounded_by_the_ceiling(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        runtime.note_judgement(
+            "anthropic", CLAUDE, window="per_minute", source="header",
+            reset_at=clock.now + 12.0, now=clock.now, reason="rate_limit",
+        )
+        pool._cool_down_model(pool.by_id("k0"), CLAUDE, {})
+        assert pool.by_id("k0").model_cooldowns[CLAUDE] == clock.now + 12.0
+
+    def test_the_hosts_own_deadline_is_left_alone(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        runtime.note_judgement(
+            "anthropic", CLAUDE, window="per_minute", source="status",
+            reset_at=None, now=clock.now, reason="rate_limit",
+        )
+        pool._cool_down_model(pool.by_id("k0"), CLAUDE, {"reset_at": clock.now + 7.0})
+        assert pool.by_id("k0").model_cooldowns[CLAUDE] == clock.now + 7.0
+
+    def test_an_entitlement_refusal_keeps_the_hosts_bench(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        runtime.note_judgement(
+            "anthropic", CLAUDE, window="unknown", source="body",
+            reset_at=clock.now + 60.0, now=clock.now, reason="rate_limit",
+        )
+        pool._cool_down_model(
+            pool.by_id("k0"), CLAUDE, {}, failure_reason="model_entitlement"
+        )
+        assert pool.by_id("k0").model_cooldowns[CLAUDE] == clock.now + 365 * 24 * HOUR
+
+    def test_the_cooldown_is_journalled_and_the_verdict_claimed(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        runtime.note_judgement(
+            "anthropic", CLAUDE, window="per_minute", source="status",
+            reset_at=None, now=clock.now, reason="rate_limit",
+        )
+        pool._cool_down_model(pool.by_id("k0"), CLAUDE, {})
+        rows = [r for r in journal_of(binding).blocks() if r.credential_id == "k0"]
+        assert [(r.model, r.reset_at) for r in rows] == [(CLAUDE, clock.now + 30.0)]
+        assert runtime.peek_judgement("anthropic", CLAUDE, now=clock.now) is None
+
+    def test_the_credential_wide_bench_and_the_ledger_are_untouched(self, cooling):
+        binding, pool, _module, clock = cooling
+        runtime.note_call("anthropic", CLAUDE)
+        pool._cool_down_model(pool.by_id("k0"), CLAUDE, {})
+        assert pool.by_id("k0").last_status == STATUS_OK
+        assert binding._store.load(force=True).find("k0", CLAUDE) is None
+
+    def test_uninstall_leaves_the_base_class_method_in_charge(self, cooling):
+        binding, _pool, module, _clock = cooling
+        assert "_cool_down_model" in vars(module.CredentialPool)
+        binding.uninstall()
+        assert "_cool_down_model" not in vars(module.CredentialPool)
+        assert module.CredentialPool._cool_down_model is _ModelCooldownMixin._cool_down_model
+        assert binding.watching_model_cooldowns is False
+
+    def test_a_host_without_the_door_installs_everything_else(self):
+        module = _fresh_module()
+        binding = PoolBinding(LedgerStore(FakeState(), ttl_seconds=0.0), clock=lambda: NOW)
+        assert binding.install(module) is True
+        assert binding.watching_model_cooldowns is False
+        binding.uninstall()

@@ -153,6 +153,10 @@ VERSIONED_SUITES = (
     "tests/agent/test_pool_revert_after_cooldown.py",
     "tests/agent/test_pool_rotation_endpoint_veto.py",
     "tests/agent/test_codex_soft_failure_pool_rotation.py",
+    # 0.21.4+: the per-model cooldown door KAME watches since 1.8.1.4.
+    "tests/agent/test_anthropic_model_cooldowns.py",
+    "tests/agent/test_codex_model_entitlement_rotation.py",
+    "tests/agent/test_auxiliary_client_cache_follows_credential.py",
 )
 
 
