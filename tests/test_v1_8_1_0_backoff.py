@@ -317,8 +317,8 @@ class TestTheSettingItself:
 
     def test_the_current_patch_version_is_written_consistently(self):
         manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-        assert 'version: "1.8.1.5"' in manifest
-        assert core_mod.__version__ == "1.8.1.5"
+        assert 'version: "1.8.1.6"' in manifest
+        assert core_mod.__version__ == "1.8.1.6"
 
 
 class _Host:

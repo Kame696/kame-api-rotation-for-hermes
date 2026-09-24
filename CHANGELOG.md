@@ -7,6 +7,30 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.6] — one hour means one hour
+
+**In one line:** no key sits out longer than `max_hold_seconds`, whoever set
+the hold — the provider included.
+
+- **The provider's own long wait is held to the ceiling.** A `Retry-After` of a
+  day, "please try again in 6h12m", Codex's `resets_in_seconds`: Hermes stored
+  that deadline and KAME obeyed it, so a key could sit out 24 hours under a
+  one-hour ceiling — measured on the real Hermes 0.21.5 pool in four of six
+  ways a hold can be set. All six now bring the key back at the ceiling. If the
+  provider still refuses then, the key is simply held again: a genuinely long
+  outage costs one refused request per hour, which is what the ceiling always
+  promised.
+- **Lowering the ceiling applies at once**, to holds already running, and to
+  Hermes' own fixed one-hour cooldown when you set the ceiling below it.
+- **Holds from before the upgrade** are released once they have lasted a
+  ceiling.
+- Unchanged: a key the provider rejected for good, and a Codex model your plan
+  does not include, stay out until you act — those are not waits.
+
+**Verified:** 3,050 offline tests; host witnesses green on Hermes 0.21.3,
+0.21.4 and 0.21.5, with a new check of the ceiling against the real pool
+(`tools/sandbox_binding.py` [18c]).
+
 ## [1.8.1.5] — the ceiling holds, whatever the clock does
 
 **In one line:** `max_hold_seconds` now bounds every rest for real, and four
