@@ -395,7 +395,13 @@ def off_event_loop(broken=False):
         _bind_api_server_session=lambda **kwargs: {}, _create_agent=lambda **kwargs: agent,
         _active_run_agents={}, _shutdown_interruptible_agents={}, _inflight_agent_runs=0,
         _activate_admitted_request=lambda: None,
-        _finish_turn_result=lambda a, result, sid, **kwargs: (result, {}))
+        _finish_turn_result=lambda a, result, sid, **kwargs: (result, {}),
+        # Hermes 0.21.5 hands the finished agent back to a per-session memory
+        # pool (``self._memory_sessions.checkin(agent)``) inside the worker.
+        # Older hosts never touch it, so a no-op pool is inert there.
+        _memory_sessions=NS(checkin=lambda *args, **kwargs: None,
+                            checkout=lambda *args, **kwargs: None,
+                            close_all=lambda *args, **kwargs: None))
     async def drive():
         loop = asyncio.get_running_loop()
         async def heartbeat():
