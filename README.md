@@ -8,8 +8,8 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.2-blue.svg)](CHANGELOG.md)
-[![Hermes](https://img.shields.io/badge/Hermes-0.21.1_·_0.21.3-purple.svg)](#verified)
+[![Version](https://img.shields.io/badge/version-1.8.1.3-blue.svg)](CHANGELOG.md)
+[![Hermes](https://img.shields.io/badge/Hermes-0.21.1_–_0.21.5-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/tests-2883_passing-brightgreen.svg)](#verified)
 [![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
@@ -200,9 +200,10 @@ The panel explains every one of them in full, with its environment variable.
 |---|---|
 | Offline test suite | **2,893 passing** (1 skipped, 4 expected failures) |
 | `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
-| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.2 on Hermes 0.21.3: baseline 2 environment failures; KAME adds only 2 intentional load-spreading differences; spread-off matches baseline |
+| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.3 on Hermes 0.21.3, 0.21.4 and 0.21.5 (21 suite files, 136 host tests on 0.21.5): KAME changes only the 2 intentional load-spreading assertions; spread-off matches the host |
 | Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |
-| Runtime contracts against the real Hermes turn loop | **12 / 12**, each proven able to fail |
+| Runtime contracts against the real Hermes turn loop | **12 / 12** on 0.21.3, 0.21.4 and 0.21.5, each proven able to fail |
+| Host facts KAME's decisions rest on (`tools/host_assumptions.py`) | **40 / 40** on 0.21.3, 0.21.4 and 0.21.5 |
 | Same decision as the Agent Zero port | **1,984 / 1,984** of the author's recorded refusals give the same decision on both ports |
 | Real use | the author's own traffic: 14 Gemini keys plus other providers, every day |
 
@@ -210,7 +211,10 @@ The panel explains every one of them in full, with its environment variable.
 Gemini 3.8 and NVIDIA Kimi K3 across a real daily-quota wall and reset, with a
 separate probe measuring how Gemini's per-minute and per-day limits behave.
 Daily-traffic evidence and the 0.21.1 gate belong to earlier builds;
-Agent Zero runtime validation remains separate.
+Agent Zero runtime validation remains separate. 1.8.1.3 re-ran every offline
+host witness in `tools/` against Hermes 0.21.3, 0.21.4 and 0.21.5 installed
+from their release tags; it changes no runtime behaviour, so the live-gateway
+evidence above still describes what runs.
 
 <a id="faq"></a>
 ## ❓ FAQ
@@ -267,6 +271,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.1.3** | Checked against Hermes 0.21.4 and 0.21.5 | No runtime change. Every host witness passes on 0.21.3–0.21.5; four of them were fixed where they mistook a reformatted or reorganised Hermes for a broken one; the gate tests read this run's evidence instead of stale files; CI workflows added. |
 | **1.8.1.2** | The provider's number wins again | A wait the provider states in prose or a body field ("try again in 7s", Codex `resets_in_seconds`) is obeyed again instead of a flat 30s; a billing refusal no wait fixes ends the turn once every key said so; same decisions as Agent Zero on all 1,984 recorded refusals. |
 | **1.8.1.1** | Reliability patch | Reset reports persistence failures; account holds, per-call timeout, classification and redaction are hardened. |
 | **1.8.1.0** | Error evidence | Refusals are sized from provider evidence; Gemini's bare 429 uses a 1–64s ladder, daily labels re-probe, 5xx stays short. |
@@ -340,6 +345,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.2** — *because round-robin was never enough*
+🐢⚡ **KAME 1.8.1.3** — *because round-robin was never enough*
 
 </div>

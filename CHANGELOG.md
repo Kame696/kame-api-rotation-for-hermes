@@ -7,6 +7,35 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.3] — checked against Hermes 0.21.4 and 0.21.5
+
+**In one line:** nothing the agent does changes; KAME was re-checked against the
+two Hermes releases that shipped after 1.8.1.2, and the checks themselves were
+fixed where they cried wolf.
+
+- **Hermes 0.21.4 and 0.21.5 verified offline.** Installed from their release
+  tags and run through every host witness in `tools/`: host facts 40/40,
+  runtime contracts 12/12 (each mutation caught), Hermes' own error corpus and
+  credential-pool suites unchanged by KAME apart from the two load-spreading
+  assertions it changes on purpose, Gemini contracts and prose stripping green.
+  0.21.4+ adds `model=` to pool selection (forwarded untouched) and a per-model
+  cooldown path of its own for Anthropic 429s and Codex entitlement refusals
+  (see the report for what that path does not tell KAME).
+- **Four witnesses no longer mistake a reformatted Hermes for a broken one.**
+  Desktop's wait-row regex now spans three lines; the installer's manifest cap
+  has two real shapes (private on 0.21.3, shared on 0.21.4+); one pool suite
+  file was folded into another in 0.21.5 (eight new pool suites now run too);
+  the API server checks agents into a memory-session pool in 0.21.5.
+- **Gate tests read this run's evidence.** Since 1.8.1.2 the clock and
+  continuity gates write to a sandbox, but their tests still read
+  `research/1.8.0.0/` — passing on stale files where that folder exists and
+  failing on every fresh clone. The double-burn scenario now counts only the
+  burns sharing can prevent (turns the carousel called healthy): sharing off 34
+  in every repeat, sharing on median 0.
+- **CI.** `tests.yml` (3 OSes × Python 3.11–3.13) and a weekly `host-compat.yml`
+  that installs the newest Hermes tag and runs the witnesses.
+- The drive-letter deploy test runs on Windows only.
+
 ## [1.8.1.2] — 2026-09-24 — smarter reading, same non-stop agent
 
 **In one line:** the agent still never stops on a quota; KAME now reads the
