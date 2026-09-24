@@ -1404,6 +1404,10 @@ class Carousel:
         #: why "the later of local and shared" has to mean "the fresher
         #: event", not a numeric ``max()``.
         self._account_hold_at: Dict[Tuple[str, str], float] = {}
+        #: 1.8.1.5. The cap each shared deadline got the first time this
+        #: process read it, by ``(scope, subject, fingerprint)`` and the
+        #: event's ``at`` -- see :meth:`_bounded_shared`.
+        self._shared_cap: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
         self.daily_cooldown_s = float(daily_cooldown_s)
         #: The owner's ceiling on any single hold — see :data:`MAX_HOLD_S`.
         #: Read fresh in :meth:`mark`, so lowering it mid-incident (the host
@@ -1505,7 +1509,35 @@ class Carousel:
         # Re-bounding by THIS reader's ceiling on every read, not only on
         # write, is what makes "no credential sits out longer than this"
         # true regardless of whose number produced the hold.
-        return min(shared_until, now + self.max_hold_s) if shared_at > local_at else local_until
+        if shared_at > local_at:
+            return self._bounded_shared(
+                ("model", identity, fingerprint(key)), shared_until, shared_at, now
+            )
+        return local_until
+
+    def _bounded_shared(
+        self, slot: Tuple[str, str, str], until: float, at: float, now: float
+    ) -> float:
+        """``until`` from the shared file, capped at the reader's ceiling as of
+        the first read of that event -- not as of every read.
+
+        1.8.1.5. ``min(until, now + max_hold_s)`` on each read (the F6 fix)
+        is a bound that moves forward with ``now``, so it never released
+        anything: measured, a sibling profile's 9h hold kept the key out for
+        the full 9h in a reader whose ceiling is 1h, while every read in
+        between reported 3600s. The cap is remembered per shared event (its
+        ``at``) instead, and only ever lowered -- by a clock that steps back,
+        or a dial turned down.
+        """
+        cap = now + self.max_hold_s
+        seen = self._shared_cap.get(slot)
+        if seen is not None and seen[0] == at:
+            cap = min(seen[1], cap)
+        elif until <= cap:
+            self._shared_cap.pop(slot, None)
+            return until
+        self._shared_cap[slot] = (at, cap)
+        return min(until, cap)
 
     def _account_deadline(self, provider: str, key: str, now: float, shared_active: bool) -> float:
         """The account-wide deadline for ``key``, local or shared.
@@ -1524,7 +1556,11 @@ class Carousel:
         # deadline`, and for the same reason — ``shared_until`` here is a
         # sibling profile's account-wide hold, clamped by ITS ceiling, not
         # this reader's.
-        return min(shared_until, now + self.max_hold_s) if shared_at > local_at else local_until
+        if shared_at > local_at:
+            return self._bounded_shared(
+                ("account", provider, fingerprint(key)), shared_until, shared_at, now
+            )
+        return local_until
 
     def _combined_until(
         self,
@@ -1541,6 +1577,19 @@ class Carousel:
         against whatever the shared file knows.
         """
         state = pool.get(key) or {}
+        # 1.8.1.5: never past the ceiling from *now*, and trimmed where it is
+        # stored, the way ``mark`` trims. ``mark`` keeps every hold at most
+        # ``max_hold_s`` ahead of the moment it ran, so a deadline further out
+        # means the wall clock stepped back since (NTP, a resume, a hand-set
+        # clock) or the dial was lowered -- measured, a 30s rest read back as
+        # 7229s after a two-hour step, on every key resting at that moment.
+        # Only a stored trim ends it: a bound recomputed from ``now`` on each
+        # read moves forward with ``now`` and releases nothing.
+        cap = now + self.max_hold_s
+        if state.get("sick_until", 0.0) > cap:
+            state["sick_until"] = cap
+        if self._account_hold.get((provider, key), 0.0) > cap:
+            self._account_hold[(provider, key)] = cap
         return max(
             self._model_deadline(state, identity, key, now, shared_active),
             self._account_deadline(provider, key, now, shared_active),
@@ -2449,7 +2498,7 @@ class Carousel:
                 # away. ``None`` when something is usable now, which is the
                 # same convention ``next_recovery_seconds`` uses.
                 resting_for = [
-                    s["sick_until"] - now
+                    min(s["sick_until"], now + self.max_hold_s) - now
                     for s in pool.values()
                     if s["sick_until"] > now
                 ]
@@ -2557,6 +2606,7 @@ class Carousel:
                 self._stated_rl_ceiling.clear()
                 self._account_hold.clear()
                 self._account_hold_at.clear()
+                self._shared_cap.clear()
             else:
                 self._pools.pop(identity, None)
                 self._no_answer_since.pop(identity, None)

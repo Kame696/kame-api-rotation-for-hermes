@@ -248,3 +248,122 @@ def test_the_readers_answer_none():
     assert quota.parse_absolute_timestamp(HUGE) is None
     assert quota._bounded_relative(HUGE) is None
     assert evidence.retry_info_seconds(HUGE_BODIES["retryDelay"]) is None
+
+
+# --------------------------------------------------------------------------
+# A rest never outlasts the ceiling measured from now.
+#
+# ``mark`` stores every hold at most ``max_hold_s`` ahead of the moment it ran,
+# but holds are wall-clock deadlines: a clock that steps back afterwards (NTP,
+# a resume, a hand-set clock) moved them further out. Measured, a 30s rest read
+# back as 7229s after a two-hour step (experiments/clock_step_back.py; the
+# Agent Zero port the same). The shared file's numbers were already re-bounded
+# on read (RED_TEAM F6); the local ones now are too.
+# --------------------------------------------------------------------------
+
+KEYS = ["sk-clock-aaaaaaaaaaaaaaaa1", "sk-clock-bbbbbbbbbbbbbbbb2"]
+T0 = 2_000_000_000.0
+
+
+def _rested(delay=30.0, **options):
+    c = carousel.Carousel(**options)
+    c.select("openai:m", KEYS, now=T0)
+    c.mark("openai:m", KEYS[0], False, delay=delay, kind="rate_limit", now=T0)
+    return c
+
+
+def test_a_clock_stepped_back_cannot_stretch_a_rest_past_the_ceiling():
+    c = _rested()
+    later_but_earlier = T0 + 1 - 7200
+    assert c.next_recovery_seconds("openai:m", KEYS[:1], now=later_but_earlier) <= c.max_hold_s
+    assert c.snapshot(now=later_but_earlier)["openai:m"]["resting"] == 1
+
+
+def test_the_key_is_offered_once_the_ceiling_from_the_step_has_passed():
+    # The bound is stored, not recomputed per read: one recomputed from ``now``
+    # moves forward with ``now`` and never releases the key.
+    c = _rested()
+    stepped = T0 - 7200
+    assert c.healthy_count("openai:m", KEYS[:1], now=stepped) == 0
+    assert c.healthy_count("openai:m", KEYS[:1], now=stepped + c.max_hold_s + 1) == 1
+
+
+def test_an_account_hold_is_trimmed_the_same_way():
+    c = carousel.Carousel()
+    c.select("openai:m", KEYS, now=T0)
+    c.mark("openai:m", KEYS[0], False, delay=30.0, kind="rate_limit", now=T0,
+           scope=carousel.QuotaScope.ACCOUNT)
+    stepped = T0 - 7200
+    assert c.healthy_count("openai:m", KEYS[:1], now=stepped) == 0
+    assert c.healthy_count("openai:m", KEYS[:1], now=stepped + c.max_hold_s + 1) == 1
+
+
+def test_a_lowered_dial_applies_to_a_rest_already_running():
+    c = _rested(delay=3000.0)
+    c.max_hold_s = 600.0
+    assert c.next_recovery_seconds("openai:m", KEYS[:1], now=T0 + 1) <= 600.0
+
+
+def test_an_ordinary_rest_is_untouched():
+    c = _rested()
+    assert c.next_recovery_seconds("openai:m", KEYS[:1], now=T0 + 1) == pytest.approx(29.0)
+
+
+# --------------------------------------------------------------------------
+# RED_TEAM F6, over time: a sibling's hold is released at the reader's ceiling.
+#
+# The F6 fix capped a shared deadline at ``now + max_hold_s`` on every read,
+# and its tests checked one instant. A cap recomputed from ``now`` moves with
+# ``now``: measured, a sibling profile's 9h hold kept the key out for the full
+# 9h in a reader whose ceiling is 1h, while every read in between reported
+# "back in 3600s" (experiments/shared_ceiling_moving_target.py).
+# --------------------------------------------------------------------------
+
+HOUR = 3600.0
+
+
+def _sibling_hold(tmp_path, scope=None):
+    path = tmp_path / "pool_health.json"
+    store = lambda profile: shared_health.SharedHealth(path=path, profile=profile, enabled_fn=lambda: True)
+    writer = carousel.Carousel(max_hold_s=9 * HOUR, shared_health_store=store("base"))
+    options = {"scope": scope} if scope else {}
+    writer.mark("gemini:gemini-3.8-flash", KEYS[0], False, 9 * HOUR, "daily", now=T0, stated=True, **options)
+    return carousel.Carousel(max_hold_s=HOUR, shared_health_store=store("k"))
+
+
+def _healthy(reader, now):
+    reader._shared._cache_checked_at = 0.0
+    return reader.healthy_count("gemini:gemini-3.8-flash", KEYS[:1], now=now)
+
+
+@pytest.mark.parametrize("scope", [None, carousel.QuotaScope.ACCOUNT])
+def test_a_siblings_long_hold_is_released_at_the_readers_ceiling(tmp_path, scope):
+    reader = _sibling_hold(tmp_path, scope)
+    assert _healthy(reader, T0 + 1) == 0
+    assert _healthy(reader, T0 + 0.5 * HOUR) == 0
+    assert _healthy(reader, T0 + HOUR + 2) == 1
+    # And stays released as the sibling's own deadline draws near.
+    assert _healthy(reader, T0 + 8.5 * HOUR) == 1
+
+
+def test_the_eta_counts_down_instead_of_standing_still(tmp_path):
+    reader = _sibling_hold(tmp_path)
+    reader._shared._cache_checked_at = 0.0
+    first = reader.next_recovery_seconds("gemini:gemini-3.8-flash", KEYS[:1], now=T0 + 1)
+    reader._shared._cache_checked_at = 0.0
+    later = reader.next_recovery_seconds("gemini:gemini-3.8-flash", KEYS[:1], now=T0 + 1801)
+    assert first == pytest.approx(HOUR)
+    assert later == pytest.approx(HOUR - 1800)
+
+
+def test_a_new_event_from_the_sibling_is_capped_afresh(tmp_path):
+    reader = _sibling_hold(tmp_path)
+    assert _healthy(reader, T0 + 1) == 0
+    assert _healthy(reader, T0 + HOUR + 2) == 1
+    path = tmp_path / "pool_health.json"
+    writer = carousel.Carousel(max_hold_s=9 * HOUR,
+                               shared_health_store=shared_health.SharedHealth(
+                                   path=path, profile="base", enabled_fn=lambda: True))
+    writer.mark("gemini:gemini-3.8-flash", KEYS[0], False, 9 * HOUR, "daily", now=T0 + 2 * HOUR, stated=True)
+    assert _healthy(reader, T0 + 2 * HOUR + 1) == 0
+    assert _healthy(reader, T0 + 3 * HOUR + 2) == 1
