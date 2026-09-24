@@ -323,8 +323,14 @@ def _read_details(error: Any, body: Any, notes: List[str]) -> Tuple[Dict[str, An
 
     if not reason and isinstance(body, dict):
         inner = body.get("error")
-        if isinstance(inner, dict):
-            for member in inner.get("details") or []:
+        members = inner.get("details") if isinstance(inner, dict) else None
+        # 1.8.1.4: only a list is walked. A gateway that sends ``"details": 1``
+        # (or ``true``, ``1.5``) made this line raise TypeError inside the
+        # dispatch failure handler -- a refusal the key could simply have
+        # rotated past became a crashed turn. ``classify`` already shrugged at
+        # those shapes; the harvest that runs before it did not.
+        if isinstance(members, (list, tuple)):
+            for member in members:
                 if not isinstance(member, dict):
                     continue
                 if str(member.get("@type") or "").endswith("/google.rpc.ErrorInfo"):
@@ -349,7 +355,11 @@ def retry_info_seconds(body: Any) -> Optional[float]:
     error = body.get("error")
     if not isinstance(error, dict):
         return None
-    for member in error.get("details") or []:
+    members = error.get("details")
+    if not isinstance(members, (list, tuple)):
+        # 1.8.1.4: the same scalar ``details`` that crashed ``_read_details``.
+        return None
+    for member in members:
         if not isinstance(member, dict):
             continue
         if not str(member.get("@type") or "").endswith("/google.rpc.RetryInfo"):
