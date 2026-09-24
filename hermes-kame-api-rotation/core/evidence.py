@@ -161,14 +161,28 @@ def strip_trailing_blocks(
     """
     if not message:
         return "", []
-    cleaned = message
+    # 1.8.1.4: cut the message where the earliest block starts, rather than
+    # replacing the block's own text. Hermes appends its advice at the END, so
+    # everything from the block on is the host's. Replacing was exact for a
+    # full imported paragraph and wrong for the fallback, which is the opening
+    # clause only (``host_text._FALLBACK_BLOCKS``): it removed the anchor and
+    # left the rest -- "... Enable billing on your Google Cloud project and
+    # regenerate the key in a billing-enabled project" -- where
+    # ``classify``'s own anchored strip could no longer find it, so a
+    # 21-second per-minute throttle was read as billing and benched for an
+    # hour. With no stripping at all ``classify`` got it right; the fallback
+    # made it worse. ``tools/replay_timeline.py`` had worked around this with
+    # ``patch_guidance_blocks``; the plugin now does not need the workaround.
+    cut: Optional[int] = None
     removed: List[str] = []
     for block in blocks:
         if not block or len(block) < _MIN_BLOCK_LEN:
             continue
-        if block in cleaned:
-            cleaned = cleaned.replace(block, " ")
+        at = message.find(block.strip())
+        if at >= 0:
             removed.append(block.strip()[:40])
+            cut = at if cut is None else min(cut, at)
+    cleaned = message if cut is None else message[:cut]
     return cleaned.strip(), removed
 
 

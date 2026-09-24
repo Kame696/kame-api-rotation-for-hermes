@@ -197,3 +197,50 @@ def test_a_429_written_as_a_status_is_still_a_throttle(text):
 @pytest.mark.parametrize("text", ["142935 tokens", "34290", "token count (1429000)", "version 4.29", "id 04290"])
 def test_429_inside_another_number_is_not(text):
     assert carousel._names_a_throttle(text) is False
+
+
+# ---------------------------------------------------------------------------
+# The host's advice comes off whole, even when only its opening is known.
+# ---------------------------------------------------------------------------
+
+host_text = importlib.import_module(f"{PACKAGE}.host_text")
+
+_FREE_TIER_PARAGRAPH = (
+    "\n\nYour Google API key is on the free tier (a few hundred requests/day for Gemini Flash models). "
+    "Hermes typically makes 3-10 API calls per user turn, so the free tier is exhausted in a handful of "
+    "messages and cannot sustain an agent session. Enable billing on your Google Cloud project and "
+    "regenerate the key in a billing-enabled project: https://aistudio.google.com/apikey"
+)
+_PER_MINUTE_BODY = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                              "message": "You exceeded your current quota, please check your plan and billing details.",
+                              "details": [
+                                  {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                                   "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+                                  {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "21s"}]}}
+
+
+def test_the_fallback_opening_takes_the_whole_paragraph_off():
+    message = "You exceeded your current quota." + _FREE_TIER_PARAGRAPH
+    cleaned, removed = evidence.strip_trailing_blocks(message, list(host_text._FALLBACK_BLOCKS))
+    assert cleaned == "You exceeded your current quota."
+    assert removed
+
+
+def test_a_per_minute_throttle_under_the_footer_is_not_billing_on_the_fallback(monkeypatch):
+    # The fallback is what runs when the host constant cannot be imported,
+    # and for any message recorded under an earlier Hermes wording.
+    monkeypatch.setattr(host_text, "guidance_blocks", lambda: list(host_text._FALLBACK_BLOCKS))
+
+    class GeminiAPIError(Exception):
+        status_code = 429
+
+    exc = GeminiAPIError("Gemini HTTP 429 (RESOURCE_EXHAUSTED): You exceeded your current quota, "
+                         "please check your plan and billing details." + _FREE_TIER_PARAGRAPH)
+    exc.body = _PER_MINUTE_BODY
+    engine = carousel.Carousel()
+    binding = dispatch_binding.DispatchBinding(engine=engine)
+    verdict, kind, _ = binding._on_failure("gemini:gemini-3.7-flash", "AIzaSy-footer-1", exc, "x", 1, False)
+    assert (verdict, kind) == ("rotate", "rate_limit")   # was ("rotate", "insufficient_quota"): an hour
+    rest = engine._pools["gemini:gemini-3.7-flash"]["AIzaSy-footer-1"]["sick_until"]
+    import time as _time
+    assert rest - _time.time() < 60

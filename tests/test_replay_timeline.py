@@ -687,13 +687,15 @@ class TestGuidanceBlockPatch:
         assert "check your plan and billing details" in ev.message.lower()
         assert "exceeded your current quota" in ev.message.lower()
 
-    def test_without_the_patch_the_appended_phrase_survives_the_strip(self):
-        # Characterises the bug this patch fixes: host_text.py's own
-        # fallback (the opening clause only) is too short for
-        # evidence.strip_trailing_blocks's exact-substring removal to take
-        # the whole paragraph off the end, so the phrase that trips
+    def test_without_the_patch_the_fallback_still_strips_the_whole_paragraph(self):
+        # This test used to characterise the bug the patch works around:
+        # host_text.py's fallback (the opening clause only) was too short for
+        # evidence.strip_trailing_blocks's exact-substring removal to take the
+        # whole paragraph off the end, so the phrase that trips
         # core.classify's strict billing pattern (`billing...enabled`)
-        # survives when nothing better than the fallback is available.
+        # survived. 1.8.1.4 fixed the plugin itself: the strip now cuts from
+        # the block's start, so the opening clause is enough and the patch is
+        # no longer needed (it stays, harmless, for older plugin dirs).
         plugin = rt.load_plugin(PLUGIN_DIR, package_name="kame_replay_guidance_unpatched_test")
         evidence_mod = importlib.import_module("kame_replay_guidance_unpatched_test.core.evidence")
         host_text_mod = importlib.import_module("kame_replay_guidance_unpatched_test.host_text")
@@ -706,10 +708,10 @@ class TestGuidanceBlockPatch:
         ev = evidence_mod.harvest(
             Exception(raw_message), message=raw_message, guidance_blocks=host_text_mod.guidance_blocks(),
         )
-        assert _HERMES_APPENDED_PHRASE in ev.message, (
-            "if this now fails, host_text.py's fallback changed shape and "
-            "the patch/its docstring need revisiting, not this test"
-        )
+        assert _HERMES_APPENDED_PHRASE not in ev.message
+        # Google's own sentence (never Hermes' to strip) survives untouched.
+        assert "check your plan and billing details" in ev.message.lower()
+        assert "please retry in 30.2s" in ev.message.lower()
 
 
 # ---------------------------------------------------------------------------
