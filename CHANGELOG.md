@@ -7,7 +7,29 @@ current 1.8.1.x public releases.
 
 ---
 
-## [1.8.1.6] — one hour means one hour
+## [1.8.1.6] — 2026-09-24 — one hour means one hour
+
+**One release, four steps.** v1.8.1.6 is the only GitHub release for
+1.8.1.3–1.8.1.6; the entries below it are the steps inside it.
+
+**In a quick list:**
+
+- **No key waits longer than your ceiling** (`max_hold_seconds`, one hour by
+  default) — not even when the provider asks for a day.
+- **Your `.env` can't be left half-written** if saving it fails; before, a
+  failed write could lose keys.
+- **A prompt blocked by a content filter is handed back once**, not resent on
+  every key.
+- **A too-long request no longer loops over every key** because its error
+  text happened to contain "429" (as in "142935 tokens").
+- **A computer clock that jumps back** (sleep, time sync) can't keep a key out
+  past the ceiling.
+- **The health file the three profiles share heals itself** when damaged,
+  instead of silently switching sharing off.
+- **A strange number** — a giant `retryDelay`, a `nan` setting — no longer
+  crashes the turn or `/kame set`.
+- **Key backups are private** (owner-only) from the first byte.
+- **Checked against Hermes 0.21.4 and 0.21.5.**
 
 **In one line:** no key sits out longer than `max_hold_seconds`, whoever set
 the hold — the provider included.
@@ -27,11 +49,16 @@ the hold — the provider included.
 - Unchanged: a key the provider rejected for good, and a Codex model your plan
   does not include, stay out until you act — those are not waits.
 
-**Verified:** 3,050 offline tests; host witnesses green on Hermes 0.21.3,
-0.21.4 and 0.21.5, with a new check of the ceiling against the real pool
-(`tools/sandbox_binding.py` [18c]).
+**Verified:** 3,047 offline tests on Windows (3,050 on Linux); host witnesses
+green on Hermes 0.21.3, 0.21.4 and 0.21.5, with a new check of the ceiling
+against the real pool (`tools/sandbox_binding.py` [18c]). Installed in the
+author's running Hermes 0.21.3: 16 of 16 real agent turns answered (Gemini
+3.8, NVIDIA Kimi K3), and a replay of 2,634 recorded refusals changed no
+decision against 1.8.1.2.
 
-## [1.8.1.5] — the ceiling holds, whatever the clock does
+## [1.8.1.5] — 2026-09-24 — the ceiling holds, whatever the clock does
+
+*Shipped inside the v1.8.1.6 release; not released on its own.*
 
 **In one line:** `max_hold_seconds` now bounds every rest for real, and four
 inputs that could break KAME's bookkeeping are read safely instead.
@@ -69,7 +96,9 @@ Zero port on 860 of 877 refusal shapes; the failure-path fuzz with huge
 numbers added raises nothing (26,164 + 23,416 runs). Not yet run live on a
 gateway with real keys.
 
-## [1.8.1.4] — safer with your keys, wiser about errors
+## [1.8.1.4] — 2026-09-24 — safer with your keys, wiser about errors
+
+*Shipped inside the v1.8.1.6 release; not released on its own.*
 
 **In one line:** the agent still never stops on a quota; KAME now never loses
 a key on a failed write, never mistakes a token count for a rate limit, and
@@ -121,7 +150,9 @@ suite exercises gives the Agent Zero port's decision on 860 (the rest are
 documented port differences); a fuzz of 26,164 odd payloads through both ports'
 failure paths raises nothing. Not yet run live on a gateway with real keys.
 
-## [1.8.1.3] — checked against Hermes 0.21.4 and 0.21.5
+## [1.8.1.3] — 2026-09-24 — checked against Hermes 0.21.4 and 0.21.5
+
+*Shipped inside the v1.8.1.6 release; not released on its own.*
 
 **In one line:** nothing the agent does changes; KAME was re-checked against the
 two Hermes releases that shipped after 1.8.1.2, and the checks themselves were

@@ -8,9 +8,9 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.4-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.1.6-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.1_–_0.21.5-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/tests-2883_passing-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/tests-3047_passing-brightgreen.svg)](#verified)
 [![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -198,16 +198,19 @@ The panel explains every one of them in full, with its environment variable.
 
 | Check | Result |
 |---|---|
-| Offline test suite | **2,893 passing** (1 skipped, 4 expected failures) |
+| Offline test suite | **3,047 passing** (6 skipped, 4 expected failures) |
 | `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
 | Hermes' own credential-pool test suite, with and without KAME | 1.8.1.3 on Hermes 0.21.3, 0.21.4 and 0.21.5 (21 suite files, 136 host tests on 0.21.5): KAME changes only the 2 intentional load-spreading assertions; spread-off matches the host |
 | Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |
 | Runtime contracts against the real Hermes turn loop | **12 / 12** on 0.21.3, 0.21.4 and 0.21.5, each proven able to fail |
 | Host facts KAME's decisions rest on (`tools/host_assumptions.py`) | **40 / 40** on 0.21.3, 0.21.4 and 0.21.5 |
-| Same decision as the Agent Zero port | **1,984 / 1,984** of the author's recorded refusals give the same decision on both ports |
+| Same decision as the Agent Zero port | **2,679 / 2,679** of the author's recorded refusals give the same decision on both ports |
 | Real use | the author's own traffic: 14 Gemini keys plus other providers, every day |
 
-1.8.1.2 was validated on the running Hermes gateway with real agent turns on
+1.8.1.6 was installed in the author's running Hermes 0.21.3 gateway (all
+three profiles): real agent turns on Gemini 3.8 and NVIDIA Kimi K3 answered
+16 of 16, and a replay of 2,634 recorded refusals through 1.8.1.2 and 1.8.1.6
+changed no decision. 1.8.1.2 was validated on the running Hermes gateway with real agent turns on
 Gemini 3.8 and NVIDIA Kimi K3 across a real daily-quota wall and reset, with a
 separate probe measuring how Gemini's per-minute and per-day limits behave.
 Daily-traffic evidence and the 0.21.1 gate belong to earlier builds;
@@ -263,7 +266,8 @@ Yes: the right wait for each error, stream continuation, the live countdown and 
 The previous README had an **Evolution** table. It disappeared during the
 1.8.1.0 README rewrite; the plugin's older work did not disappear. Restored
 below with the newer milestones added. The 1.7.x and 1.8.0.x entries were
-development candidates, not public release tags. See [CHANGELOG.md](CHANGELOG.md)
+development candidates, not public release tags; 1.8.1.3–1.8.1.5 shipped together
+inside the v1.8.1.6 release. See [CHANGELOG.md](CHANGELOG.md)
 for the full notes on the current public releases.
 
 <details>
@@ -272,9 +276,9 @@ for the full notes on the current public releases.
 | Version | Focus | What changed |
 |---|---|---|
 | **1.8.1.6** | One hour means one hour | `max_hold_seconds` now bounds every hold, the provider's own included: a 24h `Retry-After`, a "try again in 6h" in the message or Codex's reset used to keep a key out that long; it comes back at the ceiling (one hour unless you change it) and is simply held again if the provider still refuses. Lowering the ceiling also applies to holds already running. |
-| **1.8.1.5** | The ceiling holds, whatever the clock does | No key sits out longer than `max_hold_seconds` any more when the computer's clock steps back (a 30s rest had become two hours), and a longer hold set by another Hermes profile is now actually released at this profile's ceiling instead of only being reported as if it were. A provider number too large to read, a damaged shared pool-health file or `/kame set … nan` no longer end a turn, turn sharing off for good or print a traceback. |
-| **1.8.1.4** | Safer with your keys, wiser about errors | Hermes' `.env` can no longer be left half-written (a failed write used to lose keys); key backups are owner-only from the first byte. A context-too-long error is no longer mistaken for a rate limit because a token count contains 429; a rate limit is never mistaken for the end of the turn; a flagged prompt is not resent on every key. Anthropic per-model 429s on Hermes 0.21.4+ rest 30s, not an hour, and show in `/kame events`. Same decisions as Agent Zero on 860 of 877 recorded refusal shapes (the rest are documented). |
-| **1.8.1.3** | Checked against Hermes 0.21.4 and 0.21.5 | No runtime change. Every host witness passes on 0.21.3–0.21.5; four of them were fixed where they mistook a reformatted or reorganised Hermes for a broken one; the gate tests read this run's evidence instead of stale files; CI workflows added. |
+| **1.8.1.5** | The ceiling holds, whatever the clock does *(inside the v1.8.1.6 release)* | No key sits out longer than `max_hold_seconds` any more when the computer's clock steps back (a 30s rest had become two hours), and a longer hold set by another Hermes profile is now actually released at this profile's ceiling instead of only being reported as if it were. A provider number too large to read, a damaged shared pool-health file or `/kame set … nan` no longer end a turn, turn sharing off for good or print a traceback. |
+| **1.8.1.4** | Safer with your keys, wiser about errors *(inside the v1.8.1.6 release)* | Hermes' `.env` can no longer be left half-written (a failed write used to lose keys); key backups are owner-only from the first byte. A context-too-long error is no longer mistaken for a rate limit because a token count contains 429; a rate limit is never mistaken for the end of the turn; a flagged prompt is not resent on every key. Anthropic per-model 429s on Hermes 0.21.4+ rest 30s, not an hour, and show in `/kame events`. Same decisions as Agent Zero on 860 of 877 recorded refusal shapes (the rest are documented). |
+| **1.8.1.3** | Checked against Hermes 0.21.4 and 0.21.5 *(inside the v1.8.1.6 release)* | No runtime change. Every host witness passes on 0.21.3–0.21.5; four of them were fixed where they mistook a reformatted or reorganised Hermes for a broken one; the gate tests read this run's evidence instead of stale files; CI workflows added. |
 | **1.8.1.2** | The provider's number wins again | A wait the provider states in prose or a body field ("try again in 7s", Codex `resets_in_seconds`) is obeyed again instead of a flat 30s; a billing refusal no wait fixes ends the turn once every key said so; same decisions as Agent Zero on all 1,984 recorded refusals. |
 | **1.8.1.1** | Reliability patch | Reset reports persistence failures; account holds, per-call timeout, classification and redaction are hardened. |
 | **1.8.1.0** | Error evidence | Refusals are sized from provider evidence; Gemini's bare 429 uses a 1–64s ladder, daily labels re-probe, 5xx stays short. |
