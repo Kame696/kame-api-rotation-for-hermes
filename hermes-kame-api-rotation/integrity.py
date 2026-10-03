@@ -50,6 +50,7 @@ from typing import Dict, List, Tuple
 #: turn, and every one of them is reached by an import at register time, so a
 #: gap here is a gap that would have surfaced as a traceback nobody saw.
 REQUIRED_MODULES: Tuple[str, ...] = (
+    "scope.py",
     "dispatch_binding.py",
     "pool_binding.py",
     "settings.py",

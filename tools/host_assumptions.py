@@ -711,7 +711,15 @@ def the_installer_still_stops_at_manifest_version_one(_=None):
     # under whichever cap this installer enforces -- so each shape yields its
     # cap, and only a missing cap or a declaration above it fails.
     private = re.search(r"^_SUPPORTED_MANIFEST_VERSION\s*=\s*(\d+)", body, re.MULTILINE)
-    if "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION" in body:
+    # Hermes after 0.21.5 moved the installer's check into
+    # ``pm/plugin_declarations.py::manifest_version_error``, which imports the
+    # same shared constant -- a third shape of the one gate.
+    declarations = AGENT / "pm/plugin_declarations.py"
+    delegated = declarations.is_file() and (
+        "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION"
+        in declarations.read_text(encoding="utf-8", errors="replace")
+    )
+    if delegated or "from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION" in body:
         manifest_body = (AGENT / "hermes_cli/plugins_manifest.py").read_text(
             encoding="utf-8", errors="replace"
         )

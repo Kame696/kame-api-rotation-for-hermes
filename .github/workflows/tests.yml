@@ -23,7 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # Hermes itself supports >=3.11,<3.14 (its pyproject.toml).
+        # Supported release test matrix; newer local interpreter probes are
+        # extra evidence, not substitutes for these jobs.
         python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -35,4 +36,5 @@ jobs:
       - name: Run the offline suite
         env:
           PYTHONIOENCODING: utf-8
-        run: python -m pytest -q -p no:cacheprovider
+        # Never collect archived releases or project-owned dependency caches.
+        run: python -m pytest tests -q -p no:cacheprovider

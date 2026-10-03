@@ -4,14 +4,14 @@
 
 # 🐢⚡ KAME — API Key Rotation for Hermes
 
-**Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and never lets a rate limit end your turn.**
+**Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.6-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.1.8-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.1_–_0.21.5-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/tests-3047_passing-brightgreen.svg)](#verified)
-[![Security scan](https://img.shields.io/badge/hermes_plugins_validate-safe-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/local_tests-3157_passing-brightgreen.svg)](#verified)
+[![Catalog admission](https://img.shields.io/badge/catalog-1.8.1.8_review_pending-orange.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -19,6 +19,24 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 **[Install](#install) · [Why not round-robin](#vs) · [How it reads errors](#errors) · [Screenshots](#screens) · [Settings](#settings) · [FAQ](#faq) · [Version history](#history) · [Changelog](CHANGELOG.md) · [Agent Zero version](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
 
 </div>
+
+**1.8.1.8 is the serial reliability release.** It retains KAME's rotation and
+classification engine, adds independent profile ownership, improves productive
+stream/tool recovery and reduces redundant local status-file reads. Optional
+provider-request racing is not included.
+
+**GitHub release and catalog approval are separate.** The catalog currently pins
+1.8.1.0; updating that pin requires a new maintainer-reviewed PR. The guarded
+core integration was explicitly reviewed in
+[#117966](https://github.com/NousResearch/hermes-agent/pull/117966#issuecomment-5762488795)
+and landed through [#118402](https://github.com/NousResearch/hermes-agent/pull/118402).
+Current rule 9 is stricter: this release still discloses those bindings and requests
+renewed review, not an automatic exception or a claim that wrappers disappeared.
+
+Measured local snapshot/router cost decreased by about 28 ms per tested call
+(63–65%). This is **not** 65% faster complete agent answers. Representative
+provider-quality and p95 improvements remain unproven. See
+[validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
 ---
 
@@ -166,7 +184,7 @@ Nothing needs changing. Every setting is in the panel, in `/kame set`, and as an
 | `daily_quota_cooldown_seconds` | `3600` | Rest once a daily quota is confirmed by a silent pool |
 | `never_fall_back_to_another_model` | on | Wait out a quota on your model instead of silently switching |
 | `share_pool_health` | on | Several Hermes profiles with the same keys share one health file |
-| `stream_resume_limit` | `10` | How often a cut answer may be continued on another key |
+| `stream_resume_limit` | `-1` (automatic) | Continue while new answer content arrives; `0` disables recovery, `1`–`10` set an explicit ceiling |
 | `stream_silence_timeout_seconds` | `0` (off) | Drop a key that accepts a request and then sends nothing |
 | `disabled` | off | Turn KAME off without uninstalling (`KAME_ROTATION_DISABLED=1`) |
 
@@ -198,14 +216,17 @@ The panel explains every one of them in full, with its environment variable.
 
 | Check | Result |
 |---|---|
-| Offline test suite | **3,047 passing** (6 skipped, 4 expected failures) |
-| `hermes plugins validate` (the Hermes catalog's admission check) | **passes; security scan: safe** |
-| Hermes' own credential-pool test suite, with and without KAME | 1.8.1.3 on Hermes 0.21.3, 0.21.4 and 0.21.5 (21 suite files, 136 host tests on 0.21.5): KAME changes only the 2 intentional load-spreading assertions; spread-off matches the host |
-| Hermes' own error-classification corpus, with and without KAME | changes only the 5 verdicts it changes on purpose, each documented |
-| Runtime contracts against the real Hermes turn loop | **12 / 12** on 0.21.3, 0.21.4 and 0.21.5, each proven able to fail |
-| Host facts KAME's decisions rest on (`tools/host_assumptions.py`) | **40 / 40** on 0.21.3, 0.21.4 and 0.21.5 |
-| Same decision as the Agent Zero port | **2,679 / 2,679** of the author's recorded refusals give the same decision on both ports |
-| Real use | the author's own traffic: 14 Gemini keys plus other providers, every day |
+| Full development regression | **3,157 passing**, six platform/isolation skips, four documented expected failures; no unexpected failures |
+| Public-checkout regression | Reproducible offline suite with shipped tests; exact publication result in [VALIDATION.md](VALIDATION.md) |
+| Unchanged admission at Hermes `476268f16732e09b93bc7202ee38f773b913707e` | **15/15**, with positive/negative controls; technical scan, not maintainer approval |
+| Current-host runtime / native Gemini contracts | **12 + 12** mutation controls / **4 + 4** mutation controls |
+| Actual SDK/native TCP stream recovery | **15/15**, including productive continuations, incomplete tools and truthful terminal stops |
+| Real three-profile manager / unload / reload | **11/11**, independent settings/counters and stopped heartbeat workers |
+| Host pool and classifier comparisons | Active-home pool controls retain intended hold-ceiling behavior; 200-case classifier corpus has only five documented intentional differences |
+| Engine preservation | All 24 non-stitch core ASTs match published 1.8.1.6 except version metadata; recovery code changes are explicitly reviewed |
+| Live speed / quality | Limited successful and failed observations retained; no universal improvement or perfect-uptime guarantee |
+
+### Historical validation (not a new-build certification)
 
 1.8.1.6 was installed in the author's running Hermes 0.21.3 gateway (all
 three profiles): real agent turns on Gemini 3.8 and NVIDIA Kimi K3 answered
@@ -275,6 +296,8 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.1.8** | Serial reliability | Independent profile leases and stoppable heartbeats; progress-based continuation, exact stream boundaries and original-request incomplete-tool replay; writer-owned snapshot cache and defensive Desktop formatting. Engine retained, no request racing; catalog update needs renewed review. |
+| **1.8.1.7** | Reproducible verification *(local candidate)* | Deterministic Windows clock regressions, paired 1/2/14-key overhead measurement, live-key and isolated Hermes acceptance, byte-exact ZIP verification, and explicit current catalog admission dependency. Existing runtime features retained. |
 | **1.8.1.6** | One hour means one hour | `max_hold_seconds` now bounds every hold, the provider's own included: a 24h `Retry-After`, a "try again in 6h" in the message or Codex's reset used to keep a key out that long; it comes back at the ceiling (one hour unless you change it) and is simply held again if the provider still refuses. Lowering the ceiling also applies to holds already running. |
 | **1.8.1.5** | The ceiling holds, whatever the clock does *(inside the v1.8.1.6 release)* | No key sits out longer than `max_hold_seconds` any more when the computer's clock steps back (a 30s rest had become two hours), and a longer hold set by another Hermes profile is now actually released at this profile's ceiling instead of only being reported as if it were. A provider number too large to read, a damaged shared pool-health file or `/kame set … nan` no longer end a turn, turn sharing off for good or print a traceback. |
 | **1.8.1.4** | Safer with your keys, wiser about errors *(inside the v1.8.1.6 release)* | Hermes' `.env` can no longer be left half-written (a failed write used to lose keys); key backups are owner-only from the first byte. A context-too-long error is no longer mistaken for a rate limit because a token count contains 429; a rate limit is never mistaken for the end of the turn; a flagged prompt is not resent on every key. Anthropic per-model 429s on Hermes 0.21.4+ rest 30s, not an hour, and show in `/kame events`. Same decisions as Agent Zero on 860 of 877 recorded refusal shapes (the rest are documented). |
@@ -352,6 +375,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.6** — *because round-robin was never enough*
+🐢⚡ **KAME 1.8.1.8** — *because round-robin was never enough*
 
 </div>

@@ -3,8 +3,8 @@
 The plugin writes one line per attempt; this turns the pile into the four
 numbers that settle an argument:
 
-* how long until the answer starts, per model — the provider's speed;
-* how much of a turn went on waiting for a key — the quota's cost;
+* observed first visible text and total host/provider latency, including rescue;
+* measured pool waiting per instrumented call, not per user turn;
 * how often an attempt is thrown away, and for what;
 * whether the first-token wait is cutting calls that would have answered.
 
@@ -49,6 +49,10 @@ def load(path: Path, since: Optional[float]) -> List[Dict[str, Any]]:
             row = json.loads(line)
         except Exception:
             continue
+        # Old fixtures leaked into this production file with future epochs.
+        # They are not evidence about a currently running provider.
+        if (row.get("at") or 0) > time.time() or str(row.get("identity", "")).startswith("sim:"):
+            continue
         if since is not None and (row.get("at") or 0) < since:
             continue
         rows.append(row)
@@ -83,7 +87,7 @@ def report(rows: List[Dict[str, Any]]) -> None:
     for row in rows:
         models.setdefault(str(row.get("identity") or "?"), []).append(row)
 
-    say("VELOCIDADE — quanto o provedor demora para comecar a responder")
+    say("VELOCIDADE — latencia observada do host/provedor; inclui resgates")
     say("%-28s %6s %8s %10s %9s %10s" % (
         "modelo", "resp.", "1o sinal", "1a palavra", "pior 1a", "total"))
     for name, group in sorted(models.items()):
@@ -101,18 +105,26 @@ def report(rows: List[Dict[str, Any]]) -> None:
         ))
     say()
 
-    say("CULPA — do tempo de um turno, quanto foi esperar chave")
-    say("%-28s %10s %12s %10s" % ("modelo", "turnos", "esperando", "provedor"))
+    say("ESPERA REAL — chamadas instrumentadas, nao turnos de usuario")
+    say("Chamadas aninhadas do host podem se sobrepor; nao somar seus tempos.")
+    say("%-28s %10s %12s %12s" % ("modelo", "chamadas", "pool med.", "host med."))
     for name, group in sorted(models.items()):
         answered = [r for r in group if r.get("outcome") == "answered"]
-        waited = [r.get("ms_waited_before") or 0 for r in answered]
-        working = [r.get("ms_total") or 0 for r in answered]
         if not answered:
             continue
-        total = sum(waited) + sum(working)
-        share = (sum(waited) / total * 100.0) if total else 0.0
-        say("%-28s %10d %11.0f%% %9.0f%%" % (
-            name[:28], len(answered), share, 100.0 - share))
+        measured = [r for r in answered if r.get("ms_pool_waited_before") is not None]
+        if not measured:
+            say("%-28s %10d  atribuicao desconhecida (registro legado)" % (name[:28], len(answered)))
+            continue
+        waited = [r["ms_pool_waited_before"] for r in measured]
+        host = [max(0, (r.get("ms_elapsed_before", r.get("ms_waited_before")) or 0)
+                    + (r.get("ms_total") or 0) - r["ms_pool_waited_before"])
+                for r in measured]
+        say("%-28s %10d %11.2fs %11.2fs" % (
+            name[:28], len(measured), statistics.median(waited) / 1000,
+            statistics.median(host) / 1000))
+        if len(measured) != len(answered):
+            say("  %d registros legados sem medida de espera real" % (len(answered) - len(measured)))
     say()
 
     say("DESPERDICIO — tentativas que nao viraram resposta")

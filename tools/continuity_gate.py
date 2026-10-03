@@ -327,6 +327,17 @@ def _worker_lockholder(spec: Dict[str, Any]) -> None:
 
 def main_worker(argv: Sequence[str]) -> int:
     spec = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
+    # Restart visibility tests share an explicit logical epoch. Slow Windows
+    # interpreter startup must not consume the very hold being measured. The
+    # storm/lock/recovery scenarios still measure real elapsed time unchanged.
+    if "fixture_epoch" in spec:
+        from unittest.mock import patch
+        with patch.object(time, "time", return_value=float(spec["fixture_epoch"])):
+            return _dispatch_worker(spec)
+    return _dispatch_worker(spec)
+
+
+def _dispatch_worker(spec: Dict[str, Any]) -> int:
     try:
         mode = spec["mode"]
         if mode == "driver":
@@ -536,6 +547,7 @@ def _check_release_by_success(tmp_root: Path) -> Dict[str, Any]:
     specs_dir.mkdir(parents=True, exist_ok=True)
     key = "sim-key-00"
     long_hold = HOLD_S * 20  # far longer than the gap between these four steps
+    fixture_epoch = time.time()
 
     def _one_shot(label: str, home: Path, action: str, tag: str) -> Dict[str, Any]:
         out_path = specs_dir / f"{tag}.json"
@@ -544,6 +556,7 @@ def _check_release_by_success(tmp_root: Path) -> Dict[str, Any]:
             "identity": IDENTITY, "keys": [key], "hold_s": long_hold,
             "max_hold_s": MAX_HOLD_S, "daily_cooldown_s": DAILY_COOLDOWN_S,
             "action": action, "out": str(out_path), "profile_label": label,
+            "fixture_epoch": fixture_epoch,
         }
         proc = _spawn(specs_dir / f"{tag}.spec.json", spec)
         code, _out, err = _drain(proc, timeout=30.0)
@@ -553,10 +566,11 @@ def _check_release_by_success(tmp_root: Path) -> Dict[str, Any]:
         return result
 
     a = _one_shot("base", homes["base"], "refuse", "a_refuse")
+    fixture_epoch += 0.1
     b = _one_shot("k", homes["k"], "select_only", "b_select")
-    time.sleep(0.05)
+    fixture_epoch += 0.1
     c = _one_shot("lo1", homes["lo1"], "succeed", "c_succeed")
-    time.sleep(0.05)
+    fixture_epoch += 0.1
     d = _one_shot("base", homes["base"], "select_only", "d_select")
 
     visible = b.get("status") == "EXHAUSTED"
@@ -817,6 +831,7 @@ def scenario_restart(tmp_root: Path) -> Dict[str, Any]:
     specs_dir.mkdir(parents=True, exist_ok=True)
     key = "sim-key-00"
     restart_hold = HOLD_S * 2
+    fixture_epoch = time.time()
 
     def _one_shot(home: Path, action: str, tag: str, keys=(key,)) -> Dict[str, Any]:
         out_path = specs_dir / f"{tag}.json"
@@ -825,6 +840,7 @@ def scenario_restart(tmp_root: Path) -> Dict[str, Any]:
             "identity": IDENTITY, "keys": list(keys), "hold_s": restart_hold,
             "max_hold_s": MAX_HOLD_S, "daily_cooldown_s": DAILY_COOLDOWN_S,
             "action": action, "out": str(out_path), "profile_label": "base",
+            "fixture_epoch": fixture_epoch,
         }
         proc = _spawn(specs_dir / f"{tag}.spec.json", spec)
         code, _out, err = _drain(proc, timeout=30.0)
@@ -841,9 +857,9 @@ def scenario_restart(tmp_root: Path) -> Dict[str, Any]:
     p2 = _one_shot(homes["k"], "select_only", "p2_live")
     live_honoured = p2.get("status") == "EXHAUSTED"
 
-    # Wait the hold out, then a THIRD fresh process: the now-expired hold
-    # must not still be honoured.
-    time.sleep(restart_hold + 0.3)
+    # Advance beyond the recorded hold, then a THIRD fresh process. This
+    # verifies expiry across process restarts, not interpreter startup speed.
+    fixture_epoch += restart_hold + 0.3
     p3 = _one_shot(homes["lo1"], "select_only", "p3_expired")
     expired_not_honoured = p3.get("status") == "SUCCESS"
 
@@ -902,6 +918,7 @@ def scenario_restart(tmp_root: Path) -> Dict[str, Any]:
             "dormant_shared_value_unclamped_before_any_touch": dormant_unclamped,
             "clamped_to_ceiling_once_touched_again": clamped_after_touch,
             "ceiling_s": MAX_HOLD_S,
+            "restart_clock": "explicit shared fixture epoch; real process and file boundaries",
         },
     }
 

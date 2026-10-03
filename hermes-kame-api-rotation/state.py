@@ -102,6 +102,9 @@ _lock = threading.Lock()
 _last_written: Optional[str] = None
 _last_write_at = 0.0
 _disabled_reason = ""
+_cached_path = ""
+_cached_stamp = None
+_cached_document = ""
 
 #: The live binding, remembered once at registration so anything that has a
 #: reason to republish — the control poller, the heartbeat, a command — can do
@@ -683,6 +686,24 @@ def neighbours(now: Optional[float] = None) -> List[Dict[str, Any]]:
     return out
 
 
+def _file_stamp(path: Path):
+    """Identity for the exact atomic document; absent identity disables reuse."""
+    try:
+        stat = path.stat()
+        if not stat.st_ino:
+            return None
+        return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def _read_for_merge(path: Path) -> str:
+    stamp = _file_stamp(path)
+    if stamp is not None and str(path) == _cached_path and stamp == _cached_stamp:
+        return _cached_document
+    return path.read_text(encoding="utf-8")
+
+
 def _merged(path: Path, mine: Dict[str, Any]) -> Dict[str, Any]:
     """The file as it should stand once this process has had its say.
 
@@ -715,7 +736,7 @@ def _merged(path: Path, mine: Dict[str, Any]) -> Dict[str, Any]:
     now = time.time()
     sections: Dict[str, Any] = {}
     try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
+        existing = json.loads(_read_for_merge(path))
     except (OSError, ValueError):
         existing = None
     if isinstance(existing, dict):
@@ -766,6 +787,7 @@ def publish(
     place.
     """
     global _last_written, _last_write_at, _disabled_reason
+    global _cached_path, _cached_stamp, _cached_document
     if binding is None:
         # A caller with nothing to hand means "publish what is installed", not
         # "publish that nothing is installed".
@@ -810,6 +832,10 @@ def publish(
             try:
                 with os.fdopen(handle, "w", encoding="utf-8") as stream:
                     stream.write(document)
+                # Capture OUR inode before replace: a foreign writer may replace
+                # the destination immediately afterward. Its stamp must never
+                # be paired with our cached text.
+                stamp = _file_stamp(Path(temporary))
                 os.replace(temporary, path)
             except BaseException:
                 try:
@@ -823,6 +849,7 @@ def publish(
             return False
         _last_written = comparable
         _last_write_at = now
+        _cached_path, _cached_stamp, _cached_document = str(path), stamp, document
         _disabled_reason = ""
     _sweep_once(path.parent)
     return True
@@ -890,6 +917,8 @@ def _without_clock(document: str) -> str:
 def clear() -> None:
     """Forget the write throttle. For tests, and for a pool that was replaced."""
     global _last_written, _last_write_at
+    global _cached_path, _cached_stamp, _cached_document
     with _lock:
         _last_written = None
         _last_write_at = 0.0
+        _cached_path, _cached_stamp, _cached_document = "", None, ""

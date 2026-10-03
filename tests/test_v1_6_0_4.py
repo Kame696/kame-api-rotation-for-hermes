@@ -48,7 +48,6 @@ import importlib
 import importlib.util
 import inspect
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,16 +396,22 @@ class TestACutAnswerIsStillContinued:
 class TestTheSilenceTimeoutStillSeesEverything:
     def test_stir_moves_the_clock_without_claiming_delivery(self):
         progress = dispatch_binding._Progress()
+        # Backdated, not slept: time.monotonic() ticks every ~15.6 ms on
+        # Windows before Python 3.13, so a 10 ms sleep can read the same
+        # instant twice (seen on the windows-latest / 3.12 CI runner).
+        progress.last_activity -= 1.0
         before = progress.last_activity
-        time.sleep(0.01)
         progress.stir()
         assert progress.last_activity > before
         assert progress.any is False
 
     def test_touch_moves_the_clock_and_claims_delivery(self):
         progress = dispatch_binding._Progress()
+        # Backdated, not slept: time.monotonic() ticks every ~15.6 ms on
+        # Windows before Python 3.13, so a 10 ms sleep can read the same
+        # instant twice (seen on the windows-latest / 3.12 CI runner).
+        progress.last_activity -= 1.0
         before = progress.last_activity
-        time.sleep(0.01)
         progress.touch()
         assert progress.last_activity > before
         assert progress.any is True
@@ -419,8 +424,11 @@ class TestTheSilenceTimeoutStillSeesEverything:
         agent = Agent()
         call_kwargs = {"on_first_delta": lambda: None}
         dispatch_binding._install_shims(agent, progress, call_kwargs)
+        # Backdated, not slept: time.monotonic() ticks every ~15.6 ms on
+        # Windows before Python 3.13, so a 10 ms sleep can read the same
+        # instant twice (seen on the windows-latest / 3.12 CI runner).
+        progress.last_activity -= 1.0
         before = progress.last_activity
-        time.sleep(0.01)
         call_kwargs["on_first_delta"]()
         assert progress.last_activity > before
         assert progress.any is False

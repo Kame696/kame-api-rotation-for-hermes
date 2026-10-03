@@ -133,6 +133,7 @@ def record(
     pool_waited_before_s: Optional[float] = None,
     call_id: str = "",
     rest_source: Optional[str] = None,
+    record_type: str = "",
 ) -> None:
     """Write one attempt down. Fails silently, always.
 
@@ -190,6 +191,8 @@ def record(
             # way, not "unknown".
             "rest_source": str(rest_source)[:24] if rest_source else None,
         }
+        if record_type:
+            row["record_type"] = str(record_type)[:24]
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:

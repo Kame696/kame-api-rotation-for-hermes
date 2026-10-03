@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.8.1.6"
+version: "1.8.1.8"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -121,8 +121,8 @@ config_schema:
     description: "Stop continuing an answer that was cut mid-stream. KAME normally resumes it on another key, prefilled with what you already saw, and trims whatever the model repeats, so the reply arrives as one piece. Turning this on hands the half-answer back to Hermes instead, which appends its own '[System: The previous response was cut off...]' note. Same as KAME_STREAM_STITCH_DISABLED."
   stream_resume_limit:
     type: int
-    default: 10
-    description: "A ceiling on continuing a cut answer, not the rule. KAME keeps going while keys are still adding words and stops on its own once the pool starts repeating itself with nothing new, so this only bites if you lower it. Zero turns continuation off, same as stream_stitch_disabled. Clamped to 0-10. Same as KAME_STREAM_RESUME_LIMIT."
+    default: -1
+    description: "Continue while the answer makes progress (-1, the default), stopping a no-progress loop on evidence rather than after ten cuts. Zero disables continuation. Explicit operator ceilings 1-10 remain supported. Clamped to -1-10. Same as KAME_STREAM_RESUME_LIMIT."
   refusal_recorder_disabled:
     type: bool
     default: false

@@ -7,6 +7,66 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.8] — 2026-10-02 — serial reliability
+
+### Fixed
+- Profile-local callable ownership and stoppable context-captured heartbeat:
+  one profile's unload/reload no longer steals another profile's bindings.
+- Exact stream boundaries, productive continuation beyond the previous default
+  ten-cut ceiling, and honest no-progress termination. Explicit zero/off and
+  operator-selected 1–10 limits remain supported.
+- An incomplete, unexecuted tool request replays the original request without
+  duplicating its displayed preamble or inventing tool arguments. Terminal
+  diagnostics, cancellation and warning preferences are preserved.
+- Desktop formatting accepts absent live fields and automatic continuation.
+
+### Improved
+- Writer-owned synchronous snapshot cache avoids redundant disk reads while
+  preserving atomic writes and detecting foreign-file/home changes. Controlled
+  local cost fell about 28 ms (63–65%) per tested call; not total answer speed.
+- Independent current-host contract, lifecycle, TCP and mutation checks. The
+  full development suite passed 3,157 tests (six skips, four expected failures).
+  Public-checkout reproduction and exclusions are reported in VALIDATION.md.
+
+### Preserved and disclosed
+- Rotation/classification engine, provider/model choice, reasoning, history,
+  signatures, shared quota health and auxiliary/key-intake behavior remain.
+- Optional provider-request racing is not shipped. No automatic quality downgrade,
+  telemetry, self-updater or credential egress is introduced.
+- Guarded internal host bindings remain. The earlier review in #117966/#118402
+  is pin-specific; the catalog SHA update requests renewed review under rule 9.
+- Representative provider-quality/p95 gains and universal uptime are not claimed.
+
+The 1.8.1.7 development candidate was not released separately; its reproducible
+clock-test and verification improvements are included here. Earlier public
+releases and their artifacts remain unchanged.
+
+## [1.8.1.7] — 2026-10-01 — reproducible clocks, measured speed, honest admission
+
+**Local owner-test candidate; not published.** The full 1.8.1.6 rotation,
+stream continuation, model-scoped cooldown, auxiliary, key-intake and Desktop
+behavior is retained. No new delay, client rebuild, parallel request feature
+or cross-provider strategy is introduced.
+
+- Promote the existing Windows clock-test repair: backdate activity instead of
+  requiring a 10 ms sleep to advance a coarse monotonic clock. New regressions
+  exercise repeated instants, delivery versus reasoning, and several clock resolutions.
+- Add paired 1/2/14-key healthy-dispatch overhead measurement against the
+  immutable official 1.8.1.6 ZIP, exact archive/source verification, sequential
+  real-key probes and isolated full-Hermes acceptance tooling.
+- Run the pinned upstream no-core-override admission lint without suppressing
+  findings. Current rule 9 requires renewed human review of the retained guarded
+  bindings; the earlier #117966 ruling allowed them at its reviewed pin, not
+  automatically at a new SHA. Standard single-use middleware does not replace
+  these retry-capable integrations.
+- Preserve all historical version entries and the published 1.8.1.6 artifact.
+  Isolated test tools retain their explicit dependency path, suppress lazy
+  host installations and use logical fixture epochs only for restart/release
+  visibility. Real storm, recovery and lock measurements remain unchanged;
+  CI collects `tests/` explicitly rather than archived/research trees.
+  Scope, actual test counts, live outcomes, hashes and publication dependencies
+  are recorded in `research/1.8.1.7/REPORT.md`.
+
 ## [1.8.1.6] — 2026-09-24 — one hour means one hour
 
 **One release, four steps.** v1.8.1.6 is the only GitHub release for

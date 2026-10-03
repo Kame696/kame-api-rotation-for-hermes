@@ -142,6 +142,7 @@ class Stitcher:
         "_resolved",
         "_skip",
         "_skip_at",
+        "_boundary",
         "forwarded",
         "mode",
     )
@@ -162,6 +163,9 @@ class Stitcher:
         self._skip = 0
         #: How far into ``seen`` the restart check has verified.
         self._skip_at = 0
+        # Only consumed after a proven overlap/restart. Formatting not already
+        # displayed stays intact, including a different newline/indent sequence.
+        self._boundary = self._seen[len(self._seen.rstrip()):]
         #: Everything this stitcher has let through, in order.
         self.forwarded = ""
         #: ``""`` until resolved, then ``continuation`` / ``restart`` / ``new``.
@@ -206,12 +210,19 @@ class Stitcher:
         seen_c = self._seen_c
         fresh_c, fresh_at = _comparable(buffered)
 
+        # Equality of the WHOLE displayed answer is stronger evidence than a
+        # short suffix overlap. Without this, an unchanged tiny stub looks
+        # productive forever under progress-based continuation.
+        if fresh_c and fresh_c == seen_c:
+            self.mode = "continuation"
+            return self._trim_boundary(buffered[fresh_at[-1] + 1 :])
+
         overlap = _tail_overlap(seen_c, fresh_c)
         if overlap:
             self.mode = "continuation"
             # ``+1`` because the map holds the index of the last repeated
             # character, and the text kept starts after it.
-            return buffered[fresh_at[overlap - 1] + 1 :]
+            return self._trim_boundary(buffered[fresh_at[overlap - 1] + 1 :])
 
         if _looks_like_a_restart(seen_c, fresh_c):
             self.mode = "restart"
@@ -220,12 +231,27 @@ class Stitcher:
             return self._after_resolution(buffered)
 
         self.mode = "new"
+        self._boundary = ""
         return buffered
+
+    def _trim_boundary(self, text: str) -> str:
+        """Consume only identical trailing whitespace that was already shown.
+
+        A boundary can arrive in several deltas. Keep the unconsumed part until
+        the next delta, but stop matching at the first genuinely new character.
+        """
+        if not self._boundary or not text:
+            return text
+        matched = 0
+        while matched < min(len(self._boundary), len(text)) and self._boundary[matched] == text[matched]:
+            matched += 1
+        self._boundary = self._boundary[matched:] if matched == len(text) else ""
+        return text[matched:]
 
     def _after_resolution(self, chunk: str) -> str:
         """Everything after the decision: pass through, or keep skipping."""
         if self._skip <= 0:
-            return chunk
+            return self._trim_boundary(chunk)
         seen_c = self._seen_c
         fresh_c, fresh_at = _comparable(chunk)
         for index, character in enumerate(fresh_c):
@@ -241,6 +267,10 @@ class Stitcher:
                 return chunk[fresh_at[index] :]
             self._skip -= 1
             self._skip_at += 1
+            if self._skip == 0:
+                # Preserve new separators after the last repeated character;
+                # the previous next-character slice swallowed this gap.
+                return self._trim_boundary(chunk[fresh_at[index] + 1 :])
         return ""
 
     def _emit(self, text: str) -> str:

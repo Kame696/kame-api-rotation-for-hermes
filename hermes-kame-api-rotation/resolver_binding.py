@@ -158,6 +158,9 @@ class ResolverBinding:
             logger.info("kame: the first key of a turn is the host's — %s", self.reason)
             return False
 
+        from .scope import Patches
+        self._patches = Patches()
+        original = self._patches.original(module, _FUNCTION)
         if getattr(original, _MARK, False):
             self.reason = "already wrapped by another KAME instance"
             logger.debug("kame: %s", self.reason)
@@ -165,7 +168,7 @@ class ResolverBinding:
 
         self._module = module
         self._original = original
-        setattr(module, _FUNCTION, self._wrap(original))
+        self._patches.bind(module, _FUNCTION, self._wrap(original))
         self.installed = True
         self.reason = "active"
         logger.info("kame: a multi-key variable resolves to one key from the pool")
@@ -174,8 +177,7 @@ class ResolverBinding:
     def uninstall(self) -> None:
         if not self.installed or self._module is None or self._original is None:
             return
-        if getattr(getattr(self._module, _FUNCTION, None), _MARK, False):
-            setattr(self._module, _FUNCTION, self._original)
+        self._patches.release()
         self._module = None
         self._original = None
         self.installed = False

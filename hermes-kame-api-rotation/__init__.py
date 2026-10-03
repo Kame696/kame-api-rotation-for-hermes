@@ -104,6 +104,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from . import host_text, integrity, recorder, runtime, settings
+from .scope import lifecycle as _scope_lifecycle
 from .core import Verdict, answer, carousel, classify, stated_window, vocabulary
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -625,6 +626,7 @@ def _on_session_reset(payload=None, **kwargs):
     return None
 
 
+@_scope_lifecycle
 def register(ctx) -> None:
     # Before anything else, and loudly: is this a whole plugin?
     #
@@ -854,6 +856,7 @@ def _start_state_heartbeat() -> None:
     A daemon thread, so it can never hold the process open, and started once
     per interpreter even if register() runs again.
     """
+    import contextvars
     import threading
 
     if globals().get("_state_heartbeat") is not None:
@@ -863,8 +866,7 @@ def _start_state_heartbeat() -> None:
         from . import control, state
 
         ticks = 0
-        while True:
-            time.sleep(_CONTROL_TICK_S)
+        while not stop.wait(_CONTROL_TICK_S):
             ticks += 1
             try:
                 # Publishes by itself when it applies something, so the panel
@@ -880,6 +882,39 @@ def _start_state_heartbeat() -> None:
             except Exception:  # pragma: no cover - a daemon that cannot die
                 logger.debug("%s: snapshot heartbeat failed", PLUGIN_NAME, exc_info=True)
 
-    thread = threading.Thread(target=_tick, name="kame-state", daemon=True)
+    stop = threading.Event()
+    context = contextvars.copy_context()
+    thread = threading.Thread(target=context.run, args=(_tick,), name="kame-state", daemon=True)
+    globals()["_state_heartbeat_stop"] = stop
     globals()["_state_heartbeat"] = thread
     thread.start()
+
+
+def _stop_state_heartbeat() -> None:
+    """Stop and join this namespace's worker without touching another profile."""
+    import threading
+    stop = globals().pop("_state_heartbeat_stop", None)
+    thread = globals().pop("_state_heartbeat", None)
+    if stop is not None:
+        stop.set()
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+
+
+def _cleanup_runtime() -> None:
+    """Dispose profile bindings even after an incomplete register() call."""
+    _stop_state_heartbeat()
+    for name in ("_dispatch_binding", "_resolver_binding", "_field_binding",
+                 "_aux_binding", "_binding"):
+        binding = globals().pop(name, None)
+        if binding is not None:
+            try:
+                binding.uninstall()
+            except Exception:
+                logger.debug("%s: binding cleanup failed", PLUGIN_NAME, exc_info=True)
+    from . import gemini_slots, quota_id_binding, state
+    quota_id_binding.uninstall()
+    gemini_slots.revert()
+    state.attach(None)
+    state.set_pool_binding(None)
+    state.publish(force=True)

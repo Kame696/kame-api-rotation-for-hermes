@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 import threading
@@ -396,6 +397,10 @@ def off_event_loop(broken=False):
         _active_run_agents={}, _shutdown_interruptible_agents={}, _inflight_agent_runs=0,
         _activate_admitted_request=lambda: None,
         _finish_turn_result=lambda a, result, sid, **kwargs: (result, {}),
+        # Current main records metrics after the worker returns. This fixture
+        # intercepts only that persistence boundary; the executor, completion
+        # cleanup and responsive-loop assertions below still run unchanged.
+        _record_api_metrics=Mock(),
         # Hermes 0.21.5 hands the finished agent back to a per-session memory
         # pool (``self._memory_sessions.checkin(agent)``) inside the worker.
         # Older hosts never touch it, so a no-op pool is inert there.
@@ -484,9 +489,41 @@ def run(host):
         "passed": all(r["passed"] for r in results.values()) and all(detected.values())}
 
 
+#: Git subcommands the host may run on itself while importing. Hermes after
+#: 0.21.5 derives its version from its own checkout (``hermes_cli.version_info``
+#: runs ``git rev-parse`` / ``describe`` at import), so blocking every
+#: subprocess made every contract fail before it could look at anything.
+_READ_ONLY_GIT = {"rev-parse", "describe", "show", "log", "branch", "tag"}
+
+
+def _read_only_git(args) -> bool:
+    argv = args[1] if len(args) > 1 else None
+    if not argv:
+        return False
+    if isinstance(argv, (str, bytes)):
+        # Windows audits the command line after list2cmdline() joined it.
+        argv = [a.strip('"') for a in shlex.split(os.fsdecode(argv), posix=False)]
+    else:
+        argv = [os.fsdecode(a) for a in argv]
+    if Path(argv[0]).stem.lower() != "git":
+        return False
+    rest = argv[1:]
+    while len(rest) >= 2 and rest[0] in ("-C", "-c"):
+        rest = rest[2:]
+    if not rest or rest[0] not in _READ_ONLY_GIT:
+        return False
+    if rest[0] == "branch":
+        return rest[1:] == ["--show-current"]
+    if rest[0] == "tag":
+        return "--list" in rest or "-l" in rest
+    return True
+
+
 def install_guards(host):
     host = host.resolve()
     def audit(event, args):
+        if event == "subprocess.Popen" and _read_only_git(args):
+            return
         if event in {"socket.connect", "socket.getaddrinfo", "subprocess.Popen"}:
             raise RuntimeError("offline contract blocked " + event)
         if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):

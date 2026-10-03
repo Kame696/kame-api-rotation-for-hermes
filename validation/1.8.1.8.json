@@ -1,0 +1,50 @@
+{
+  "version": "1.8.1.8",
+  "runtime_fingerprint": "2b29f123099d",
+  "artifact_sha256": "79e55f12838183fae8292a08616efb84b76c80d5c44e0a5adebf842aba90c7fe",
+  "artifact_members": 51,
+  "public_checkout_regression": {
+    "passed": 3133,
+    "skipped": 6,
+    "xfailed": 4,
+    "unexpected_failures": 0,
+    "seconds": 204.783
+  },
+  "development_regression": {
+    "passed": 3157,
+    "skipped": 6,
+    "xfailed": 4,
+    "unexpected_failures": 0,
+    "additional_scope": "24 private research and evidence-navigation audit assertions; no runtime feature removed from public tests"
+  },
+  "publication_host_ref": "46904a3b467f62616f5b3ee247adce30b1b277a0",
+  "publication_host_checks": {
+    "admission": true,
+    "manager": true,
+    "runtime": true,
+    "gemini": true
+  },
+  "publication_host_contracts": {
+    "admission": 15,
+    "runtime": 12,
+    "runtime_mutations": 12,
+    "native_gemini": 4,
+    "native_mutations": 4,
+    "three_profile_manager": 11
+  },
+  "earlier_extended_host_ref": "476268f16732e09b93bc7202ee38f773b913707e",
+  "earlier_extended_gates": {
+    "actual_sdk_native_tcp": 15,
+    "classifier_baseline": 200,
+    "classifier_intentional_differences": 5,
+    "active_pool_fixture_homes": 99
+  },
+  "unchanged_non_stitch_core_ASTs_except_version": 24,
+  "runtime_equal_to_preserved_owner_trial": true,
+  "owner_configuration_or_installed_core_changed": false,
+  "privacy_scan_passed": true,
+  "request_racing_shipped": false,
+  "guarded_core_bindings_retained": true,
+  "new_pin_maintainer_approval": false,
+  "representative_provider_quality_or_p95_improvement_proven": false
+}

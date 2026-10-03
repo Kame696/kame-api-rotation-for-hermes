@@ -204,6 +204,9 @@ class FieldBinding:
             logger.info("kame: the settings field still takes one key — %s", self.reason)
             return False
 
+        from .scope import Patches
+        self._patches = Patches()
+        original = self._patches.original(route.dependant, "call")
         if getattr(original, _MARK, False):
             self.reason = "already wrapped by another KAME instance"
             logger.debug("kame: %s", self.reason)
@@ -212,11 +215,11 @@ class FieldBinding:
         self._route = route
         self._original = original
         wrapper = self._wrap(original)
-        route.dependant.call = wrapper
+        self._patches.bind(route.dependant, "call", wrapper)
         # Kept in step so anything reading the route for documentation or for
         # a second wrap sees the same function the request will reach.
         try:
-            route.endpoint = wrapper
+            self._patches.bind(route, "endpoint", wrapper)
         except Exception:  # pragma: no cover — a frozen route object
             logger.debug("kame: could not restamp route.endpoint", exc_info=True)
 
@@ -228,12 +231,7 @@ class FieldBinding:
     def uninstall(self) -> None:
         if not self.installed or self._route is None or self._original is None:
             return
-        if getattr(self._route.dependant.call, _MARK, False):
-            self._route.dependant.call = self._original
-            try:
-                self._route.endpoint = self._original
-            except Exception:  # pragma: no cover
-                logger.debug("kame: could not restore route.endpoint", exc_info=True)
+        self._patches.release()
         self._route = None
         self._original = None
         self.installed = False

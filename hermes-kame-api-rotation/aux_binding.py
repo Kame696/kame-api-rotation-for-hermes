@@ -101,21 +101,23 @@ class AuxBinding:
             )
             return False
 
+        from .scope import Patches
+        self._patches = Patches()
         names = _SYNC_RELAYS + _ASYNC_RELAYS
-        if any(getattr(getattr(module, name), _MARK, False) for name in names):
+        if any(getattr(self._patches.original(module, name), _MARK, False) for name in names):
             self.reason = "already wrapped by another KAME instance"
             logger.debug("kame: %s", self.reason)
             return False
 
         self._module = module
         for name in _SYNC_RELAYS:
-            original = getattr(module, name)
+            original = self._patches.original(module, name)
             self._originals[name] = original
-            setattr(module, name, self._wrap_sync(module, original))
+            self._patches.bind(module, name, self._wrap_sync(module, original))
         for name in _ASYNC_RELAYS:
-            original = getattr(module, name)
+            original = self._patches.original(module, name)
             self._originals[name] = original
-            setattr(module, name, self._wrap_async(module, original))
+            self._patches.bind(module, name, self._wrap_async(module, original))
 
         self.installed = True
         self.reason = "active"
@@ -125,9 +127,7 @@ class AuxBinding:
     def uninstall(self) -> None:
         if not self.installed or self._module is None:
             return
-        for name, original in self._originals.items():
-            if getattr(getattr(self._module, name, None), _MARK, False):
-                setattr(self._module, name, original)
+        self._patches.release()
         self._originals = {}
         self._module = None
         self.installed = False

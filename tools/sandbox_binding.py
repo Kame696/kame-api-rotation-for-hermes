@@ -871,7 +871,13 @@ def main() -> int:
             got, _pending = carried._available_entries()
             return [e.label for e in got]
 
-        check("benched while the counter is spent", usable_carried(), [])
+        # The host checks wall time, while this fixture deliberately freezes
+        # the binding clock. After a slow import/run the original NOW+21 can
+        # be in the past to the host. Observe the intended instant for both
+        # halves; do not weaken the expected empty availability result.
+        from unittest.mock import patch
+        with patch.object(cp.time, "time", return_value=NOW):
+            check("benched while the counter is spent", usable_carried(), [])
 
         # And the third thing the journal could not do. A recovery inherits
         # `predicted_reset_at` from `block.reset_at`, which is the host's

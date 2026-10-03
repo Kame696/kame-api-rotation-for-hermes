@@ -347,22 +347,26 @@ class TestAStreamThatStoppedInsideAToolCall:
         assert binding.tool_call_cuts == 0
         assert binding.tool_call_retries == 1
 
-    def test_a_call_cut_after_text_was_shown_is_still_never_retried(self):
-        # The boundary. A plain retry reprints whatever the user already read,
-        # and half a JSON payload still cannot be continued — so this case
-        # keeps the 1.1.3 behaviour exactly.
+    def test_cut_tool_preamble_is_replayed_once_per_key_without_duplication(self):
+        # 1.8.1.8 replays the original request under delivery-only stitching.
+        # An incomplete tool is never synthesized/executed; pool traversal ends.
         agent = Agent()
         calls = []
 
         def host(agent_, api_kwargs, **kwargs):
-            calls.append(1)
+            calls.append(api_kwargs)
             agent_._fire_stream_delta("Reading ")
             return cut_in_a_tool_call()
 
         binding = _binding()
-        binding.run(host, agent, conversation(), (), {})
-        assert len(calls) == 1
-        assert binding.tool_call_retries == 0
+        request = conversation()
+        result = binding.run(host, agent, request, (), {})
+        assert len(calls) == len(KEYS)
+        assert all(call == request for call in calls)
+        assert agent.screen == "Reading "
+        assert result.id == dispatch_binding.PARTIAL_STUB_ID
+        assert result.choices[0].message.tool_calls is None
+        assert binding.tool_call_retries == len(KEYS) - 1
         assert binding.tool_call_cuts == 1
 
     def test_the_events_screen_names_the_tool(self):

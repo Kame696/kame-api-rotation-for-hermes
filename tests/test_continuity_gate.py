@@ -326,7 +326,11 @@ class TestFullGateEndToEnd:
         env.pop("HERMES_HOME", None)  # prove the tool never inherits a real HERMES_HOME by accident
         result = subprocess.run(
             [sys.executable, "-B", str(TOOL_PATH)],
-            cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=180,
+            # Windows cold interpreter/file scanning can dominate the many
+            # real child starts. Bound the harness, not production latency;
+            # every scenario's functional and measured assertions stay strict.
+            cwd=str(ROOT), env=env, capture_output=True, text=True,
+            timeout=600 if os.name == "nt" else 180,
         )
         assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         assert "GATE PASS" in result.stdout

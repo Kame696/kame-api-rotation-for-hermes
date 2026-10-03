@@ -68,6 +68,7 @@ _MARK = "_kame_keeps_the_quota_id"
 BODY_ATTRIBUTE = "body"
 
 _installed: Optional[Any] = None
+_patches = None
 
 
 def _parsed_body(response: Any, body_text: Optional[str]) -> Optional[dict]:
@@ -102,7 +103,7 @@ def install() -> bool:
     them are installs where this changes nothing and should say so rather than
     warn about a host that is simply different.
     """
-    global _installed
+    global _installed, _patches
     if settings.is_on(settings.QUOTA_ID_DISABLED):
         return False
     try:
@@ -112,7 +113,11 @@ def install() -> bool:
     except Exception:
         return False
 
-    original = getattr(module, HOST_FACTORY, None)
+    if _installed is module:
+        return True
+    from .scope import Patches
+    _patches = Patches()
+    original = _patches.original(module, HOST_FACTORY)
     if not callable(original):
         return False
     if getattr(original, _MARK, False):
@@ -134,23 +139,22 @@ def install() -> bool:
         return error
 
     setattr(_kame_gemini_http_error, _MARK, True)
-    setattr(module, HOST_FACTORY, _kame_gemini_http_error)
+    _patches.bind(module, HOST_FACTORY, _kame_gemini_http_error)
     _installed = module
     return True
 
 
 def uninstall() -> None:
     """Put the host's own factory back. Tests, and an orderly shutdown."""
-    global _installed
+    global _installed, _patches
     module = _installed
     _installed = None
     if module is None:
         return
     try:
-        wrapper = getattr(module, HOST_FACTORY, None)
-        original = getattr(wrapper, "__wrapped__", None)
-        if callable(original):
-            setattr(module, HOST_FACTORY, original)
+        if _patches is not None:
+            _patches.release()
+            _patches = None
     except Exception:
         logger.debug("kame: could not unwrap the error factory", exc_info=True)
 

@@ -287,9 +287,11 @@ class PoolBinding:
             )
             return False
 
+        from .scope import Patches
+        self._patches = Patches()
         pool_class = module.CredentialPool
-        if getattr(pool_class._mark_exhausted, _MARK, False) or getattr(
-            pool_class._available_entries, _MARK, False
+        if getattr(self._patches.original(pool_class, "_mark_exhausted"), _MARK, False) or getattr(
+            self._patches.original(pool_class, "_available_entries"), _MARK, False
         ):
             # Another instance of this plugin — or a reload that did not tear
             # down — already owns these. Stacking would double-count.
@@ -299,15 +301,13 @@ class PoolBinding:
 
         self._module = module
         self._originals = {
-            "_mark_exhausted": pool_class._mark_exhausted,
-            "_available_entries": pool_class._available_entries,
+            "_mark_exhausted": self._patches.original(pool_class, "_mark_exhausted"),
+            "_available_entries": self._patches.original(pool_class, "_available_entries"),
         }
-        pool_class._mark_exhausted = self._build_mark_exhausted(
-            self._originals["_mark_exhausted"]
-        )
-        pool_class._available_entries = self._build_available_entries(
-            self._originals["_available_entries"]
-        )
+        self._patches.bind(pool_class, "_mark_exhausted", self._build_mark_exhausted(
+            self._originals["_mark_exhausted"]))
+        self._patches.bind(pool_class, "_available_entries", self._build_available_entries(
+            self._originals["_available_entries"]))
         self._watch_selection(pool_class)
         self._guard_persist(pool_class)
         self._expand_on_construction(pool_class)
@@ -330,7 +330,7 @@ class PoolBinding:
         because an observation point moved would trade a correctness feature
         for a statistics feature, which is the wrong way round.
         """
-        original = getattr(pool_class, "_select_unlocked", None)
+        original = self._patches.original(pool_class, "_select_unlocked")
         if not callable(original) or getattr(original, _MARK, False):
             return
         try:
@@ -339,7 +339,7 @@ class PoolBinding:
             logger.debug("kame: not watching selection — %s", exc)
             return
         self._originals["_select_unlocked"] = original
-        pool_class._select_unlocked = self._build_select_unlocked(original)
+        self._patches.bind(pool_class, "_select_unlocked", self._build_select_unlocked(original))
         self.watching_selection = True
         # Spreading load needs both halves: the count written when a key is
         # handed out, and the order read when the next one is asked for. With
@@ -382,11 +382,11 @@ class PoolBinding:
         a host that renamed this method should cost the repair, not the whole
         binding.
         """
-        original = getattr(pool_class, "current", None)
+        original = self._patches.original(pool_class, "current")
         if not callable(original) or getattr(original, _MARK, False):
             return
         self._originals["current"] = original
-        pool_class.current = self._build_current(original)
+        self._patches.bind(pool_class, "current", self._build_current(original))
         self.guarding_current = True
 
     def _build_current(self, original: Callable) -> Callable:
@@ -476,7 +476,10 @@ class PoolBinding:
         and leaves every other wrapper working, which is exactly the
         behaviour of the version before this one.
         """
-        original = getattr(pool_class, "_persist", None)
+        if not hasattr(self, "_patches"):
+            from .scope import Patches
+            self._patches = Patches()
+        original = self._patches.original(pool_class, "_persist")
         if not callable(original):
             logger.debug("kame: no _persist to guard — multi-key splitting off")
             return
@@ -523,7 +526,7 @@ class PoolBinding:
 
         setattr(_kame_persist, _MARK, True)
         self._originals["_persist"] = original
-        pool_class._persist = _kame_persist
+        self._patches.bind(pool_class, "_persist", _kame_persist)
         self.splitting_multikey = True
 
     def _expand_on_construction(self, pool_class: Any) -> None:
@@ -538,7 +541,7 @@ class PoolBinding:
         """
         if not self.splitting_multikey:
             return
-        original = getattr(pool_class, "__init__", None)
+        original = self._patches.original(pool_class, "__init__")
         if not callable(original) or getattr(original, _MARK, False):
             return
         try:
@@ -558,7 +561,7 @@ class PoolBinding:
 
         setattr(_kame_init, _MARK, True)
         self._originals["__init__"] = original
-        pool_class.__init__ = _kame_init
+        self._patches.bind(pool_class, "__init__", _kame_init)
 
     # -- multi-key credentials -------------------------------------------
 
@@ -805,12 +808,7 @@ class PoolBinding:
         # object: leaving it registered would keep an uninstalled binding
         # alive and writing to a journal nobody is reading.
         runtime.set_rotation_recorder(None)
-        for name, original in self._originals.items():
-            if getattr(getattr(pool_class, name, None), _MARK, False):
-                if name in self._inherited and name in vars(pool_class):
-                    delattr(pool_class, name)
-                else:
-                    setattr(pool_class, name, original)
+        self._patches.release()
         self._originals = {}
         self._inherited = set()
         self.watching_model_cooldowns = False
@@ -845,7 +843,7 @@ class PoolBinding:
         without the method (0.21.3 and older) loses nothing, and a host whose
         method changed shape must not cost the rest of the binding.
         """
-        original = getattr(pool_class, "_cool_down_model", None)
+        original = self._patches.original(pool_class, "_cool_down_model")
         if not callable(original) or getattr(original, _MARK, False):
             return
         try:
@@ -856,7 +854,7 @@ class PoolBinding:
         if "_cool_down_model" not in vars(pool_class):
             self._inherited.add("_cool_down_model")
         self._originals["_cool_down_model"] = original
-        pool_class._cool_down_model = self._build_cool_down_model(original)
+        self._patches.bind(pool_class, "_cool_down_model", self._build_cool_down_model(original))
         self.watching_model_cooldowns = True
 
     def _build_cool_down_model(self, original: Callable) -> Callable:

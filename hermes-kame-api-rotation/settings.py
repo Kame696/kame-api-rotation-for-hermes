@@ -328,8 +328,8 @@ SILENT_STREAM_PATIENCE = STREAM_SILENCE_TIMEOUT
 #: ``dispatch_binding`` now ends the loop on evidence instead: every key in
 #: the pool asked to continue the answer, and not one of them adding a word.
 #: Unanimity, the same shape ``_pool_agrees_it_is_the_request`` uses. This
-#: number stays as the guard rail it always claimed to be, defaulted to the
-#: top of its own range so it never ends an answer that was still growing.
+#: number remains an operator guard rail: -1 (default) continues while
+#: productive; 0 disables continuation; 1..10 explicitly bounds resumes.
 STREAM_RESUME_LIMIT = "stream_resume_limit"
 
 _NUMBER_ENV_FOR = {
@@ -387,7 +387,7 @@ _NUMBER_RANGE = {
     # Ten is not a considered maximum, it is a guard rail. Each resume is a
     # real request against a pool that has already lost one; somebody who
     # types 500 has mistaken this for a retry budget.
-    STREAM_RESUME_LIMIT: (0.0, 10.0),
+    STREAM_RESUME_LIMIT: (-1.0, 10.0),
     # A floor of a minute, not zero: "0 (off)" would mean "no ceiling at all",
     # which is the exact defect G8 closes, so this setting cannot be switched
     # off the way ``STREAM_SILENCE_TIMEOUT`` can. A minute is short enough
@@ -798,14 +798,10 @@ DISABLE_FLAGS = tuple(flag for flag in ALL_FLAGS if flag.endswith("disabled") or
 ALL_NUMBERS = {
     DAILY_COOLDOWN: 3600.0,
     STREAM_SILENCE_TIMEOUT: 0.0,
-    # 1.6.0.0: 3 -> 10. The number stopped being the thing that ends the
-    # stitching loop; ``dispatch_binding`` now stops when every key in the
-    # pool has been asked to continue the answer and none of them added a
-    # word. This stays as the guard rail it always said it was, and is set to
-    # the top of its own range so a working continuation is never cut off
-    # mid-answer by an arbitrary count. A user who typed a number still gets
-    # exactly that number, and zero still switches stitching off.
-    STREAM_RESUME_LIMIT: 10.0,
+    # 1.8.1.8: -1 is automatic/while-progress. The old default10 still ended
+    # a productive answer on its11th cut despite the documented no-count rule.
+    # Explicit operator0..10 settings retain their meaning; None is internal.
+    STREAM_RESUME_LIMIT: -1.0,
     # G8's own number: the owner reaffirmed "no punishment above one hour" on
     # 2026-09-15, replacing the 9h daily waits OpenRouter's own header once
     # bought in full, the 24h escalation ceiling, and ``HARD_DELAY_CAP_S``
@@ -969,10 +965,10 @@ META = {
     ),
     STREAM_RESUME_LIMIT: (
         "Resume attempts per turn",
-        "A ceiling, not the rule. KAME keeps continuing a cut answer while "
-        "keys are still adding words to it, and stops on its own once every "
-        "key has been asked and none of them added anything — so this only "
-        "bites if you lower it. Zero switches stitching off entirely.",
+        "Minus one (the default) continues while the answer makes progress; "
+        "no-progress repetition still stops on evidence. Zero switches "
+        "stitching off entirely. Explicit ceilings from one to ten retain "
+        "their operator-selected limit.",
     ),
     SHARE_POOL_HEALTH: (
         "Share key health across profiles",

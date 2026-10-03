@@ -93,6 +93,7 @@ _streams: "OrderedDict[int, Dict[str, Any]]" = OrderedDict()
 
 _state: Dict[str, Any] = {"applied": False, "reason": "not attempted", "repaired": 0}
 _original: Optional[Any] = None
+_patches = None
 
 
 def report() -> Dict[str, Any]:
@@ -295,7 +296,7 @@ def _self_check(original: Any) -> Tuple[bool, str]:
 
 def apply() -> bool:
     """Patch if every guard passes. Returns whether the patch is now in place."""
-    global _original
+    global _original, _patches
     from . import settings
 
     with _lock:
@@ -312,7 +313,9 @@ def apply() -> bool:
         _set_state(False, "this Hermes has no Gemini native adapter")
         return False
 
-    original = getattr(adapter, "translate_stream_event", None)
+    from .scope import Patches
+    _patches = Patches()
+    original = _patches.original(adapter, "translate_stream_event")
     if original is None or not callable(original):
         _set_state(False, "translate_stream_event is gone")
         return False
@@ -343,7 +346,7 @@ def apply() -> bool:
         _set_state(False, why)
         return False
 
-    adapter.translate_stream_event = _wrap(original)
+    _patches.bind(adapter, "translate_stream_event", _wrap(original))
     _original = original
     _set_state(True, "")
     logger.info(
@@ -355,13 +358,15 @@ def apply() -> bool:
 
 def revert() -> None:
     """Put the host's own function back. For tests, and for a clean unload."""
-    global _original
+    global _original, _patches
     if _original is None:
         return
     try:
         from agent import gemini_native_adapter as adapter
 
-        adapter.translate_stream_event = _original
+        if _patches is not None:
+            _patches.release()
+            _patches = None
     except Exception:
         logger.debug("kame: could not revert the Gemini patch", exc_info=True)
     _original = None

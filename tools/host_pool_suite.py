@@ -59,10 +59,31 @@ HERMES = Path(os.environ.get("KAME_HERMES_ROOT", Path.home() / "AppData/Local/he
 # the plugin as shipped and (b) pass with KAME_SPREAD_DISABLED=1 — if it fails
 # both ways it is not this feature and the harness says so; if it passes both
 # ways the feature has stopped working and the harness says that too.
-EXPECTED_DIVERGENCE = {
+LEGACY_CROSS_TEST_DIVERGENCE = {
     "tests/agent/test_credential_pool_routing.py::TestApiKeyHintRealPool::test_without_hint_current_entry_is_marked",
     "tests/agent/test_credential_pool_routing.py::TestFailureAttribution::test_auth_refresh_targets_failing_key_not_pointer",
 }
+# The old process-global fixture reused selection observations from unrelated
+# test homes. The home-scoped fixture starts each home fresh: the first choice
+# correctly matches fill_first. Require explicit two-choice controls instead of
+# demanding those cross-test-state failures on every new Hermes version.
+EXPECTED_DIVERGENCE = set()
+
+SPREAD_CONTROL = '''
+import os
+from agent.credential_pool import CredentialPool, PooledCredential
+
+def test_active_pool_spreading_control():
+    rows = [PooledCredential(provider="openai", id="spread-control-" + str(i),
+        label="synthetic", auth_type="api_key", priority=i, source="manual",
+        access_token="synthetic-spread-key-" + str(i)) for i in range(2)]
+    pool = CredentialPool("openai", rows)
+    first, second = pool.select(), pool.select()
+    active = os.environ.get("KAME_POOL_PROBE_ACTIVE") == "1"
+    off = os.environ.get("KAME_SPREAD_DISABLED") == "1"
+    assert first is not None and second is not None
+    assert (first.id != second.id) is (active and not off)
+'''
 
 # 1.8.1.6, owner decision: no hold outlives ``max_hold_seconds``, the
 # provider's own deadline included. This host test stores a Codex weekly reset
@@ -100,8 +121,9 @@ SUITES = (
     "tests/agent/test_auxiliary_anthropic_pool_fallback_regression.py",
 )
 
-# Installed once, before collection, on the real module — the same way the
-# plugin's ``register()`` installs it inside a live Hermes.
+# Activate the real binding for each fixture's actual home. A collection-time
+# binding alone is intentionally a no-op after current Hermes fixtures change
+# homes; treating those green tests as active-binding coverage is misleading.
 INTERPOSER = '''
 import sys
 from pathlib import Path
@@ -134,26 +156,48 @@ class _MemoryState:
         self.data[key] = value
 
 
-_binding = pool_binding.PoolBinding(
-    store_module.LedgerStore(_MemoryState(), ttl_seconds=0.0)
-)
-if not _binding.install(cp):
-    print("KAME FAILED TO INSTALL", file=sys.stderr)
-
 import os
+import functools
 
 if os.environ.get("KAME_POOL_SABOTAGE") == "1":
     # Negative control. A comparison that always says "no difference" is
     # worthless unless a real difference would show up, so this hides one
     # credential from selection - exactly the kind of damage a careless
     # wrapper does - and the harness checks that the host notices.
-    _wrapped = cp.CredentialPool._available_entries
+    _factory = pool_binding.PoolBinding._build_available_entries
+    def _sabotaged_factory(binding, original):
+        wrapped = _factory(binding, original)
+        @functools.wraps(wrapped)
+        def sabotaged(pool, *args, **kwargs):
+            available, pending = wrapped(pool, *args, **kwargs)
+            return (list(available)[:-1] if len(available) > 1 else available), pending
+        return sabotaged
+    pool_binding.PoolBinding._build_available_entries = _sabotaged_factory
 
-    def _sabotaged(pool, *, clear_expired=False, refresh=False):
-        entries = _wrapped(pool, clear_expired=clear_expired, refresh=refresh)
-        return list(entries)[:-1] if len(entries) > 1 else entries
+scope = importlib.import_module("kame_pool_probe.scope")
+_bindings = {}
+_host_init = cp.CredentialPool.__init__
 
-    cp.CredentialPool._available_entries = _sabotaged
+@functools.wraps(_host_init)
+def _activate_for_fixture(pool, *args, **kwargs):
+    key = scope.home()
+    if key in _bindings:
+        return _host_init(pool, *args, **kwargs)
+    binding = pool_binding.PoolBinding(store_module.LedgerStore(_MemoryState(), ttl_seconds=0.0))
+    if not binding.install(cp):
+        raise RuntimeError("KAME FAILED TO INSTALL: " + binding.reason)
+    _bindings[key] = binding
+    # Enter the newly installed real constructor wrapper, which delegates back
+    # here once; the registered-home branch above then calls the unchanged host.
+    return cp.CredentialPool.__init__(pool, *args, **kwargs)
+
+cp.CredentialPool.__init__ = _activate_for_fixture
+
+def pytest_sessionfinish(session, exitstatus):
+    for binding in reversed(list(_bindings.values())):
+        binding.uninstall()
+    cp.CredentialPool.__init__ = _host_init
+    print("KAME ACTIVE FIXTURE HOMES: " + str(len(_bindings)))
 '''
 
 
@@ -194,6 +238,7 @@ def run(
 ) -> tuple[int, str]:
     argv = [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider"]
     argv.extend(present_suites())
+    argv.append(str(workdir / "test_kame_pool_spread_control.py"))
     if with_kame:
         argv.extend(["-p", "kame_pool_interpose"])
 
@@ -201,17 +246,39 @@ def run(
     env["HERMES_HOME"] = str(workdir / "home")
     env.pop("KAME_POOL_SABOTAGE", None)
     env.pop("KAME_SPREAD_DISABLED", None)
+    env["KAME_POOL_PROBE_ACTIVE"] = "1" if with_kame else "0"
     if sabotage:
         env["KAME_POOL_SABOTAGE"] = "1"
     if not spread:
         env["KAME_SPREAD_DISABLED"] = "1"
-    env["PYTHONPATH"] = os.pathsep.join([str(HERMES), str(workdir)])
+    dependencies = env.get("KAME_TEST_DEPENDENCIES", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(HERMES), str(workdir)] + ([dependencies] if dependencies else [])
+    )
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 
     proc = subprocess.run(
         argv, cwd=str(HERMES), env=env, capture_output=True, text=True, timeout=900
     )
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    output = (proc.stdout or "") + (proc.stderr or "")
+    log_dir = env.get("KAME_HOST_TEST_LOG_DIR")
+    if log_dir:
+        folder = Path(log_dir).resolve()
+        if not folder.is_relative_to(ROOT.resolve()):
+            raise ValueError("host test logs must stay in the active project")
+        folder.mkdir(parents=True, exist_ok=True)
+        label = "baseline" if not with_kame else "sabotage" if sabotage else "binding" if spread else "spread-off"
+        (folder / ("pool-" + label + "-captured.txt")).write_text(output, encoding="utf-8")
+    return proc.returncode, output
+
+
+def completed_run(code: int, output: str) -> bool:
+    """Reject imports, interrupted runs and internal crashes, not assertions."""
+    return code in (0, 1) and "100%" in output and not any(
+        line.startswith(("Traceback (most recent call last):", "INTERNALERROR", "ERROR collecting"))
+        for line in output.splitlines()
+    )
 
 
 def failed_tests(output: str) -> set[str]:
@@ -219,7 +286,7 @@ def failed_tests(output: str) -> set[str]:
     for line in output.splitlines():
         line = line.strip()
         if line.startswith("FAILED ") or line.startswith("ERROR "):
-            names.add(line.split(" ", 1)[1].split(" ")[0])
+            names.add(line.split(" ", 1)[1].split(" ")[0].replace("\\", "/"))
     return names
 
 
@@ -245,6 +312,7 @@ def main() -> int:
     (workdir / "home").mkdir()
     (workdir / "kame_pool_interpose.py").write_text(INTERPOSER, encoding="utf-8")
     (workdir / "plugin_dir.txt").write_text(str(PLUGIN_DIR), encoding="utf-8")
+    (workdir / "test_kame_pool_spread_control.py").write_text(SPREAD_CONTROL, encoding="utf-8")
 
     absent = [name for name in VERSIONED_SUITES if not (HERMES / name).is_file()]
     if absent:
@@ -254,10 +322,18 @@ def main() -> int:
     print(f"[1] the host's own pool suites ({len(present_suites())} files) on their own")
     base_rc, base_out = run(with_kame=False, workdir=workdir)
     print(f"        {summary_line(base_out)}")
+    if not completed_run(base_rc, base_out):
+        print("the clean host pool suite did not complete; no compatibility verdict is valid")
+        print(base_out[-4000:])
+        return 1
 
     print("\n[2] the same suites with KAME's binding on the real CredentialPool")
     kame_rc, kame_out = run(with_kame=True, workdir=workdir)
     print(f"        {summary_line(kame_out)}")
+    if not completed_run(kame_rc, kame_out):
+        print("the interposed pool suite did not complete; no compatibility verdict is valid")
+        print(kame_out[-4000:])
+        return 1
 
     if "KAME FAILED TO INSTALL" in kame_out:
         print("\nthe binding did not install — the comparison proves nothing")
@@ -300,10 +376,13 @@ def main() -> int:
             print(f"        {name}")
         print()
 
-    if EXPECTED_DIVERGENCE:
+    if True:
         print("[2b] the same suites again with load spreading switched off")
-        _, flat_rc_out = run(with_kame=True, workdir=workdir, spread=False)
+        flat_rc, flat_rc_out = run(with_kame=True, workdir=workdir, spread=False)
         print(f"        {summary_line(flat_rc_out)}")
+        if not completed_run(flat_rc, flat_rc_out):
+            print("spread-off control did not complete")
+            return 1
         flat_caused = failed_tests(flat_rc_out) - base_failures - CEILING_DIVERGENCE
         print()
 
@@ -326,9 +405,8 @@ def main() -> int:
             print(flat_rc_out[-5000:])
             return 1
 
-        print(f"{len(caused)} of the host's tests answer differently, all of them")
-        print("        assertions about its fill_first default, and all of them")
-        print("        pass again with KAME_SPREAD_DISABLED=1:")
+        print("explicit two-selection control: spreading active, and fill_first restored when off")
+        print(f"        {len(caused)} additional host-test divergence(s)")
         for name in sorted(caused):
             print(f"        {name}")
         print()
@@ -341,8 +419,11 @@ def main() -> int:
     # A silent harness and a harmless plugin print the same thing, so break
     # the binding on purpose and make sure the difference shows up.
     print("[3] the same suites with one credential deliberately hidden")
-    _, bad_out = run(with_kame=True, workdir=workdir, sabotage=True)
+    bad_rc, bad_out = run(with_kame=True, workdir=workdir, sabotage=True)
     print(f"        {summary_line(bad_out)}")
+    if not completed_run(bad_rc, bad_out):
+        print("negative control did not complete; an import/crash is not a caught defect")
+        return 1
     caught = sorted(failed_tests(bad_out) - base_failures - EXPECTED_DIVERGENCE - CEILING_DIVERGENCE)
     print()
     if not caught:

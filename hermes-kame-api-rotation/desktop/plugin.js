@@ -839,7 +839,7 @@ function KameChip() {
     } else if (activity?.kind === 'waiting') {
       lines.push('Every key is resting — waiting rather than failing the turn')
     } else if (activity?.kind === 'stitching') {
-      lines.push(`The answer was cut off — continuing it on another key (${activity.resume}/${activity.budget})`)
+      lines.push(`The answer was cut off — continuing it on another key (${resumeProgress(activity)})`)
     }
 
     lines.push(`${snap.counters?.rotations ?? 0} rotations, ${snap.counters?.recovered ?? 0} recovered`)
@@ -1075,7 +1075,7 @@ function RightNow({ snap }) {
       'p',
       { className: 'text-sm text-(--ui-text-secondary)' },
       `The provider cut the answer after ${activity.characters} characters. Continuing it on another key ` +
-        `(${activity.resume} of ${activity.budget}) — you should see one unbroken reply.`
+        `(${resumeProgress(activity)}) — you should see one unbroken reply.`
     )
   }
 
@@ -2819,4 +2819,11 @@ export default {
       }
     ])
   }
+}
+
+
+// A null budget is productive automatic continuation, not a literal denominator.
+function resumeProgress(activity) {
+  const count = activity.resume ?? 0
+  return activity.budget == null ? `${count} (automatic)` : `${count} of ${activity.budget}`
 }

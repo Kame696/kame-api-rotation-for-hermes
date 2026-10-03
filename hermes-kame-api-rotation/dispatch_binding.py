@@ -1235,6 +1235,69 @@ def _with_content(result: Any, text: str) -> Any:
         return result
 
 
+def _host_tool_notice(text: str) -> str:
+    """Recognize helper-owned diagnostics, never matching model text alone.
+
+    Only the retained host's best-effort diagnostic callsites qualify. Unknown
+    host shapes fail visible. Frame inspection is paid only on a warning-shaped
+    delta, not on the healthy text path.
+    """
+    if not text.startswith("\n\n⚠"):
+        return ""
+    try:
+        quiet = sys._getframe(2)
+        owner = quiet.f_back
+        if quiet.f_code.co_name != "_quiet" or owner is None:
+            return ""
+        if owner.f_globals.get("__name__") != "agent.chat_completion_helpers":
+            return ""
+        if owner.f_code.co_name == "_handle_stream_error" and text == "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n":
+            return "retry"
+        if (owner.f_code.co_name == "_partial_stream_stub"
+                and text.startswith("\n\n⚠ Stream stalled mid tool-call (")
+                and text.endswith("Ask me to retry if you want to continue.")):
+            return "stalled"
+    except (ValueError, AttributeError):
+        pass
+    return ""
+
+
+class _ReplayStitcher:
+    """An ORIGINAL-request tool replay can repeat even a tiny exact preamble.
+
+    General continuation overlap stays conservative. Only an exact prefix of
+    the known displayed preamble is removed here; changed text falls through
+    to the existing stitcher without guessed edits.
+    """
+    def __init__(self, seen: str) -> None:
+        self._seen = seen
+        self._buffer = ""
+        self._resolved = False
+        self._delegate = stitch.Stitcher(seen)
+
+    def feed(self, text: str) -> str:
+        if self._resolved:
+            return self._delegate.feed(text)
+        self._buffer += text
+        if self._seen.startswith(self._buffer):
+            return ""
+        buffered, self._buffer = self._buffer, ""
+        self._resolved = True
+        if buffered.startswith(self._seen):
+            self._delegate = stitch.Stitcher("")
+            return buffered[len(self._seen):]
+        return self._delegate.feed(buffered)
+
+    def flush(self) -> str:
+        if not self._resolved:
+            buffered, self._buffer = self._buffer, ""
+            self._resolved = True
+            if self._seen.startswith(buffered):
+                return ""
+            return self._delegate.feed(buffered) + self._delegate.flush()
+        return self._delegate.flush()
+
+
 class _Delivery:
     """Owns the one funnel every text delta passes through, for one attempt.
 
@@ -1260,12 +1323,16 @@ class _Delivery:
     exactly in step with the screen.
     """
 
-    __slots__ = ("progress", "stitcher", "text", "_fire")
+    __slots__ = ("progress", "stitcher", "text", "_fire", "_restore_instance", "notices", "replayed", "prior")
 
     def __init__(self, progress: _Progress, fire: Callable, stitcher: Any = None) -> None:
         self.progress = progress
         self.stitcher = stitcher
         self._fire = fire
+        self._restore_instance = True
+        self.notices = []
+        self.replayed = isinstance(stitcher, _ReplayStitcher)
+        self.prior = getattr(stitcher, "_seen", "") if stitcher is not None else ""
         #: Everything this attempt actually put on screen.
         self.text = ""
 
@@ -1277,6 +1344,15 @@ class _Delivery:
             # retried.
             self.progress.stir()
             return self._fire(text)
+        notice = _host_tool_notice(text)
+        if notice:
+            self.notices.append(text)
+            if notice == "retry":
+                self.finish()
+                self.stitcher = _ReplayStitcher(self.prior + self.text)
+                self.replayed = True
+            self.progress.stir()
+            return None
         self.progress.touch()
         if self.stitcher is not None:
             text = self.stitcher.feed(text)
@@ -1299,6 +1375,18 @@ class _Delivery:
                 self.text += tail
                 self.show(tail)
         return self.text
+
+    def clean_content(self, text: str) -> str:
+        """Remove only a deferred host diagnostic suffix from bookkeeping."""
+        for notice in reversed(self.notices):
+            if text.endswith(notice):
+                text = text[:-len(notice)]
+        return text
+
+    def show_terminal_notices(self) -> None:
+        """Recovery failed: retain truthful host diagnostics and preferences."""
+        for text in self.notices:
+            self.show(text)
 
     def show(self, text: str) -> None:
         """Put text on screen outside the stream. Never raises."""
@@ -1325,6 +1413,11 @@ def _install_delivery(
         return _Delivery(progress, lambda text: None, None), None
     delivery = _Delivery(progress, original, stitcher)
     try:
+        delivery._restore_instance = "_fire_stream_delta" in vars(agent)
+    except TypeError:
+        # Slotted/property-based hosts need their previous callable assigned.
+        delivery._restore_instance = True
+    try:
         agent._fire_stream_delta = delivery
     except Exception:
         return _Delivery(progress, lambda text: None, None), None
@@ -1333,6 +1426,16 @@ def _install_delivery(
 
 def _remove_delivery(agent: Any, original: Optional[Callable]) -> None:
     if original is None:
+        return
+    current = getattr(agent, "_fire_stream_delta", None)
+    if not isinstance(current, _Delivery) or current._fire is not original:
+        # A different owner replaced the funnel during this attempt.
+        return
+    if current._restore_instance:
+        try:
+            agent._fire_stream_delta = original
+        except Exception:
+            logger.debug("kame: could not restore the instance delivery funnel", exc_info=True)
         return
     try:
         # Deleted rather than reassigned, so the class's own method is exposed
@@ -1357,10 +1460,14 @@ def _contribution(delivery: _Delivery, seen: str, content: str, stitching: bool)
     """
     shown = delivery.text
     if not stitching:
+        if shown and content and shown.rstrip() == content.rstrip():
+            # Host partial stubs strip spaces/newlines already on screen.
+            # Keep that exact visible boundary in the continuation ledger.
+            return shown
         return content or shown
     if not content:
         return shown
-    want = stitch.stitch_text(seen, content)
+    want = content[len(seen):] if getattr(delivery, "replayed", False) and content.startswith(seen) else stitch.stitch_text(seen, content)
     if want and want.startswith(shown) and len(want) > len(shown):
         delivery.show(want[len(shown) :])
         return want
@@ -1634,9 +1741,11 @@ class DispatchBinding:
             logger.info("kame: every call keeps the host's key — %s", self.reason)
             return False
 
+        from .scope import Patches
+        self._patches = Patches()
         originals: Dict[str, Callable] = {}
         for name in _FUNCTIONS:
-            function = getattr(module, name, None)
+            function = self._patches.original(module, name)
             if not callable(function):
                 self.reason = f"{_MODULE} has no {name}()"
                 logger.info("kame: every call keeps the host's key — %s", self.reason)
@@ -1669,12 +1778,12 @@ class DispatchBinding:
 
         self._module = module
         self._originals = originals
-        reader = getattr(module, "env_float", None)
+        reader = self._patches.original(module, "env_float")
         if callable(reader) and not getattr(reader, _TIMEOUT_READER_MARK, False):
             self._timeout_reader_original = reader
-            setattr(module, "env_float", _scoped_timeout_reader(reader))
+            self._patches.bind(module, "env_float", _scoped_timeout_reader(reader))
         for name, original in originals.items():
-            setattr(module, name, self._wrap(original))
+            self._patches.bind(module, name, self._wrap(original))
         self.installed = True
         self.reason = "active"
         logger.info(
@@ -1686,13 +1795,7 @@ class DispatchBinding:
     def uninstall(self) -> None:
         if not self.installed or self._module is None:
             return
-        for name, original in self._originals.items():
-            if getattr(getattr(self._module, name, None), _MARK, False):
-                setattr(self._module, name, original)
-        if self._timeout_reader_original is not None:
-            current = getattr(self._module, "env_float", None)
-            if getattr(current, _TIMEOUT_READER_MARK, False):
-                setattr(self._module, "env_float", self._timeout_reader_original)
+        self._patches.release()
         self._timeout_reader_original = None
         self._module = None
         self._originals = {}
@@ -1779,6 +1882,7 @@ class DispatchBinding:
         seen = ""
         resumes = 0
         resume_budget = self._resume_budget(agent, api_kwargs)
+        budget_label = resume_budget if resume_budget is not None else "ongoing"
         # 1.6.0.0. Which keys have been asked to continue this answer and
         # added nothing to it. This, and not the count above, is what ends the
         # stitching loop.
@@ -1806,6 +1910,7 @@ class DispatchBinding:
         #: Keys that stopped mid-tool-call this run. Same rule as ``stalled``:
         #: ask each key once, and stop when the pool starts repeating itself.
         tool_cut_keys: set = set()
+        replay_tool_request = False
         #: The cut response the last resume was launched from. Kept because a
         #: continuation can fail in a way that ends the call, and the answer the
         #: user has already read needs a response object to travel home in.
@@ -1996,13 +2101,15 @@ class DispatchBinding:
             attempt_kwargs = api_kwargs
             stitcher = None
             if seen:
-                resumed = _resume_kwargs(api_kwargs, seen, _prefill_refused(identity))
+                resumed = api_kwargs if replay_tool_request else _resume_kwargs(api_kwargs, seen, _prefill_refused(identity))
                 if resumed is not None:
                     attempt_kwargs = resumed
-                    stitcher = stitch.Stitcher(seen)
+                    stitcher = _ReplayStitcher(seen) if replay_tool_request else stitch.Stitcher(seen)
             delivery, restore_fire = _install_delivery(agent, progress, stitcher)
             try:
                 with _SilenceTimeout(agent, attempt):
+                    # Serial-only1.8.1.8: stale experiment settings/environment
+                    # cannot enable a second provider request.
                     result = original(agent, attempt_kwargs, *args, **call_kwargs)
             except _CONTROL_FLOW:
                 raise
@@ -2013,7 +2120,7 @@ class DispatchBinding:
                 # continuation resumes from what the user actually saw, and
                 # that a hand-back to Hermes reports the truth about it.
                 seen += _contribution(delivery, seen, "", stitcher is not None)
-                can_stitch = bool(seen) and resumes < resume_budget
+                can_stitch = bool(seen) and (resume_budget is None or resumes < resume_budget)
                 # "The user saw something" and "KAME captured what they saw"
                 # are two different facts, and only the first one decides
                 # whether a plain retry would print the answer twice. On a host
@@ -2225,7 +2332,7 @@ class DispatchBinding:
                     key=fingerprint(key),
                     reason="the provider closed the stream mid-answer",
                 )
-                if seen and not going_in_circles and resumes < resume_budget:
+                if seen and not going_in_circles and (resume_budget is None or resumes < resume_budget):
                     resumes += 1
                     self.resumes += 1
                     cut_result = result
@@ -2233,7 +2340,7 @@ class DispatchBinding:
                         self.engine, identity, keys, key, DROP_REST_S, "timeout"
                     )
                     logger.info(
-                        "kame: %s %s cut the answer after %d character(s) — %s (%d/%d)",
+                        "kame: %s %s cut the answer after %d character(s) — %s (%d/%s)",
                         label,
                         fingerprint(key),
                         len(seen),
@@ -2242,13 +2349,13 @@ class DispatchBinding:
                         else "it is the only key that is well, so the answer "
                         "continues on it immediately rather than after a rest",
                         resumes,
-                        resume_budget,
+                        budget_label,
                     )
                     EVENTS.add(
                         "stitch",
                         identity=identity,
                         key=fingerprint(key),
-                        reason=f"continuing the answer on another key ({resumes}/{resume_budget})",
+                        reason=f"continuing the answer on another key ({resumes}/{budget_label})",
                     )
                     _Spinner.update(
                         agent,
@@ -2344,6 +2451,10 @@ class DispatchBinding:
                 # arrives with ``seen`` still empty and the sentence sitting
                 # in the delivery. Retrying on that would print it twice.
                 shown = seen or getattr(delivery, "text", "")
+                # A cut tool has not executed. Replay the ORIGINAL request,
+                # not a text continuation or guessed arguments, while the
+                # delivery stitcher removes an already displayed preamble.
+                captured = bool(getattr(delivery, "text", "")) or bool(seen)
                 first_time = key not in tool_cut_keys
                 tool_cut_keys.add(key)
                 # Walk the pool once and stop: another key left to ask, and
@@ -2352,14 +2463,18 @@ class DispatchBinding:
                 # has already tried — with every key rested there is nothing
                 # left for it to hand back but a repeat.
                 unasked = any(k and k not in tool_cut_keys for k in keys)
-                if not shown and first_time and unasked:
+                if ((not shown and not progress.any) or captured) and first_time and unasked:
+                    content = str(getattr(result.choices[0].message, "content", "") or "")
+                    content = delivery.clean_content(content)
+                    seen += _contribution(delivery, seen, content, stitcher is not None)
+                    replay_tool_request = True
                     self.tool_call_retries += 1
                     rested = _rest_unless_it_is_the_only_one(
                         self.engine, identity, keys, key, DROP_REST_S, "timeout"
                     )
                     logger.info(
                         "kame: %s %s stopped inside a tool call before anything "
-                        "was shown — asking another key for the same call "
+                        "completed — asking another key for the same call "
                         "rather than telling the model its call was too big; %s",
                         label,
                         fingerprint(key),
@@ -2386,8 +2501,9 @@ class DispatchBinding:
                         )
                     except Exception:  # pragma: no cover — shape nobody has seen
                         content = ""
+                    content = delivery.clean_content(content)
                     seen += _contribution(delivery, seen, content, stitcher is not None)
-                    result = _with_content(result, seen)
+                    result = _with_content(result, seen + "".join(delivery.notices))
                 dropped = getattr(result, "_dropped_tool_names", None)
                 named = ""
                 if isinstance(dropped, (list, tuple, set)):
@@ -2417,6 +2533,7 @@ class DispatchBinding:
                     seconds=rested or None,
                 )
                 _publish(self, None)
+                delivery.show_terminal_notices()
                 return result
 
             # An answer that carried nothing. Usually a provider hiccup or a
@@ -2544,7 +2661,7 @@ class DispatchBinding:
             return result
 
     @staticmethod
-    def _resume_budget(agent: Any, api_kwargs: Any) -> int:
+    def _resume_budget(agent: Any, api_kwargs: Any) -> Optional[int]:
         """How many times this call may continue a cut answer. Zero disables it.
 
         Everything that could make stitching unsafe is decided once, here,
@@ -2568,11 +2685,12 @@ class DispatchBinding:
         # one thing and the only code that reads the value said another —
         # raising the documented default in 1.6.0.0 would have changed the
         # panel and nothing else.
-        fallback = settings.ALL_NUMBERS.get(settings.STREAM_RESUME_LIMIT, 10.0)
+        fallback = settings.ALL_NUMBERS.get(settings.STREAM_RESUME_LIMIT, -1.0)
         try:
-            return max(0, int(settings.number(settings.STREAM_RESUME_LIMIT, fallback)))
+            value = int(settings.number(settings.STREAM_RESUME_LIMIT, fallback))
+            return None if value < 0 else value
         except Exception:  # pragma: no cover — settings clamps before this
-            return int(fallback)
+            return None if fallback < 0 else int(fallback)
 
     def _pool_agrees_no_clock_fixes_it(
         self,

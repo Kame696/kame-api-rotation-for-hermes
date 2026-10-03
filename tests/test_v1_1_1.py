@@ -618,7 +618,7 @@ class TestEverySettingIsEditableFromThePanel:
     def test_a_number_outside_its_range_is_refused_with_a_reason(self):
         value, error = settings.parse(settings.STREAM_RESUME_LIMIT, "500")
         assert value is None
-        assert "accepts 0 to 10" in error
+        assert "accepts -1 to 10" in error
 
     def test_a_counted_setting_refuses_a_fraction(self):
         value, error = settings.parse(settings.STREAM_RESUME_LIMIT, "2.5")

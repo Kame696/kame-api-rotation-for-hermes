@@ -139,15 +139,34 @@ def run_corpus(*, with_kame: bool, workdir: Path) -> tuple[int, str]:
     # A throwaway home: the corpus should not read the real plugin state, and
     # KAME's ledger must not touch the user's install.
     env["HERMES_HOME"] = str(workdir / "home")
-    env["PYTHONPATH"] = os.pathsep.join([str(HERMES), str(workdir)])
+    dependencies = env.get("KAME_TEST_DEPENDENCIES", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(HERMES), str(workdir)] + ([dependencies] if dependencies else [])
+    )
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 
     proc = subprocess.run(
         argv, cwd=str(HERMES), env=env,
         capture_output=True, text=True, timeout=600,
     )
     output = (proc.stdout or "") + (proc.stderr or "")
+    log_dir = env.get("KAME_HOST_TEST_LOG_DIR")
+    if log_dir:
+        folder = Path(log_dir).resolve()
+        if not folder.is_relative_to(ROOT.resolve()):
+            raise ValueError("host test logs must stay in the active project")
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ("corpus-binding-captured.txt" if with_kame else "corpus-baseline-captured.txt")).write_text(output, encoding="utf-8")
     return proc.returncode, output
+
+
+def completed_run(code: int, output: str) -> bool:
+    """A partial summary followed by a runner crash is not a comparison."""
+    return code in (0, 1) and "100%" in output and not any(
+        line.startswith(("Traceback (most recent call last):", "INTERNALERROR", "ERROR collecting"))
+        for line in output.splitlines()
+    )
 
 
 def failed_tests(output: str) -> set[str]:
@@ -155,7 +174,7 @@ def failed_tests(output: str) -> set[str]:
     for line in output.splitlines():
         line = line.strip()
         if line.startswith("FAILED ") or line.startswith("ERROR "):
-            names.add(line.split(" ", 1)[1].split(" ")[0])
+            names.add(line.split(" ", 1)[1].split(" ")[0].replace("\\", "/"))
     return names
 
 
@@ -212,10 +231,18 @@ def main() -> int:
     print("[1] the host's corpus on its own")
     base_rc, base_out = run_corpus(with_kame=False, workdir=workdir)
     print(f"        {summary_line(base_out)}")
+    if not completed_run(base_rc, base_out):
+        print("the clean host corpus did not complete; no compatibility verdict is valid")
+        print(base_out[-4000:])
+        return 1
 
     print("\n[2] the same corpus with KAME behind the real hook dispatch")
     kame_rc, kame_out = run_corpus(with_kame=True, workdir=workdir)
     print(f"        {summary_line(kame_out)}")
+    if not completed_run(kame_rc, kame_out):
+        print("the interposed corpus did not complete; no compatibility verdict is valid")
+        print(kame_out[-4000:])
+        return 1
 
     if "KAME RAISED" in kame_out:
         print("\nKAME raised inside the hook — the host contract says it must not:")
