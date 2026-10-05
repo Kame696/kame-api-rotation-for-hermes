@@ -62,6 +62,10 @@ import {
   Tip,
   useValue
 } from '@hermes/plugin-sdk'
+// Read as a namespace, not named, on purpose: a Desktop older than the
+// composer slots must still load the rest of this file, and a named import of
+// an export the shim lacks fails the whole module at link time.
+import * as sdk from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -877,6 +881,57 @@ function KameChip() {
           ),
       hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
     )
+  )
+}
+
+/*
+ * 1.8.1.9. The live line above the composer.
+ *
+ * Until 1.8.1.8 this sentence was written into Hermes' own spinner
+ * (`agent._emit_wait_notice`, the `thinking.delta` status line), from inside
+ * the wrapped dispatch functions. 1.8.1.9 wraps nothing of Hermes' (plugin
+ * catalog rule 9) and the carousel now runs inside the model client, where
+ * there is no agent to write to. The words are the same — the backend still
+ * publishes every state the spinner used to show — and they are drawn here,
+ * in a slot the Desktop SDK gives plugins for exactly this, above the box the
+ * user is looking at while the turn runs. Shown only while a call is in
+ * flight, gone the moment it answers.
+ */
+function KameComposerLine() {
+  const snap = useValue($snapshot)
+  const now = useValue($now)
+  const activity = snap?.activity
+
+  if (!snap?.installed || !activity || ageSeconds(snap, now) > STALE_AFTER_S) {
+    return null
+  }
+
+  const health = `KAME ${activity.healthy ?? '?'}/${activity.keys ?? '?'} keys healthy`
+  let text = null
+
+  if (activity.kind === 'calling') {
+    const resting = (activity.attempt ?? 1) > 1 || (activity.healthy ?? 0) < (activity.keys ?? 0)
+    text = `${resting ? '↻' : '⏳'} waiting on ${activity.model} — ${health}${resting ? ', trying the next key' : ''}`
+  } else if (activity.kind === 'waiting') {
+    const eta = countdown(activity.eta_s, snap, now)
+    text = `⏳ waiting on a key to come back — ${health}${eta !== null ? `, next key in ${duration(eta)}` : ''}`
+  } else if (activity.kind === 'stitching') {
+    text = `↻ waiting on a cut answer — continuing the answer on the next key (${resumeProgress(activity)})`
+  } else if (activity.kind === 'recovered') {
+    text = `↻ model returned — back after ${duration(activity.waited_s ?? 0)}`
+  }
+
+  if (!text) {
+    return null
+  }
+
+  return h(
+    'div',
+    {
+      className: 'truncate px-3 pb-1 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)',
+      title: text
+    },
+    text
   )
 }
 
@@ -2787,7 +2842,19 @@ export default {
   register(ctx) {
     ctx.onDispose(startReading())
 
+    const composerTop = sdk.COMPOSER_AREAS?.top
+
     ctx.registerMany([
+      ...(composerTop
+        ? [
+            {
+              id: 'composer-line',
+              area: composerTop,
+              order: 90,
+              render: () => h(KameComposerLine, null)
+            }
+          ]
+        : []),
       {
         id: 'chip',
         area: STATUSBAR_AREAS.right,

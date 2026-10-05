@@ -114,8 +114,7 @@ second one is there so you do not have to catch the pool inside a sixty-second
 window to see whether your keys are being rotated at all — a key sitting at
 "idle · 0 since Hermes started" beside one with hundreds is the picture worth
 seeing. Neither number survives a restart, and only the first one decides
-anything. Setting KAME_SPREAD_DISABLED=1 turns the ordering off and gives the
-host its own back.
+anything.
 
 A deadline only counts as "short" if the key never answered while it was
 supposed to be waiting. If it did — because it was tested and worked, or

@@ -289,7 +289,7 @@ async function loadPlugin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kame-preview-'))
   const source = fs
     .readFileSync(SOURCE, 'utf8')
-    .replace("from '@hermes/plugin-sdk'", "from './sdk.mjs'")
+    .replaceAll("from '@hermes/plugin-sdk'", "from './sdk.mjs'")
     .replace("from 'react/jsx-runtime'", "from './jsx.mjs'")
     .replace("from 'react'", "from './react.mjs'")
 

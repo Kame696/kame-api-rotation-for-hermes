@@ -635,13 +635,10 @@ def _desktop_ui_state() -> Dict[str, Any]:
 
 
 def _gemini_fix_state() -> Dict[str, Any]:
-    try:
-        from . import gemini_slots
-
-        return gemini_slots.report()
-    except Exception:
-        logger.debug("kame: could not read the Gemini patch state", exc_info=True)
-        return {"applied": False, "reason": "unavailable", "repaired": 0}
+    """1.8.1.9: Hermes fixed the parallel tool-call slots itself (#111686), so
+    KAME no longer patches the translator. Kept in the snapshot so an older
+    panel reading this field gets an honest answer instead of a missing key."""
+    return {"applied": False, "reason": "fixed in Hermes itself", "repaired": 0}
 
 
 def neighbours(now: Optional[float] = None) -> List[Dict[str, Any]]:

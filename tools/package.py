@@ -29,7 +29,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "hermes-kame-api-rotation"
+#: 1.8.1.9 ships two plugins: the rotation plugin and its provider half.
+SOURCES = (ROOT / "hermes-kame-api-rotation", ROOT / "hermes-kame-provider")
+SOURCE = SOURCES[0]  # the name earlier releases (and their tests) read
 DIST = ROOT / "dist"
 
 #: Nothing generated, nothing editor-local. Anything not matched here ships, so
@@ -52,9 +54,9 @@ def manifest_version(manifest: Path) -> str:
     raise SystemExit(f"no version in {manifest}")
 
 
-def shipped_files() -> list[Path]:
+def shipped_files(source: Path = SOURCE) -> list[Path]:
     out = []
-    for path in sorted(SOURCE.rglob("*")):
+    for path in sorted(source.rglob("*")):
         if not path.is_file():
             continue
         if SKIP_DIRS & set(path.parts):
@@ -65,24 +67,24 @@ def shipped_files() -> list[Path]:
     return out
 
 
-def main() -> int:
-    if not SOURCE.is_dir():
-        print(f"source not found: {SOURCE}")
+def build(source: Path) -> int:
+    if not source.is_dir():
+        print(f"source not found: {source}")
         return 2
 
-    version = manifest_version(SOURCE / "plugin.yaml")
+    version = manifest_version(source / "plugin.yaml")
     DIST.mkdir(exist_ok=True)
-    target = DIST / f"{SOURCE.name}-{version}.zip"
+    target = DIST / f"{source.name}-{version}.zip"
 
-    files = shipped_files()
+    files = shipped_files(source)
     # Deflate rather than store: the plugin is text, and the archive is small
     # enough that the difference is a courtesy rather than a saving.
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in files:
-            archive.write(path, path.relative_to(SOURCE.parent).as_posix())
+            archive.write(path, path.relative_to(source.parent).as_posix())
 
     total = sum(path.stat().st_size for path in files)
-    print(f"version : {version}  (from plugin.yaml)")
+    print(f"version : {version}  (from {source.name}/plugin.yaml)")
     print(f"wrote   : {target}")
     print(f"          {len(files)} file(s), {total:,} bytes -> "
           f"{target.stat().st_size:,} bytes")
@@ -92,11 +94,23 @@ def main() -> int:
     # that only shows up on somebody else's machine.
     with zipfile.ZipFile(target) as archive:
         names = archive.namelist()
-    wanted = f"{SOURCE.name}/plugin.yaml"
+    wanted = f"{source.name}/plugin.yaml"
     if wanted not in names:
         print(f"FAIL: {wanted} is not in the archive")
         return 1
     print(f"          root: {wanted} present")
+    return 0
+
+
+def main() -> int:
+    versions = {manifest_version(source / "plugin.yaml") for source in SOURCES}
+    if len(versions) != 1:
+        print(f"FAIL: the two plugins carry different versions: {sorted(versions)}")
+        return 1
+    for source in SOURCES:
+        code = build(source)
+        if code:
+            return code
     return 0
 
 

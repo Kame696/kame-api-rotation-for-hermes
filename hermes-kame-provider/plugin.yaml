@@ -1,0 +1,15 @@
+name: hermes-kame-provider
+kind: model-provider
+version: "1.8.1.9"
+manifest_version: 1
+api_version: 1
+author: Kame696
+license: MIT
+homepage: https://github.com/Kame696/kame-api-rotation-for-hermes
+tags:
+  - api-key-rotation
+  - model-provider
+  - rate-limiting
+  - "429"
+  - failover
+description: "Companion to hermes-kame-api-rotation. Registers Hermes' own API-key chat-completions provider profiles again, unchanged except for create_client, so each request is served by KAME's rotating client: the healthiest key per call, every refusal read for what it says, and the next key instead of a failed turn. Without hermes-kame-api-rotation loaded, or for a request on another wire, it changes nothing: Hermes builds its usual client."

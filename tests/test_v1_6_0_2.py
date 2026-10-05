@@ -125,8 +125,10 @@ classify_mod = importlib.import_module(f"{PACKAGE}.core.classify")
 quota = importlib.import_module(f"{PACKAGE}.core.quota")
 catalog = importlib.import_module(f"{PACKAGE}.core.catalog")
 runtime = importlib.import_module(f"{PACKAGE}.runtime")
-pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
-
+try:
+    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    pool_binding = None
 classify = classify_mod.classify
 strip_host_prose = classify_mod.strip_host_prose
 FLOOR = quota.DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS

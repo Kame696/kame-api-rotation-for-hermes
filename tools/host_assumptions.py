@@ -251,12 +251,11 @@ def the_plugin_registers_the_four_it_should(
         text = manifest.read_text(encoding="utf-8")
     block = text.split("provides_hooks:", 1)[-1].split("\nconfig_schema:", 1)[0]
     return sorted(re.findall(r"^\s*-\s*([a-z_]+)\s*$", block, re.M)), [
-        # v1.0.9 added the fourth. A session reset clears the storm filter and
-        # the status line, both of which describe a conversation that has just
-        # stopped existing. Cooldowns are deliberately not in that list.
-        "on_session_reset",
+        # 1.8.1.9: two. ``pre_api_request`` only announced the call in flight
+        # to the pool binding, and ``on_session_reset`` only cleared the in-chat
+        # spinner; both are gone with what they served (the client knows its
+        # own call, and the status line lives in the Desktop composer slot).
         "post_api_request",
-        "pre_api_request",
         "transform_api_error_classification",
     ]
 
@@ -325,22 +324,21 @@ def kame_never_writes_the_hosts_stream_variables(_=None):
                 if "os.environ[" in line or "setdefault" in line or "putenv" in line:
                     return f"{source.name}: {line.strip()}", True
 
-    binding = plugin_dir / "dispatch_binding.py"
-    if not binding.is_file():
-        return "dispatch_binding.py not found", True
-    body = binding.read_text(encoding="utf-8", errors="replace")
+    # 1.8.1.9: the silence budget is a per-request ``timeout`` on KAME's own
+    # client (``transport.attempt_read_timeout``) -- nothing in the process
+    # environment is touched, and an explicit host variable still wins.
+    transport = plugin_dir / "transport.py"
+    if not transport.is_file():
+        return "transport.py not found", True
+    body = transport.read_text(encoding="utf-8", errors="replace")
     required = (
-        '_SILENCE_TIMEOUT_VALUE = contextvars.ContextVar',
-        'def _scoped_timeout_reader',
-        '_SILENCE_TIMEOUT_VALUE.get()',
-        '_SILENCE_TIMEOUT_VALUE.set(',
-        '_SILENCE_TIMEOUT_VALUE.reset(',
-        'VARIABLE = "HERMES_STREAM_READ_TIMEOUT"',
-        'os.environ.get(self.VARIABLE) is not None',
+        "def attempt_read_timeout(",
+        'os.environ.get("HERMES_STREAM_READ_TIMEOUT") is not None',
+        "_looks_local(base_url)",
     )
     for marker in required:
         if marker not in body:
-            return f"scoped stream timeout contract moved ({marker})", True
+            return f"per-request stream timeout contract moved ({marker})", True
     return True, True
 
 
@@ -434,73 +432,32 @@ def the_bridge_can_still_write_a_file(_=None):
 
 
 def the_desktop_shows_only_a_wait_notice_that_opens_the_right_way(_=None):
-    """Why KAME's status line reads ``⏳ waiting on …`` and not its own words.
+    """Desktop still has the slot KAME's status line is drawn in.
 
-    Desktop does not render every ``thinking.delta`` it receives. It runs the
-    text through ``providerWaitText``
-    (``apps/desktop/src/store/provider-wait.ts``), keeps it only if it opens
-    with ⏳/⚠/↻ followed by "waiting on", "no output", "no response" or "model
-    returned", and passes the empty string on for everything else -- which
-    *clears* the row rather than leaving it alone. v1.0.9 said
-    ``KAME API Rotation: 15/15 healthy`` every ten seconds, so it was not only
-    invisible: it wiped the core's own explanation each time.
-
-    This probe reads the installed Desktop source, rebuilds the gate from it,
-    and runs every line KAME can produce through it.
+    Until 1.8.1.8 the line went through Hermes' spinner (``thinking.delta``)
+    and had to pass ``providerWaitText``'s gate. 1.8.1.9 has no agent to write
+    to -- the carousel runs inside the model client -- so the same words are a
+    Desktop contribution in ``composer.top``: the SDK must still export the
+    area, the composer must still render it, and the panel must still register
+    there (read through a namespace import, so an older Desktop still loads).
     """
-    ui = HERMES_HOME / "hermes-agent/apps/desktop/src/store/provider-wait.ts"
-    if not ui.is_file():
-        return "provider-wait.ts not found", True
-    body = ui.read_text(encoding="utf-8", errors="replace")
-    # The literal sits on one line; the call around it need not. Hermes 0.21.5
-    # wrapped ``.test(value)`` across three lines when it widened the gate to
-    # ``(?:still\s+)?waiting on`` -- the same single test, reformatted, and a
-    # probe that insisted on one line reported the gate as gone.
-    match = re.search(r"return\s+/(\^[^\n]+?)/i\.test\(\s*value\s*\)", body)
-    if not match:
-        return "the gate is no longer a single regex test", True
-    host_pattern = match.group(1).replace("(?:", "(?:")
-    gate = re.compile(host_pattern, re.IGNORECASE)
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    try:
-        import importlib.util
-
-        plugin_dir = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation"
-        spec = importlib.util.spec_from_file_location(
-            "kame_probe_pkg",
-            plugin_dir / "__init__.py",
-            submodule_search_locations=[str(plugin_dir)],
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        db = importlib.import_module("kame_probe_pkg.dispatch_binding")
-    except Exception as exc:  # pragma: no cover - probe-only path
-        return f"could not load the plugin: {exc}", True
-
-    lines = [
-        db.status_line(15, 15, subject="gemini-2.5-pro"),
-        db.status_line(12, 15, "on key 3", subject="gemini-2.5-pro", symbol="\u21bb"),
-        db.status_line(0, 15, "next key in 1m 23s", subject="a key to come back"),
-        db.status_line(
-            15, 15, "back after 4m12s", subject="", symbol="\u21bb",
-            opener="model returned",
-        ),
-    ]
-    for line in lines:
-        if not gate.match(line):
-            return f"Desktop would blank the row for: {line}", True
-        if not db.passes_desktop_status_gate(line):
-            return f"KAME's own copy of the gate disagrees for: {line}", True
-    # And the copy must still be a copy: something the host rejects must be
-    # rejected here too, or the two have drifted apart in the safe direction
-    # only by luck.
-    stale = "KAME API Rotation: 15/15 healthy"
-    if gate.match(stale) or db.passes_desktop_status_gate(stale):
-        return "the gate accepts what v1.0.9 sent, so it is not the gate", True
+    sdk = HERMES_HOME / "hermes-agent/apps/desktop/src/sdk/index.ts"
+    contrib = HERMES_HOME / "hermes-agent/apps/desktop/src/app/chat/composer/contrib.ts"
+    composer = HERMES_HOME / "hermes-agent/apps/desktop/src/app/chat/composer/index.tsx"
+    for path in (sdk, contrib, composer):
+        if not path.is_file():
+            return f"{path.name} not found", True
+    if "COMPOSER_AREAS" not in sdk.read_text(encoding="utf-8", errors="replace"):
+        return "the SDK no longer exports COMPOSER_AREAS", True
+    if "top: 'composer.top'" not in contrib.read_text(encoding="utf-8", errors="replace"):
+        return "composer.top is no longer an area", True
+    if "area={COMPOSER_AREAS.top}" not in composer.read_text(encoding="utf-8", errors="replace"):
+        return "the composer no longer renders composer.top", True
+    panel = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation" / "desktop" / "plugin.js"
+    text = panel.read_text(encoding="utf-8", errors="replace")
+    if "import * as sdk from '@hermes/plugin-sdk'" not in text or "sdk.COMPOSER_AREAS?.top" not in text:
+        return "the panel no longer registers its composer line", True
     return True, True
-
 
 def a_cut_answer_still_appends_a_row_the_client_never_sees(_=None):
     """Legacy entrypoint; actual current-host behavior and negative control."""
@@ -884,6 +841,68 @@ def the_error_factory_is_still_one_function(_=None):
     return _gemini_executed_contract("factory_paths")
 
 
+# 1.8.1.9. The facts the provider route rests on.
+def _text_of(text):
+    return "\n".join(text) if isinstance(text, list) else (text or "")
+
+
+def hermes_asks_the_profile_for_the_main_client_first(text=None):
+    """The main client: a provider profile's ``create_client`` is asked first."""
+    joined = _text_of(text)
+    seam = joined.find("provider_client = _provider_supplied_client(agent, client_kwargs)")
+    gemini = joined.find("if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:")
+    asks = "return profile.create_client(**client_kwargs)" in joined
+    return bool(asks and seam != -1 and gemini != -1 and seam < gemini), True
+
+
+def hermes_asks_the_profile_for_the_aux_client_unwrapped(text=None):
+    """The auxiliary client: the profile is asked first and its client is used as-is.
+
+    The second half is why KAME steps aside wherever another wire is possible
+    (``facade._other_wire``): a profile's client skips ``_wrap_transport``.
+    """
+    joined = _text_of(text)
+    first = joined.find("profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)")
+    gemini = joined.find('if provider == "gemini":', first if first != -1 else 0)
+    used_as_is = "return _route_client(req, profile_client, final_model)" in joined
+    return bool(first != -1 and gemini != -1 and first < gemini and used_as_is), True
+
+
+def a_home_provider_plugin_replaces_the_bundled_one(text=None):
+    """A ``$HERMES_HOME`` provider plugin re-registering a bundled name wins in that home."""
+    joined = _text_of(text)
+    return bool("layer.registry[profile.name] = profile" in joined
+                and "kind: model-provider" in joined), True
+
+
+def the_success_hook_still_carries_the_two_counts_1819(text=None):
+    """``post_api_request`` still says how much text and how many tool calls came back."""
+    joined = _text_of(text)
+    return bool("assistant_content_chars=" in joined and "assistant_tool_call_count=" in joined), True
+
+
+#: 1.8.1.8 facts about the host surface its bindings wrapped. 1.8.1.9 wraps
+#: nothing of Hermes', so these no longer bound a KAME decision; they are
+#: reported, not counted. (They also fail for 1.8.1.8 itself against the
+#: current host: the runtime contract runner has drifted from Hermes.)
+RETIRED_1819 = {
+    "an empty answer is retried on the same key": "dispatch-wrapper interplay; the client owns its own empty-answer budget",
+    "primary restore selects once when needed, not every request": "pool binding removed",
+    "credential swap updates the active key and client inputs": "1.8.1.8 placed keys on the agent; 1.8.1.9 never does",
+    "a content refusal returns before the hook": "hook-ordering fact for the pool binding",
+    "the success hook still carries what v0.3.1 reads": "replaced by a static 1.8.1.9 check of the same two fields",
+    "only the exception path is classified": "pool binding removed",
+    "the stream retry is a reconnect, not a second go at a spent key": "1.8.1.8 dispatch wrapper",
+    "a cut answer appends a tagged continuation row (UI visibility separate)": "1.8.1.8 dispatch wrapper",
+    "a mid-stream drop is returned, not raised": "1.8.1.8 read the host's stub; the client sees the provider stream itself",
+    "the stream read timeout is read inside the call": "1.8.1.8 wrapped the host reader; 1.8.1.9 sets the request timeout",
+    "the stream worker inherits the caller's context": "1.8.1.8 ContextVar timeout; gone",
+    "the two functions the carousel wraps still exist": "1.8.1.9 wraps no host function",
+    "the agent funnels visible text through one method": "1.8.1.8 delivery shim; gone",
+    "a host that stopped sending the counts would be caught": "negative control of the retired runtime contract",
+}
+
+
 CHECKS = (
     ("agent/conversation_loop.py", "an empty answer is retried on the same key", the_empty_retry_never_asks_the_pool),
     ("agent/agent_runtime_helpers.py", "primary restore selects once when needed, not every request", the_only_outside_selection_is_per_turn),
@@ -924,7 +943,11 @@ CHECKS = (
     # v1.7.0.1. The one function `quota_id_binding` wraps, and the argument
     # the streaming path hands it -- the two facts that let the quota window
     # be read at all.
-    ("agent/gemini_native_adapter.py", "the error factory is still one wrappable function", the_error_factory_is_still_one_function),
+    ("agent/gemini_native_adapter.py", "KAME's own client keeps the quota window on both paths", the_error_factory_is_still_one_function),
+    ("agent/agent_runtime_helpers.py", "Hermes asks the provider profile for the main client first", hermes_asks_the_profile_for_the_main_client_first),
+    ("agent/auxiliary_client.py", "Hermes asks the provider profile for the auxiliary client first, and uses it unwrapped", hermes_asks_the_profile_for_the_aux_client_unwrapped),
+    ("providers/__init__.py", "a home provider plugin replaces the bundled profile in that home", a_home_provider_plugin_replaces_the_bundled_one),
+    ("agent/turn_response_intake.py", "the success hook still carries the two counts (1.8.1.9)", the_success_hook_still_carries_the_two_counts_1819),
 )
 
 
@@ -936,6 +959,9 @@ def main() -> int:
     print("the host facts KAME's non-decisions rest on\n")
     sources = {}
     for relative, label, probe in CHECKS:
+        if label in RETIRED_1819:
+            print(f"  ----  {label}  (retired in 1.8.1.9: {RETIRED_1819[label]})")
+            continue
         if relative not in sources:
             sources[relative] = read(relative)
         got, want = probe(sources[relative])
@@ -946,7 +972,7 @@ def main() -> int:
     for label, probe in (
         ("every API-side hook the host offers is accounted for", every_api_hook_the_host_offers_is_accounted_for),
         ("KAME needs no capability the host could deny", kame_needs_no_capability_the_host_could_deny),
-        ("and KAME registers exactly the four it should", the_plugin_registers_the_four_it_should),
+        ("and KAME registers exactly the two it should", the_plugin_registers_the_four_it_should),
         ("KAME writes no host stream variable outside one scoped exception", kame_never_writes_the_hosts_stream_variables),
         ("Desktop would actually show KAME's status line", the_desktop_shows_only_a_wait_notice_that_opens_the_right_way),
         # v1.1.0. The four facts the Desktop half and the Gemini repair rest on.
@@ -956,7 +982,7 @@ def main() -> int:
         ("Gemini's adapter still merges parallel tool calls", the_gemini_adapter_still_merges_parallel_tool_calls),
         # v1.1.1. The funnel the seam wraps, and the bridge the settings panel
         # writes back through.
-        ("the agent funnels visible text through one method", the_agent_still_funnels_visible_text_through_one_method),
+        # "the agent funnels visible text through one method" -- retired in 1.8.1.9 (delivery shim gone)
         ("the desktop bridge can still write a file", the_bridge_can_still_write_a_file),
         # v1.1.2. The three facts behind the prefill refusal and the manifest
         # number: what the installer will accept, what an assistant turn
@@ -973,12 +999,14 @@ def main() -> int:
     print("\n  -- and the checks themselves --")
     # The migrated check executes a deliberately broken callback, rather than
     # deleting a string from a source file the current host no longer uses.
-    _runtime_executed_contract("success_fields")
+    label = "a host that stopped sending the counts would be caught"
+    print(f"  ----  {label}  (retired in 1.8.1.9: {RETIRED_1819[label]})")
+    got, want = the_success_hook_still_carries_the_two_counts_1819("post_api_request(assistant_content_chars=1)")
     check(
-        "a host that stopped sending the counts would be caught",
-        (_runtime_contract_report or {}).get("mutation_detected", {}).get("success_fields") is True,
-        True,
-        meaning="the check does not read what it claims to read",
+        "a host that stopped sending the tool-call count would be caught",
+        got == want,
+        False,
+        meaning="the 1.8.1.9 success-hook check does not read what it claims to read",
     )
 
     # The other two read the world rather than a file, so they are handed a

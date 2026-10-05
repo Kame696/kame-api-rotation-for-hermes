@@ -7,6 +7,89 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.1.9] — 2026-10-05 — the carousel through a provider profile, no runtime overrides
+
+The plugin catalog's rule 9 (a listed plugin must not replace, wrap or rebind
+Hermes core) closed the 1.8.1.8 catalog update, NousResearch/hermes-agent#131918.
+1.8.1.9 removes every rebind and keeps the carousel: it now runs inside the
+model client Hermes asks a **provider profile** for — the documented extension
+point for bringing your own transport (`ProviderProfile.create_client`).
+`hermes plugins validate` passes both packages with no warnings, "no core
+override" included.
+
+### Two packages
+- `hermes-kame-api-rotation` (general plugin): the carousel, the refusal
+  classifier, `/kame`, `/kame-keys`, `/kame-quota` and the Desktop panel.
+- `hermes-kame-provider` (`kind: model-provider`): for every bundled API-key
+  chat-completions provider it registers a profile that inherits everything
+  from Hermes' own and adds one method, `create_client`, which asks the general
+  plugin for a rotating client. Without the general plugin, or with KAME
+  switched off, it answers `None` and Hermes builds its own client.
+
+### How the carousel reaches Hermes now
+- The client is a subclass of the one Hermes would have built
+  (`GeminiNativeClient` for Google's native endpoint, `openai.OpenAI`
+  otherwise), so every `isinstance` and attribute Hermes reads still works.
+  Only `chat.completions.create` is KAME's.
+- Every decision is 1.8.1.8's, moved unchanged from the wrapped dispatch
+  function into `transport.py`: key selection, refusal classification and
+  sizing, unbounded waits on a fully resting pool, empty-answer budget,
+  continuation of a cut answer (stitching), tool-call replay, unanimity rules.
+- Waits stream keep-alive chunks every 15 s, so Hermes' stale-stream watchdog
+  never mistakes a quota wait for a hung provider.
+- Comma-joined keys (`GOOGLE_API_KEY=k1,k2,…`) are split by the client itself;
+  custom endpoints read their `custom:<name>` pool, as 1.8.1.8 did.
+- Gemini's quota window (`QuotaFailure.quotaId`, per-minute vs per-day)
+  survives the streaming error path through an httpx response hook on KAME's
+  own connection — no wrapper around Hermes' error factory any more.
+- TLS settings of custom providers (`ssl_ca_cert`, `ssl_verify`) are honoured.
+
+### Measured against 1.8.1.8 (real Hermes turns, local fake providers)
+Six scenarios (all healthy; per-minute 429 on 5 of 15 keys; per-day 429 on
+one model only; 503 overload; every key limited; stream cut mid-answer) on the
+native Gemini wire and the OpenAI wire: same turns answered, same requests per
+key. Steady turns on the OpenAI wire take 0.2 s instead of 0.6 s. On the
+OpenAI wire a cut answer is no longer repeated ("Hello there," three times in
+1.8.1.8, once now). Tables: [VALIDATION.md](VALIDATION.md).
+
+### Fixed while porting
+- A continuation that dropped after sending a few words lost them between keys.
+- A drop that arrives as an error now obeys the 1.6.0.0 stop rule (stop once
+  every key has continued the answer and added nothing).
+- A tool call cut on every key goes back to Hermes exactly as the last key
+  sent it, never a mix of several keys' fragments.
+- An empty answer is not journalled as proof that a key is back.
+
+### Changed
+- The in-chat status line (`⏳ waiting on … — KAME 13/15 keys healthy`) is
+  drawn by the Desktop panel above the message box (`composer.top`); there is no
+  agent at the client to write Hermes' spinner. The chip, `/kame` and the panel
+  show the same state everywhere else.
+- Hooks: `transform_api_error_classification` and `post_api_request` only.
+- Removed six settings that only tuned the removed bindings:
+  `spread_disabled`, `field_probe_disabled`, `resolver_disabled`,
+  `live_status_disabled`, `gemini_tool_call_fix_disabled` (Hermes fixed the
+  parallel tool-call merge upstream, #111686) and `quota_id_disabled`.
+
+### Where KAME steps aside
+Hermes uses a profile's client as-is, without wrapping it for another wire. So
+KAME hands out its client only for chat-completions profiles, and declines —
+Hermes builds its own — for Anthropic-Messages endpoints (`anthropic`,
+`minimax`, `/anthropic` URLs, `api.kimi.com/coding`), Responses-API profiles
+(`xai`, `meta-ai`, `router`, `openai-codex`), `api.openai.com`,
+`opencode-go`/`opencode-zen`/`actual`, and any provider configured with a
+non-chat `api_mode`. There the refusal classifier still sizes every refusal
+and Hermes' own pool rotates; the in-call carousel (pre-emptive selection,
+waiting, continuation) that 1.8.1.8 applied to every wire is not available on
+those wires.
+
+### Added
+- `/kame-keys split [provider]`: one pool entry per key for a variable that
+  holds several, through the pool's public `add_entry`; the comma source is
+  suppressed with Hermes' own `suppress_credential_source`. The variable itself
+  is never rewritten. Optional for KAME's client, which splits lists itself;
+  it makes Hermes' own pool see one entry per key too.
+
 ## [1.8.1.8] — 2026-10-02 — serial reliability
 
 ### Fixed

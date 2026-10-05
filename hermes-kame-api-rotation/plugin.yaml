@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.8.1.8"
+version: "1.8.1.9"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -47,18 +47,6 @@ config_schema:
     type: bool
     default: false
     description: "Turn KAME into a no-op without uninstalling it. Same as KAME_ROTATION_DISABLED=1."
-  spread_disabled:
-    type: bool
-    default: false
-    description: "Keep cooldown sizing but give Hermes its own key-selection order back. Same as KAME_SPREAD_DISABLED=1."
-  field_probe_disabled:
-    type: bool
-    default: false
-    description: "Give the Settings key field back the host's one-key check, which refuses a paste holding several keys. Same as KAME_FIELD_PROBE_DISABLED=1."
-  resolver_disabled:
-    type: bool
-    default: false
-    description: "Send a multi-key variable to the provider the way Hermes resolves it — the whole comma-joined list as one key. Same as KAME_RESOLVER_DISABLED=1."
   carousel_disabled:
     type: bool
     default: false
@@ -87,14 +75,6 @@ config_schema:
     type: int
     default: 64
     description: "Where the RESOURCE_EXHAUSTED ladder stops growing. The default, 64, runs 1, 2, 4, 8, 16, 32, 64 seconds and then holds at 64. max_hold_seconds still bounds it. Clamped to 1-3600. Same as KAME_UNSIZED_BACKOFF_MAX."
-  live_status_disabled:
-    type: bool
-    default: false
-    description: "Stop showing pool health and the recovery countdown on the spinner line. Rotation is unchanged; only the status text goes away. Same as KAME_LIVE_STATUS_DISABLED."
-  gemini_tool_call_fix_disabled:
-    type: bool
-    default: false
-    description: "Stop repairing Gemini streams that merge two parallel calls to one tool into a single unparseable argument string, which Hermes reports as 'Response truncated due to output length limit'. The repair is applied only after a runtime self-check reproduces the merge on the installed adapter and proves the repair separates it; this switch turns it off outright. Same as KAME_GEMINI_TOOL_CALL_FIX_DISABLED."
   stream_silence_timeout_seconds:
     type: int
     default: 0
@@ -131,10 +111,6 @@ config_schema:
     type: bool
     default: false
     description: "Stop timing calls. KAME writes one line per attempt to calls.jsonl beside its own state — how long until anything came back, how long until the answer started, how long the attempt took, and how much of the turn had already gone on waiting for a key. It is there so “is it slow, and whose fault is it” can be answered with a number: a two-minute turn is either a quota problem or a slow model, and from outside those look the same. No key, no prompt and no answer text is written; only durations, a model name and the key fingerprint the panel already shows. Writes only, never interrupts a call, stops at 4 MB. Same as KAME_CALL_TIMINGS_DISABLED."
-  quota_id_disabled:
-    type: bool
-    default: false
-    description: "Stop reading the quota window. Google's per-minute and per-day quotas report the same metric name and differ only in one field, quotaId, which Hermes' Gemini adapter parses and throws away before plugins see the error. KAME keeps the parsed error body on the exception so that field survives; nothing else about the error changes and no other provider is touched. Turn this on to leave the adapter exactly as Hermes wrote it. Same as KAME_QUOTA_ID_DISABLED."
   never_fall_back_to_another_model:
     type: bool
     default: true
@@ -145,13 +121,9 @@ config_schema:
     description: "For several Hermes profiles on one machine using the same API keys. On, every profile reads and writes one shared health file, so a key benched in one profile is benched in all of them and a hold survives a restart. Off, each profile learns every refusal on its own. Only a hash of a key is ever written, never the key. Does nothing with a single profile. Same as KAME_SHARE_POOL_HEALTH."
 hooks:
   - transform_api_error_classification
-  - on_session_reset
-  - pre_api_request
   - post_api_request
 # Declared separately from `hooks` because `hermes plugins doctor` validates
 # registrations against this list, not against `hooks`.
 provides_hooks:
   - transform_api_error_classification
-  - on_session_reset
-  - pre_api_request
   - post_api_request

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame-keys"
 COMMAND_DESCRIPTION = "Bulk-add and inspect pooled API keys (KAME)"
-COMMAND_ARGS_HINT = "add <k1,k2,k3> | import <file> | status | reset"
+COMMAND_ARGS_HINT = "add <k1,k2,k3> | import <file> | split | status | reset"
 
 DEFAULT_PROVIDER = "gemini"
 
@@ -60,6 +60,9 @@ _HELP = """/kame-keys — bulk API key management
   /kame-keys add K1,K2,K3         add keys (comma, space, or newline separated)
   /kame-keys add openrouter K1,K2 add keys to a specific provider
   /kame-keys import <file>        add every key found in a file
+  /kame-keys split [provider]     one pool entry per key for a value like
+                                  GOOGLE_API_KEY=k1,k2,k3 (Hermes sends such a
+                                  value whole, as one key)
   /kame-keys reset [provider]     clear exhaustion status, re-enable all keys
   /kame-keys help                 this text
 
@@ -159,7 +162,27 @@ def _unsuppress(provider: str) -> None:
 
     suppressed = _load_auth_store().get("suppressed_sources", {})
     for source in list(suppressed.get(provider, []) or []):
+        # ``split`` suppressed it on purpose: re-seeding a variable that still
+        # holds a whole comma list would put the list back in the pool as one
+        # key that no provider accepts.
+        if _source_holds_several(source):
+            continue
         unsuppress_credential_source(provider, source)
+
+
+def _source_holds_several(source: str) -> bool:
+    """Whether an ``env:VAR`` source currently holds more than one key."""
+    if not str(source or "").startswith("env:"):
+        return False
+    name = str(source).split(":", 1)[1].strip()
+    value = ""
+    try:
+        from agent.credential_pool import get_env_prefer_dotenv
+
+        value = get_env_prefer_dotenv(name) or ""
+    except Exception:
+        value = os.environ.get(name, "")
+    return len(split_value(value)[0]) > 1
 
 
 # ── backup ────────────────────────────────────────────────────────────────
@@ -328,6 +351,11 @@ def _cmd_status(rest: str) -> str:
                 f"{provider} — {usable} of {countable} key(s) usable"
             )
         lines.extend(group_status(summaries))
+        if any(int(s.get("holds") or 0) > 1 for s in summaries):
+            lines.append(
+                f"  ! one value holds several keys; Hermes would send it as one. "
+                f"Run `/kame-keys split {provider}`."
+            )
 
     return "\n".join(lines) if lines else "No pooled credentials yet."
 
@@ -417,6 +445,95 @@ def _cmd_import(rest: str) -> str:
     return _apply_plan(provider, plan, pool)
 
 
+def _containers(pool) -> List[Any]:
+    """API-key entries whose one value holds several keys."""
+    return [
+        entry for entry in pool.entries()
+        if _is_api_key_entry(entry) and len(split_value(_runtime_key(entry))[0]) > 1
+    ]
+
+
+def _retire_container(provider: str, pool, entry) -> str:
+    """Stop the pool offering a comma list as one key. Returns what was done.
+
+    A seeded source (``env:GOOGLE_API_KEY``, ``config:...``) is suppressed
+    through the host's own ``suppress_credential_source`` — the same marker
+    ``hermes auth remove`` leaves — so the next load does not re-seed it. The
+    variable itself is not touched: this plugin never writes a credential
+    outside ``auth.json``. A row added by hand is removed outright.
+    """
+    from hermes_cli.auth import suppress_credential_source
+
+    source = str(getattr(entry, "source", "") or "")
+    label = getattr(entry, "label", None) or source or "?"
+    if source and source != "manual" and not source.startswith("manual:"):
+        suppress_credential_source(provider, source)
+        return f"  - {label}: no longer read as one key (source {source} suppressed)"
+    index, _found, error = pool.resolve_target(getattr(entry, "id", ""))
+    if index is None:
+        return f"  x {label}: could not remove ({error})"
+    pool.remove_index(index)
+    return f"  - {label}: removed (its keys are now separate entries)"
+
+
+def _split_candidates() -> List[str]:
+    """Pooled providers, plus any whose own key variable holds several keys.
+
+    A pool that was never loaded has no row in ``auth.json`` yet, so a fresh
+    profile whose ``GOOGLE_API_KEY`` is a comma list would not be found by the
+    pooled list alone. The variable names come from Hermes' own registry.
+    """
+    names = set(_pooled_providers())
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for provider_id, config in PROVIDER_REGISTRY.items():
+            for var in getattr(config, "api_key_env_vars", ()) or ():
+                if _source_holds_several(f"env:{var}"):
+                    names.add(str(provider_id))
+    except Exception:
+        logger.debug("kame: provider registry unavailable for split", exc_info=True)
+    return sorted(names)
+
+
+def _cmd_split(rest: str) -> str:
+    """Turn a value holding several keys into one pool entry per key.
+
+    Until 1.8.1.8 KAME split ``GOOGLE_API_KEY=k1,k2,k3`` inside Hermes, by
+    wrapping the pool and the runtime resolver. 1.8.1.9 wraps nothing, and
+    Hermes sends such a value whole — one Bearer token every provider refuses.
+    This does the split once, through the pool's public ``add_entry``, and
+    then suppresses the comma-list source so it is not seeded again.
+    """
+    providers = [p for p in [rest.strip().lower()] if p] or _split_candidates()
+    lines: List[str] = []
+    for provider in providers:
+        try:
+            pool = _load_pool(provider)
+        except Exception as exc:
+            lines.append(f"{provider}: could not load pool ({exc})")
+            continue
+        containers = _containers(pool)
+        if not containers:
+            continue
+        keys: List[str] = []
+        for entry in containers:
+            keys.extend(split_value(_runtime_key(entry))[0])
+        plan = plan_import("\n".join(keys), _existing_tokens(pool))
+        lines.append(_apply_plan(provider, plan, pool))
+        # After the import, never before: a crash between the two must leave
+        # the keys in the pool twice (once as a list), not zero times.
+        for entry in containers:
+            try:
+                lines.append(_retire_container(provider, pool, entry))
+            except Exception as exc:
+                lines.append(f"  x {getattr(entry, 'label', '?')}: {type(exc).__name__}: {exc}")
+    if not lines:
+        return "Nothing to split: every pooled API key already holds one key."
+    lines.append("Restart Hermes (or start a new session) so every lane picks up the new pool.")
+    return "\n".join(lines)
+
+
 def _cmd_reset(rest: str) -> str:
     providers = [p for p in [rest.strip().lower()] if p] or _pooled_providers()
     if not providers:
@@ -439,6 +556,7 @@ _SUBCOMMANDS = {
     "status": _cmd_status,
     "list": _cmd_status,
     "reset": _cmd_reset,
+    "split": _cmd_split,
 }
 
 

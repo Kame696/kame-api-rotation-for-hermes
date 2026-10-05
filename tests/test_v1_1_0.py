@@ -54,7 +54,10 @@ carousel = importlib.import_module(f"{PACKAGE}.core.carousel")
 core = importlib.import_module(f"{PACKAGE}.core")
 desktop_ui = importlib.import_module(f"{PACKAGE}.desktop_ui")
 dispatch_binding = importlib.import_module(f"{PACKAGE}.dispatch_binding")
-gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
+try:
+    gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    gemini_slots = None
 menu = importlib.import_module(f"{PACKAGE}.menu")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 state = importlib.import_module(f"{PACKAGE}.state")
