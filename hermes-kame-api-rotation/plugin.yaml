@@ -47,6 +47,14 @@ config_schema:
     type: bool
     default: false
     description: "Turn KAME into a no-op without uninstalling it. Same as KAME_ROTATION_DISABLED=1."
+  spread_disabled:
+    type: bool
+    default: false
+    description: "Keep cooldown sizing but send each call on the first healthy key in the pool's order (Hermes' own fill_first) instead of the least-loaded one. Same as KAME_SPREAD_DISABLED=1."
+  resolver_disabled:
+    type: bool
+    default: false
+    description: "Stop keeping a multi-key variable (GOOGLE_API_KEY=k1,k2,k3) as one pool row per key; Hermes then reads the whole comma-joined list as one key again. Same as KAME_RESOLVER_DISABLED=1."
   carousel_disabled:
     type: bool
     default: false
@@ -95,6 +103,10 @@ config_schema:
     type: int
     default: 0
     description: "Deprecated name for stream_silence_timeout_seconds (one release older than silent_stream_patience_seconds). Still read, so nothing breaks; prefer the new name."
+  live_status_disabled:
+    type: bool
+    default: false
+    description: "Stop showing pool health and the recovery countdown on the spinner line. Rotation is unchanged; only the status text goes away. Same as KAME_LIVE_STATUS_DISABLED."
   stream_stitch_disabled:
     type: bool
     default: false
@@ -111,6 +123,10 @@ config_schema:
     type: bool
     default: false
     description: "Stop timing calls. KAME writes one line per attempt to calls.jsonl beside its own state — how long until anything came back, how long until the answer started, how long the attempt took, and how much of the turn had already gone on waiting for a key. It is there so “is it slow, and whose fault is it” can be answered with a number: a two-minute turn is either a quota problem or a slow model, and from outside those look the same. No key, no prompt and no answer text is written; only durations, a model name and the key fingerprint the panel already shows. Writes only, never interrupts a call, stops at 4 MB. Same as KAME_CALL_TIMINGS_DISABLED."
+  quota_id_disabled:
+    type: bool
+    default: false
+    description: "Stop reading the quota window. Google's per-minute and per-day quotas report the same metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before plugins see the error. KAME reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it. Same as KAME_QUOTA_ID_DISABLED."
   never_fall_back_to_another_model:
     type: bool
     default: true
@@ -122,8 +138,10 @@ config_schema:
 hooks:
   - transform_api_error_classification
   - post_api_request
+  - on_session_reset
 # Declared separately from `hooks` because `hermes plugins doctor` validates
 # registrations against this list, not against `hooks`.
 provides_hooks:
   - transform_api_error_classification
   - post_api_request
+  - on_session_reset

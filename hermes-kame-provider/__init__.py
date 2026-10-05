@@ -9,7 +9,10 @@ documented way to change a provider without editing Hermes
 For every bundled API-key provider this package registers a *new* profile
 object of a subclass of the bundled profile's class, carrying the same field
 values. Everything — endpoints, model catalog, auth, request shaping, error
-classification — is inherited unchanged. Only ``create_client`` is added:
+classification — is inherited unchanged. Only the two client factories are
+added, ``create_client`` (Chat Completions, Responses) and
+``create_messages_client`` (Anthropic Messages, asked by Hermes from the
+release that offers it on):
 
 * a client the bundled profile supplies itself (an external-process or bespoke
   transport) is returned untouched;
@@ -42,15 +45,11 @@ REGISTRY_KEY = "kame_rotation_registry_v1"
 #: profiles keep Hermes' own client.
 _ROTATABLE_AUTH = frozenset({"api_key"})
 
-#: The one wire KAME's client speaks. Anthropic-Messages and Responses profiles
-#: keep Hermes' own client: Hermes uses a profile's client without wrapping it
-#: for another wire, so handing one over there would break the call.
-_ROTATABLE_WIRE = "chat_completions"
-
-#: Chat-completions profiles whose wire Hermes still picks per model or per
-#: route after the client exists (``opencode_affinity``; the ``actual`` route's
-#: own auxiliary handling). Left with Hermes' client for the same reason.
-_WIRE_CHOSEN_LATER = frozenset({"opencode-go", "opencode-zen", "actual"})
+#: The wires KAME's clients speak: Chat Completions and the Responses API
+#: through ``create_client``, Anthropic Messages through
+#: ``create_messages_client`` (a Hermes that does not ask the latter simply
+#: builds its own Messages client, as before).
+_ROTATABLE_WIRES = frozenset({"chat_completions", "codex_responses", "anthropic_messages"})
 
 
 def _rotation_plugin() -> Optional[Any]:
@@ -67,23 +66,44 @@ def _rotation_plugin() -> Optional[Any]:
     return homes.get(home)
 
 
+def _facade() -> Optional[Any]:
+    plugin = _rotation_plugin()
+    return getattr(plugin, "facade", None) if plugin is not None else None
+
+
 def _kame_profile_class(base: type) -> type:
     def create_client(self, **client_kwargs: Any) -> Any:
         own = base.create_client(self, **client_kwargs)
         if own is not None:
             return own
-        plugin = _rotation_plugin()
-        facade = getattr(plugin, "facade", None) if plugin is not None else None
+        facade = _facade()
         if facade is None:
             return None
         try:
-            return facade.make_client(self.name, client_kwargs)
+            return facade.make_client(self.name, client_kwargs, getattr(self, "api_mode", "") or "")
         except Exception:
             logger.warning("kame: %s client could not be built; Hermes builds its own", self.name, exc_info=True)
             return None
 
+    def create_messages_client(self, **client_kwargs: Any) -> Any:
+        own_hook = getattr(base, "create_messages_client", None)
+        own = own_hook(self, **client_kwargs) if callable(own_hook) else None
+        if own is not None:
+            return own
+        facade = _facade()
+        maker = getattr(facade, "make_messages_client", None) if facade is not None else None
+        if maker is None:
+            return None
+        try:
+            return maker(self.name, client_kwargs)
+        except Exception:
+            logger.warning("kame: %s Messages client could not be built; Hermes builds its own", self.name,
+                           exc_info=True)
+            return None
+
     return type("Kame" + base.__name__, (base,), {
         "create_client": create_client,
+        "create_messages_client": create_messages_client,
         "__doc__": f"{base.__name__} with KAME's rotating client.",
         "__module__": __name__,
     })
@@ -133,9 +153,7 @@ def _register_all() -> int:
         try:
             if getattr(profile, "auth_type", "") not in _ROTATABLE_AUTH:
                 continue
-            if getattr(profile, "api_mode", _ROTATABLE_WIRE) != _ROTATABLE_WIRE:
-                continue
-            if getattr(profile, "name", "") in _WIRE_CHOSEN_LATER:
+            if (getattr(profile, "api_mode", "") or "chat_completions") not in _ROTATABLE_WIRES:
                 continue
             if not dataclasses.is_dataclass(profile):
                 continue

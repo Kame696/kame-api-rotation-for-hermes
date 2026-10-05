@@ -457,3 +457,63 @@ class TestWhatTheJournalIsToldAnswered:
     def test_an_answer_that_carried_nothing_is_not(self, clock):
         script = Script({k: [[finish()], [finish()]] for k in KEYS})
         assert self._recorded(clock, script) == []
+
+
+class TestTheStatusLineReachesTheTurn:
+    """1.8.1.8's spinner line and wait notices, through Hermes' notify_turn_status seam."""
+
+    @pytest.fixture()
+    def rail(self, monkeypatch):
+        said = []
+
+        def notify(message, *, kind="lifecycle"):
+            said.append((kind, message))
+            return True
+
+        monkeypatch.setattr(transport, "_NOTIFY", notify)
+        transport._Spinner.reset()
+        yield said
+        transport._Spinner.reset()
+
+    def test_every_attempt_says_the_pool_health_and_a_rotation_says_so(self, clock, rail):
+        script = Script({KEYS[0]: [per_minute()], KEYS[1]: [[text("Hello", "stop")]]})
+        list(_transport(clock).stream(FakeCall(script)))
+        lines = [m for k, m in rail if k == "activity"]
+        assert lines[0] == "⏳ waiting on gemini-test — KAME 3/3 keys healthy"
+        assert all(transport.passes_desktop_status_gate(m) for m in lines)
+        # A changed line waits at most the 1.8.1.7.2 floor of one second.
+        clock.sleep(1.5)
+        transport._Spinner.update(f"call:{id(self):x}", "x")
+        rail.clear()
+        script = Script({KEYS[2]: [per_minute()], KEYS[0]: [[text("Hi", "stop")]], KEYS[1]: [[text("Hi", "stop")]]})
+        call = FakeCall(script)
+        t = _transport(clock)
+        t.engine.mark(IDENTITY, KEYS[0], False, 30.0, "rate_limit")
+        list(t.stream(call))
+        assert [m for k, m in rail if k == "activity"][0] == (
+            "↻ waiting on gemini-test — KAME 2/3 keys healthy, trying the next key")
+
+    def test_a_wait_counts_down_and_a_long_one_is_announced(self, clock, rail):
+        t = _transport(clock)
+        for key in KEYS:
+            t.engine.mark(IDENTITY, key, False, 400.0, "rate_limit")
+        list(t.stream(FakeCall(Script({k: [[text("back", "stop")]] for k in KEYS}))))
+        activity = [m for k, m in rail if k == "activity"]
+        assert any("a key to come back" in m and "next key in" in m for m in activity)
+        lifecycle = [m for k, m in rail if k == "lifecycle"]
+        assert any(m.startswith("KAME:") and "resting" in m for m in lifecycle)
+        assert any("back up after" in m for m in lifecycle)
+        # 1.8.1.8's throttle: a line whose text changed waits at most one second.
+        assert len(activity) <= 400 + 5
+
+    def test_switched_off_the_spinner_says_nothing(self, clock, rail, monkeypatch):
+        monkeypatch.setenv("KAME_LIVE_STATUS_DISABLED", "1")
+        settings.forget()
+        script = Script({KEYS[0]: [[text("Hello", "stop")]]})
+        list(_transport(clock).stream(FakeCall(script)))
+        assert [m for k, m in rail if k == "activity"] == []
+
+    def test_a_hermes_without_the_seam_changes_nothing(self, clock, monkeypatch):
+        monkeypatch.setattr(transport, "_NOTIFY", False)
+        script = Script({KEYS[0]: [[text("Hello", "stop")]]})
+        assert shown(list(_transport(clock).stream(FakeCall(script)))) == "Hello"

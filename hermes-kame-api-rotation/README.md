@@ -12,12 +12,10 @@ continuation decision is 1.8.1.8's, moved unchanged. `hermes plugins validate`
 passes both packages with no warnings.
 
 Measured on real Hermes turns against local fake providers, in six scenarios on
-the native Gemini wire and the OpenAI wire: the same turns answered and the
-same requests per key as 1.8.1.8, steady turns faster on the OpenAI wire
-(0.2 s instead of 0.6 s), and no repeated text after a cut answer. KAME steps
-aside — Hermes builds its own client and KAME still sizes every refusal — on
-Anthropic-Messages and Responses-API endpoints, where Hermes would wrap a
-client for another wire. Full notes: [CHANGELOG](https://github.com/Kame696/kame-api-rotation-for-hermes/blob/main/CHANGELOG.md).
+every wire (native Gemini, OpenAI chat completions, Anthropic Messages,
+Responses API): the same turns answered as 1.8.1.8, steady turns faster, no
+repeated text after a cut answer, and the status line back on every surface
+through Hermes' `notify_turn_status`. Full notes: [CHANGELOG](https://github.com/Kame696/kame-api-rotation-for-hermes/blob/main/CHANGELOG.md).
 
 **Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
 

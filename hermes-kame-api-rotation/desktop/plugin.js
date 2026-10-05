@@ -902,7 +902,9 @@ function KameComposerLine() {
   const now = useValue($now)
   const activity = snap?.activity
 
-  if (!snap?.installed || !activity || ageSeconds(snap, now) > STALE_AFTER_S) {
+  // Hermes draws the same line on its own spinner when it offers
+  // notify_turn_status (1.8.1.9); one line on screen, as in 1.8.1.8.
+  if (!snap?.installed || snap?.status_rail || !activity || ageSeconds(snap, now) > STALE_AFTER_S) {
     return null
   }
 

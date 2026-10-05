@@ -44,6 +44,8 @@ _FALSE = frozenset({"0", "false", "no", "off"})
 
 # key in config.yaml -> environment variable that outranks it
 ROTATION_DISABLED = "disabled"
+SPREAD_DISABLED = "spread_disabled"
+RESOLVER_DISABLED = "resolver_disabled"
 CAROUSEL_DISABLED = "carousel_disabled"
 # Every switch here turns a KAME behaviour *off*, which is why this one is
 # named for the disabling rather than for the feature: collapsing is the
@@ -51,6 +53,9 @@ CAROUSEL_DISABLED = "carousel_disabled"
 # "off" — so a feature-named flag would default to not collapsing and the
 # default would have to be spelled somewhere else to survive.
 STORM_COLLAPSE_DISABLED = "storm_collapse_disabled"
+# 1.0.9. Same naming rule: the live status line is on by default, so the switch
+# is named for turning it off.
+LIVE_STATUS_DISABLED = "live_status_disabled"
 
 # 1.1.1. Continuing an answer the provider cut off, on another key, instead of
 # handing the cut back to Hermes to paper over with a synthetic
@@ -69,6 +74,12 @@ STREAM_STITCH_DISABLED = "stream_stitch_disabled"
 # question this repository has open — not to be a feature.
 RECORDER_DISABLED = "refusal_recorder_disabled"
 
+# 1.7.0.1. Google names the quota window in ``quotaId`` and Hermes' own Gemini
+# adapter reads past it: it keeps ``google.rpc.ErrorInfo`` and drops
+# ``QuotaFailure`` and ``RetryInfo``. 300 of 300 journal rows on the owner's
+# first real session read ``window: unknown`` because of it. KAME keeps the
+# parsed body on the exception the adapter builds and changes nothing else.
+QUOTA_ID_DISABLED = "quota_id_disabled"
 
 # 1.7.0.1. One line per attempt: how long until anything came back, how long
 # until the answer started, how long the whole attempt took, and how much of
@@ -162,10 +173,14 @@ UNSIZED_BACKOFF_MAX = "unsized_backoff_max_seconds"
 
 _ENV_FOR = {
     ROTATION_DISABLED: "KAME_ROTATION_DISABLED",
+    SPREAD_DISABLED: "KAME_SPREAD_DISABLED",
+    RESOLVER_DISABLED: "KAME_RESOLVER_DISABLED",
     CAROUSEL_DISABLED: "KAME_CAROUSEL_DISABLED",
     STORM_COLLAPSE_DISABLED: "KAME_STORM_COLLAPSE_DISABLED",
+    LIVE_STATUS_DISABLED: "KAME_LIVE_STATUS_DISABLED",
     STREAM_STITCH_DISABLED: "KAME_STREAM_STITCH_DISABLED",
     RECORDER_DISABLED: "KAME_RECORDER_DISABLED",
+    QUOTA_ID_DISABLED: "KAME_QUOTA_ID_DISABLED",
     CALL_TIMINGS_DISABLED: "KAME_CALL_TIMINGS_DISABLED",
     NO_MODEL_FALLBACK: "KAME_NO_MODEL_FALLBACK",
     SHARE_POOL_HEALTH: "KAME_SHARE_POOL_HEALTH",
@@ -750,11 +765,15 @@ def _env_names(key: str) -> Tuple[str, ...]:
 #: here shows up as missing rather than as absent.
 ALL_FLAGS = (
     ROTATION_DISABLED,
+    SPREAD_DISABLED,
+    RESOLVER_DISABLED,
     CAROUSEL_DISABLED,
     STORM_COLLAPSE_DISABLED,
+    LIVE_STATUS_DISABLED,
     STREAM_STITCH_DISABLED,
     NO_MODEL_FALLBACK,
     RECORDER_DISABLED,
+    QUOTA_ID_DISABLED,
     CALL_TIMINGS_DISABLED,
     SHARE_POOL_HEALTH,
     UNSIZED_THROTTLE_BACKOFF,
@@ -819,6 +838,17 @@ META = {
         "Every call keeps the key Hermes resolved and failures follow Hermes' "
         "own retry rules. The plugin stays installed and does nothing.",
     ),
+    SPREAD_DISABLED: (
+        "Give back key selection",
+        "Cooldown sizing stays, but each call carries the first healthy key in "
+        "the pool's order (Hermes' own fill_first) instead of the least-loaded one.",
+    ),
+    RESOLVER_DISABLED: (
+        "Send multi-key values whole",
+        "KAME stops keeping a comma-separated key variable as one pool row per "
+        "key, and Hermes reads it as one long key again, which no provider "
+        "accepts. `/kame-keys split` still does it once by hand.",
+    ),
     CAROUSEL_DISABLED: (
         "Stop rotating per call",
         "Hermes' own key, retry ceiling and rotation rules come back. Cooldown "
@@ -829,6 +859,11 @@ META = {
         "Log every failure during an outage",
         "Repeated identical failures are written in full instead of being "
         "collapsed into a periodic count. Louder logs, same rotation.",
+    ),
+    LIVE_STATUS_DISABLED: (
+        "Hide the status line",
+        "Pool health and the recovery countdown stop appearing on the spinner "
+        "line. Rotation is unchanged.",
     ),
     STREAM_STITCH_DISABLED: (
         "Stop continuing cut answers",
@@ -890,6 +925,14 @@ META = {
         "answer text is written; only durations, a model name and the same key "
         "fingerprint the panel already shows. Writes only, never interrupts a "
         "call, stops at 4 MB. Turn this on to stop the writing.",
+    ),
+    QUOTA_ID_DISABLED: (
+        "Stop reading the quota window",
+        "Google's per-minute and per-day free-tier quotas report the identical "
+        "metric name and differ only in one field, quotaId, which Hermes' Gemini "
+        "adapter drops before KAME sees the error. KAME reads the refusal body on "
+        "its own connection so that field survives; nothing else about the error "
+        "changes. Turn this on to leave the refusal exactly as Hermes reads it.",
     ),
     NO_MODEL_FALLBACK: (
         "Stay on this model, always",

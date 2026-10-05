@@ -148,7 +148,7 @@ def fresh(monkeypatch):
     monkeypatch.setattr(adapter, "is_native_gemini_base_url",
                         lambda url: "/v1beta" in str(url or "") or real(url))
     monkeypatch.setattr(facade.TRANSPORT, "engine", carousel_mod.Carousel())
-    monkeypatch.setattr(facade, "_other_wire", lambda provider, base_url: "")
+    monkeypatch.setattr(facade, "_wire", lambda provider, base_url, declared="": "chat_completions")
     settings.forget()
     yield
     settings.forget()
@@ -243,7 +243,9 @@ class TestTheQuotaWindowSurvivesTheStream:
             p.close()
 
 
-class TestKameStepsAsideForOtherWires:
+class TestEveryWireIsKames:
+    """1.8.1.9 first stepped aside on the Messages and Responses wires; every wire is KAME's now."""
+
     @pytest.fixture(autouse=True)
     def _fresh_config_reads(self):
         facade._CONFIG_READS.clear()
@@ -254,45 +256,119 @@ class TestKameStepsAsideForOtherWires:
         "https://api.minimax.io/anthropic",
         "https://api.kimi.com/coding/v1",
         "https://api.anthropic.com",
-        "https://api.openai.com/v1",
     ])
-    def test_by_endpoint(self, url):
-        assert facade._other_wire("custom", url)
+    def test_a_messages_endpoint_gets_its_client_from_the_messages_seam(self, url):
+        assert facade._wire("custom", url) == "anthropic_messages"
         settings.forget()
         assert facade.make_client("custom", {"api_key": JOINED, "base_url": url}) is None
+        client = facade.make_messages_client("custom", {"api_key": JOINED, "base_url": url})
+        try:
+            assert isinstance(client, facade.KameMessagesClient)
+            assert len(client._kame_keys.keys()) == len(JOINED.split(","))
+        finally:
+            client.close()
+
+    @pytest.mark.parametrize("url,header", [
+        ("https://api.minimax.io/anthropic", "Authorization"),
+        ("https://proxy.example/anthropic", "X-Api-Key"),
+    ])
+    def test_every_key_is_sent_the_way_hermes_sends_the_first(self, url, header):
+        settings.forget()
+        client = facade.make_messages_client("custom", {"api_key": JOINED, "base_url": url})
+        try:
+            keys = JOINED.split(",")
+            for key in keys:
+                inner = client._kame_inner(key, 1)
+                assert inner.auth_headers and list(inner.auth_headers) == [header]
+                assert key in str(inner.auth_headers[header])
+                # Derived from the first key's client: one connection pool, not one per key.
+                assert inner._client is client._kame_primary._client
+        finally:
+            client.close()
+
+    def test_a_key_of_another_shape_is_built_by_hermes(self, monkeypatch):
+        import agent.anthropic_adapter as adapter
+
+        built = []
+        real = adapter.build_anthropic_client
+
+        def spy(key, *a, **k):
+            built.append(key)
+            return real(key, *a, **k)
+
+        monkeypatch.setattr(adapter, "build_anthropic_client", spy)
+        settings.forget()
+        client = facade.make_messages_client(
+            "anthropic", {"api_key": "sk-ant-api03-aaaa,sk-ant-oat01-bbbb", "base_url": "https://api.anthropic.com"})
+        try:
+            oauth = client._kame_inner("sk-ant-oat01-bbbb", 1)
+            assert built == ["sk-ant-api03-aaaa", "sk-ant-oat01-bbbb"]
+            assert "Authorization" in oauth.auth_headers
+            assert "X-Api-Key" in client._kame_inner("sk-ant-api03-aaaa", 1).auth_headers
+        finally:
+            client.close()
+
+    def test_a_declared_responses_profile_gets_a_responses_client(self):
+        settings.forget()
+        client = facade.make_client("xai", {"api_key": JOINED, "base_url": "https://api.x.ai/v1"},
+                                    "codex_responses")
+        try:
+            assert client is not None
+            assert callable(client.responses.create)
+            # The auxiliary path calls chat.completions on a profile's client: Hermes' own
+            # Responses adapter answers there, over KAME's carousel.
+            assert type(client.chat).__name__ == "_ChatShim"
+        finally:
+            client.close()
+
+    def test_api_openai_com_gets_both_shapes(self):
+        settings.forget()
+        client = facade.make_client("openai", {"api_key": JOINED, "base_url": "https://api.openai.com/v1"})
+        try:
+            assert callable(client.chat.completions.create)
+            assert callable(client.responses.create)
+        finally:
+            client.close()
 
     def test_by_configured_api_mode(self, monkeypatch):
         import hermes_cli.config as config
 
         monkeypatch.setattr(config, "load_config_readonly", lambda *a, **k: {
             "auxiliary": {"vision": {"provider": "nvidia", "api_mode": "codex_responses"}}})
-        assert "codex_responses" in facade._other_wire("nvidia", "https://integrate.api.nvidia.com/v1")
-        assert facade._other_wire("gemini", "https://generativelanguage.googleapis.com/v1beta") == ""
+        assert facade._wire("nvidia", "https://integrate.api.nvidia.com/v1") == "codex_responses"
+        assert facade._wire("gemini", "https://generativelanguage.googleapis.com/v1beta") == "chat_completions"
 
-    def test_a_plain_chat_endpoint_is_kames(self, monkeypatch):
+    def test_a_plain_chat_endpoint_is_chat(self, monkeypatch):
         import hermes_cli.config as config
 
         monkeypatch.setattr(config, "load_config_readonly", lambda *a, **k: {
             "model": {"provider": "nvidia", "default": "moonshotai/kimi-k3"}})
-        assert facade._other_wire("nvidia", "https://integrate.api.nvidia.com/v1") == ""
+        assert facade._wire("nvidia", "https://integrate.api.nvidia.com/v1") == "chat_completions"
 
     def test_switched_off_means_hermes_builds_its_own(self, monkeypatch):
         monkeypatch.setenv("KAME_ROTATION_DISABLED", "1")
         settings.forget()
         try:
             assert facade.make_client("nvidia", {"api_key": "k1", "base_url": "https://x.example/v1"}) is None
+            assert facade.make_messages_client("minimax", {"api_key": "k1",
+                                                           "base_url": "https://x.example/anthropic"}) is None
         finally:
             settings.forget()
 
     def test_no_key_means_hermes_builds_its_own(self):
         assert facade.make_client("nvidia", {"api_key": "", "base_url": "https://x.example/v1"}) is None
+        assert facade.make_messages_client("minimax", {"api_key": "", "base_url": "https://x.example/anthropic"}) is None
+
+    def test_a_callable_bearer_is_hermes_own(self):
+        assert facade.make_messages_client("anthropic", {"api_key": lambda: "tok",
+                                                         "base_url": "https://api.anthropic.com"}) is None
 
 
 class TestTheProviderPackage:
-    def test_only_chat_completions_api_key_profiles_are_overridden(self):
+    def test_every_api_key_wire_is_overridden(self):
         source = (ROOT / "hermes-kame-provider" / "__init__.py").read_text(encoding="utf-8")
-        assert '_ROTATABLE_WIRE = "chat_completions"' in source
-        assert "opencode-go" in source and "opencode-zen" in source
+        assert '_ROTATABLE_WIRES = frozenset({"chat_completions", "codex_responses", "anthropic_messages"})' in source
+        assert "create_messages_client" in source
         # Never a rebind: the bundled profile objects are copied, not edited.
         assert "setattr(profile" not in source and "profile.create_client =" not in source
 
@@ -307,7 +383,7 @@ class TestHermesHeadersReachKamesClient:
     """
 
     def test_nvidia_cloud_gets_the_billing_origin(self, monkeypatch):
-        monkeypatch.setattr(facade, "_other_wire", lambda provider, base_url: "")
+        monkeypatch.setattr(facade, "_wire", lambda provider, base_url, declared="": "chat_completions")
         client = facade.make_client("nvidia", {"api_key": "nvapi-" + "x" * 60,
                                                "base_url": "https://integrate.api.nvidia.com/v1"})
         try:
@@ -316,7 +392,7 @@ class TestHermesHeadersReachKamesClient:
             client.close()
 
     def test_a_local_nim_does_not(self, monkeypatch):
-        monkeypatch.setattr(facade, "_other_wire", lambda provider, base_url: "")
+        monkeypatch.setattr(facade, "_wire", lambda provider, base_url, declared="": "chat_completions")
         client = facade.make_client("nvidia", {"api_key": "nvapi-" + "x" * 60,
                                                "base_url": "http://localhost:8000/v1"})
         try:
@@ -325,7 +401,7 @@ class TestHermesHeadersReachKamesClient:
             client.close()
 
     def test_headers_the_main_agent_already_set_are_kept_as_they_are(self, monkeypatch):
-        monkeypatch.setattr(facade, "_other_wire", lambda provider, base_url: "")
+        monkeypatch.setattr(facade, "_wire", lambda provider, base_url, declared="": "chat_completions")
         client = facade.make_client("nvidia", {"api_key": "nvapi-" + "x" * 60,
                                                "base_url": "https://integrate.api.nvidia.com/v1",
                                                "default_headers": {"X-Own": "1"}})
@@ -345,9 +421,9 @@ def test_config_reads_are_reused_briefly_and_then_read_again(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(facade.time, "monotonic", lambda: clock[0])
     for _ in range(5):
-        facade._other_wire("nvidia", "https://integrate.api.nvidia.com/v1")
+        facade._wire("nvidia", "https://integrate.api.nvidia.com/v1")
     assert len(reads) == 1
     clock[0] += facade.CONFIG_READ_TTL_S + 0.1
-    facade._other_wire("nvidia", "https://integrate.api.nvidia.com/v1")
+    facade._wire("nvidia", "https://integrate.api.nvidia.com/v1")
     assert len(reads) == 2
     facade._CONFIG_READS.clear()

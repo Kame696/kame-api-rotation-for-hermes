@@ -251,10 +251,11 @@ def the_plugin_registers_the_four_it_should(
         text = manifest.read_text(encoding="utf-8")
     block = text.split("provides_hooks:", 1)[-1].split("\nconfig_schema:", 1)[0]
     return sorted(re.findall(r"^\s*-\s*([a-z_]+)\s*$", block, re.M)), [
-        # 1.8.1.9: two. ``pre_api_request`` only announced the call in flight
-        # to the pool binding, and ``on_session_reset`` only cleared the in-chat
-        # spinner; both are gone with what they served (the client knows its
-        # own call, and the status line lives in the Desktop composer slot).
+        # 1.8.1.9: three. ``pre_api_request`` only announced the call in
+        # flight to the pool binding and is gone with it (the client knows its
+        # own call). ``on_session_reset`` is back with the spinner line it
+        # resets (``transport._Spinner``, drawn through notify_turn_status).
+        "on_session_reset",
         "post_api_request",
         "transform_api_error_classification",
     ]
@@ -972,7 +973,7 @@ def main() -> int:
     for label, probe in (
         ("every API-side hook the host offers is accounted for", every_api_hook_the_host_offers_is_accounted_for),
         ("KAME needs no capability the host could deny", kame_needs_no_capability_the_host_could_deny),
-        ("and KAME registers exactly the two it should", the_plugin_registers_the_four_it_should),
+        ("and KAME registers exactly the three it should", the_plugin_registers_the_four_it_should),
         ("KAME writes no host stream variable outside one scoped exception", kame_never_writes_the_hosts_stream_variables),
         ("Desktop would actually show KAME's status line", the_desktop_shows_only_a_wait_notice_that_opens_the_right_way),
         # v1.1.0. The four facts the Desktop half and the Gemini repair rest on.

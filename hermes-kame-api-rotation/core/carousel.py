@@ -1639,7 +1639,7 @@ class Carousel:
     # -- selection -------------------------------------------------------
 
     def select(
-        self, identity: str, keys: Sequence[str], now: Optional[float] = None
+        self, identity: str, keys: Sequence[str], now: Optional[float] = None, *, spread: bool = True
     ) -> Tuple[Optional[str], str]:
         """``(key, status)`` — the healthiest key, chosen fresh for this call.
 
@@ -1652,6 +1652,10 @@ class Carousel:
         tie. Both halves matter: load alone would let a key that answered once
         an hour ago and a key that answered once a second ago look identical,
         and age alone ignores the rate limit the window exists to respect.
+
+        ``spread=False`` is the host's own ``fill_first``: the first healthy key
+        in the pool's order, every time. Cooldowns, retirement and the wait for
+        an exhausted pool are unchanged; only which healthy key goes out is.
         """
         usable = [k for k in keys if k]
         if not usable:
@@ -1742,13 +1746,17 @@ class Carousel:
             # key in it means "not until there is nothing better", and on a
             # pool where every key was refused means "immediately", because
             # then they are all equal and there is nothing to lose.
+            order = {k: i for i, k in enumerate(usable)}
             chosen = min(
                 healthy,
-                key=lambda k: (
+                key=(lambda k: (
                     1 if pool[k].get("kind") in REJECTED_KINDS else 0,
                     len(pool[k]["request_log"]),
                     pool[k]["last_used"],
-                ),
+                )) if spread else (lambda k: (
+                    1 if pool[k].get("kind") in REJECTED_KINDS else 0,
+                    order[k],
+                )),
             )
             # Stamped under the lock. A concurrent turn entering select() a
             # microsecond later now sees this key as both busier and newer,

@@ -86,7 +86,10 @@ RETIRED = {
         "test_transport_1819::TestWhatTheJournalIsToldAnswered",
     "tests/test_plugin.py::TestAnAnswerThatCarriedNothing::test_a_host_that_reports_neither_number_changes_nothing":
         "test_transport_1819::TestWhatTheJournalIsToldAnswered",
-    "tests/test_plugin.py::TestRegistration::test_registers_exactly_the_four_hooks_it_needs": RESET,
+    "tests/test_plugin.py::TestRegistration::test_registers_exactly_the_four_hooks_it_needs":
+        "pre_api_request only fed the pool binding the model in flight; KAME's client reads the model "
+        "from the request it sends. Three hooks now (manifest): classification, post_api_request, "
+        "on_session_reset",
     "tests/test_plugin.py::TestReadingTheSwitchesAtRegistration::test_the_other_switch_is_read_at_the_same_time": KNOB,
     "tests/test_settings.py::TestReadingTheConfig::test_a_switch_set_in_the_config_is_read": KNOB,
     "tests/test_settings.py::TestReadingTheConfig::test_nothing_configured_leaves_everything_running": KNOB,

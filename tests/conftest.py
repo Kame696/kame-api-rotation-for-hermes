@@ -92,6 +92,10 @@ _RETIRED_IDS = {
 
 
 def pytest_collection_modifyitems(config, items):
+    # KAME_RUN_RETIRED=1 runs the retired tests too: how a retirement is checked
+    # to still be needed after its subject comes back.
+    if os.environ.get("KAME_RUN_RETIRED") == "1":
+        return
     for item in items:
         nodeid = item.nodeid.replace("\\", "/")
         if not nodeid.startswith("tests/"):

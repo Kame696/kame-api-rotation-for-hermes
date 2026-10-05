@@ -31,12 +31,13 @@ your keys. Every rotation, wait, refusal-sizing and continuation decision is
 1.8.1.8's, moved unchanged. `hermes plugins validate` passes both packages with
 no warnings.
 
-Measured on real Hermes turns against local fake providers, six scenarios on the
-native Gemini wire and the OpenAI wire: the same turns answered and the same
-requests per key as 1.8.1.8, steady turns faster on the OpenAI wire (0.2 s
-instead of 0.6 s), and no repeated text after a cut answer. Where KAME steps
-aside — Anthropic-Messages and Responses-API endpoints — Hermes builds its own
-client and KAME still sizes every refusal. See
+Measured on real Hermes turns against local fake providers, six scenarios on
+every wire (native Gemini, OpenAI chat completions, Anthropic Messages,
+Responses API): the same turns answered as 1.8.1.8, steady turns faster, no
+repeated text after a cut answer, and a cut Anthropic answer continued on
+another key instead of restarted. The status line (`⏳ waiting on … — KAME
+13/15 keys healthy`) is on every surface again through Hermes'
+`notify_turn_status`. See
 [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
 ---
@@ -96,7 +97,7 @@ GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc
 
 That is all KAME needs. One key works too; there is just nothing to rotate to.
 
-Optional: `/kame-keys split` turns such a list into one pool entry per key, so Hermes' own credential pool (and the wires where KAME steps aside) sees each key separately too. It writes through Hermes' own pool API, suppresses the comma source, and never rewrites `.env`.
+KAME keeps such a list as one pool entry per key on its own, at every start, and follows the variable when you edit it (turn off with `resolver_disabled`). It writes through Hermes' own pool API, suppresses the comma source, backs up `auth.json` first, and never rewrites `.env`. `/kame-keys split` does the same once by hand.
 
 <details>
 <summary><b>Bulk import from any chat, including the Android app</b></summary>
@@ -255,7 +256,7 @@ evidence above still describes what runs.
 
 Yes. KAME decides from the refusal — retry timing, rate-limit headers, the shape of the error body — never from who the provider is.
 
-How much it does depends on the wire. On chat-completions providers (Gemini, OpenRouter, NVIDIA, DeepSeek, custom OpenAI-compatible endpoints and the rest) the whole carousel runs inside the call: least-loaded key first, waits, continuation of a cut answer. On Anthropic-Messages endpoints, Responses-API providers and `api.openai.com`, Hermes keeps its own client — it would wrap a provider's client for another wire — so there KAME sizes every refusal and Hermes' own pool rotates the keys.
+The whole carousel runs inside the call on every API-key wire: chat completions (Gemini, OpenRouter, NVIDIA, DeepSeek, custom OpenAI-compatible endpoints and the rest), the Responses API (`api.openai.com`, xAI) and Anthropic Messages (Anthropic, MiniMax, Kimi coding). Least-loaded key first, waits, continuation of a cut answer (except on the Responses API, as in 1.8.1.8). Anthropic Messages needs a Hermes that offers `create_messages_client`; an older one builds its own Messages client, and KAME still sizes every refusal there.
 </details>
 
 <details>
@@ -305,7 +306,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
-| **1.8.1.9** | No runtime overrides | Every rebind of Hermes core removed for catalog rule 9; the carousel now runs inside the client Hermes asks a provider profile for (companion package `hermes-kame-provider`). Same decisions and same requests per key as 1.8.1.8 on real Hermes turns; Anthropic-Messages and Responses-API endpoints keep Hermes' own client (refusals still sized by KAME); `/kame-keys split` added; six settings that only tuned the bindings removed. |
+| **1.8.1.9** | No runtime overrides | Every rebind of Hermes core removed for catalog rule 9; the carousel now runs inside the client Hermes asks a provider profile for (companion package `hermes-kame-provider`). Same decisions as 1.8.1.8 on real Hermes turns, on every wire (Anthropic Messages and Responses through new provider-profile clients); status line through `notify_turn_status`; comma-joined key variables kept as one pool row per key automatically; two settings retired because Hermes now does their job. |
 | **1.8.1.8** | Serial reliability | Independent profile leases and stoppable heartbeats; progress-based continuation, exact stream boundaries and original-request incomplete-tool replay; writer-owned snapshot cache and defensive Desktop formatting. Engine retained, no request racing; catalog update needs renewed review. |
 | **1.8.1.7** | Reproducible verification *(local candidate)* | Deterministic Windows clock regressions, paired 1/2/14-key overhead measurement, live-key and isolated Hermes acceptance, byte-exact ZIP verification, and explicit current catalog admission dependency. Existing runtime features retained. |
 | **1.8.1.6** | One hour means one hour | `max_hold_seconds` now bounds every hold, the provider's own included: a 24h `Retry-After`, a "try again in 6h" in the message or Codex's reset used to keep a key out that long; it comes back at the ceiling (one hour unless you change it) and is simply held again if the provider still refuses. Lowering the ceiling also applies to holds already running. |

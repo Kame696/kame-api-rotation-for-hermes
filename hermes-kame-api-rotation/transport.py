@@ -32,11 +32,13 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
-from . import host_text, recorder, runtime, settings, timings
+from . import host_text, recorder, runtime, settings, timings, wires
 from .core import evidence, multikey, stitch, vocabulary
 from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
@@ -387,6 +389,120 @@ def recovery_clock(eta: Optional[float]) -> str:
     return f"{label} (around {time.strftime('%H:%M:%S', time.localtime(time.time() + eta))})"
 
 
+_NOTIFY: Any = None
+
+
+def _turn_status(kind: str, message: str) -> bool:
+    """Hand ``message`` to the status rail of the turn this call belongs to.
+
+    Hermes' ``agent.status_output.notify_turn_status`` (upstream #133474): the
+    seam that lets a provider-supplied client say what it is doing, on the same
+    surfaces 1.8.1.8 reached through ``agent._emit_status`` and
+    ``agent._emit_wait_notice``. ``kind="activity"`` is the transient spinner
+    line, ``"lifecycle"`` a status line. ``False`` on a Hermes without the seam
+    or outside a turn; never raises.
+    """
+    global _NOTIFY
+    if _NOTIFY is None:
+        try:
+            from agent.status_output import notify_turn_status
+
+            _NOTIFY = notify_turn_status
+        except Exception:
+            _NOTIFY = False
+    if not _NOTIFY:
+        return False
+    try:
+        return bool(_NOTIFY(message, kind=kind))
+    except Exception:  # pragma: no cover - documented never to raise
+        logger.debug("kame: could not hand a line to the status rail", exc_info=True)
+        return False
+
+
+def status_rail_available() -> bool:
+    """Whether this Hermes offers ``notify_turn_status`` (the spinner line is Hermes')."""
+    _turn_status("lifecycle", "")  # resolves the import once; an empty line is never shown
+    return bool(_NOTIFY)
+
+
+class _Spinner:
+    """Live status on the spinner line, throttled exactly as 1.8.1.8's.
+
+    1.8.1.8 wrote this line through ``agent._emit_wait_notice``; a client has
+    no agent, so it goes through :func:`_turn_status` with ``kind="activity"``,
+    which the host routes to that same ``_emit_wait_notice``. The line is a
+    transient ``thinking.delta``: it never becomes a message, so it cannot
+    disturb message ordinals (rewind, edit, resend).
+
+    The guards are 1.8.1.8's, unchanged:
+
+    * **Diff** — the same text twice in a row is not re-sent, except after
+      :attr:`_REFRESH_S`, because Hermes writes its own activity into the same
+      spinner and a strict diff gate would never put KAME's line back.
+    * **Interval** — at least ``interval`` seconds between updates, chosen by
+      :meth:`cadence_for` from the countdown being drawn; a *changed* line only
+      waits :attr:`_CHANGED_FLOOR_S`, so a finished countdown never stays on
+      screen after a new wait began.
+
+    Kept per conversation: the key is the client making the call (one per
+    agent), so one chat's throttle cannot swallow another chat's line.
+    """
+
+    _DEFAULT_INTERVAL_S = 10.0
+    _REFRESH_S = 30.0
+    _MAX_TRACKED = 64
+    _CHANGED_FLOOR_S = 1.0
+
+    _lock = threading.Lock()
+    _state: "OrderedDict[str, tuple]" = OrderedDict()
+
+    @staticmethod
+    def cadence_for(eta: Optional[float]) -> float:
+        """How often a countdown showing ``eta`` deserves to be redrawn."""
+        if eta is None:
+            return _Spinner._DEFAULT_INTERVAL_S
+        if eta <= 10.0:
+            return 1.0
+        if eta <= 60.0:
+            return 5.0
+        return 30.0
+
+    @classmethod
+    def reset(cls, owner: Optional[str] = None) -> None:
+        """Forget what ``owner`` was last shown; everything, when it is not known here.
+
+        A session reset names a session, and the throttle is normally kept per
+        client: a name it does not hold clears every line, which costs at most
+        one extra redraw elsewhere and never holds a line back.
+        """
+        with cls._lock:
+            if owner is not None and str(owner) in cls._state:
+                cls._state.pop(str(owner), None)
+            else:
+                cls._state.clear()
+
+    @classmethod
+    def update(cls, owner: str, text: str, *, interval: Optional[float] = None) -> None:
+        if settings.is_on(settings.LIVE_STATUS_DISABLED):
+            return
+        every = cls._DEFAULT_INTERVAL_S if interval is None else interval
+        now = time.monotonic()
+        key = str(owner)
+        with cls._lock:
+            last_say, last_text = cls._state.get(key, (0.0, ""))
+            if text == last_text and now - last_say < cls._REFRESH_S:
+                return
+            gate = cls._CHANGED_FLOOR_S if text != last_text else every
+            if now - last_say < gate:
+                return
+            cls._state[key] = (now, text)
+            cls._state.move_to_end(key)
+            while len(cls._state) > cls._MAX_TRACKED:
+                cls._state.popitem(last=False)
+        # Outside the lock: the host's callback is foreign code.
+        _turn_status("activity", text)
+
+
 class _Vigil:
     """Tells the user a long wait is a wait, not a freeze.
 
@@ -399,8 +515,10 @@ class _Vigil:
 
     So the wait stays unbounded and stops being silent. 1.8.1.8 spoke through
     ``agent._emit_status``; a client has no agent to speak through, so the
-    notice goes to the log and the Events screen, and the wait itself is on
-    the Desktop chip through ``_publish`` for as long as it lasts.
+    notice goes through :func:`_turn_status` (``kind="lifecycle"``), which the
+    host routes to that same status rail. On a Hermes without that seam it
+    goes to the log, and the wait itself is on the Desktop chip through
+    ``_publish`` for as long as it lasts.
     """
 
     __slots__ = ("label", "started", "_next", "notices")
@@ -442,7 +560,8 @@ class _Vigil:
         )
 
     def _emit(self, message: str) -> None:
-        logger.info("kame: %s", message)
+        if not _turn_status("lifecycle", message):
+            logger.info("kame: %s", message)
 
 
 def _result_is_empty(result: Any) -> bool:
@@ -751,6 +870,15 @@ class Call:
     identity: str = ""
     provider: str = ""
     kwargs: Dict[str, Any] = {}
+    #: The wire this call speaks (``wires``); Chat Completions unless the client says otherwise.
+    wire: Any = wires.CHAT
+
+    def attach_response(self, response: Any) -> None:
+        """The HTTP response of the attempt now streaming, for a client that exposes it."""
+
+    def status_owner(self) -> str:
+        """Whose spinner line this call draws on (the throttle is kept per owner)."""
+        return f"call:{id(self):x}"
 
     def keys(self) -> List[str]:  # pragma: no cover - interface
         raise NotImplementedError
@@ -1566,11 +1694,19 @@ class KameTransport:
         """A non-streaming request, on as many keys as it takes."""
         for item in self._drive(call, stream=False):
             if isinstance(item, _Done):
-                return item.value
+                return call.wire.result(item.value)
         raise RuntimeError("kame: the transport ended without an answer")  # pragma: no cover
 
     def stream(self, call: "Call") -> Iterator[Any]:
-        """A streaming request. Yields provider chunks, plus keep-alives while it waits."""
+        """A streaming request. Yields provider chunks, plus keep-alives while it waits.
+
+        On the Messages and Responses wires the chunks are that wire's own
+        events (``wires``): the carousel decides on views of them, and the wire
+        hands Hermes what it expects.
+        """
+        return call.wire.emit(self._views(call))
+
+    def _views(self, call: "Call") -> Iterator[Any]:
         for item in self._drive(call, stream=True):
             if isinstance(item, _Done):
                 return
@@ -1583,9 +1719,9 @@ class KameTransport:
         """No key to choose: the request goes out exactly as Hermes built it."""
         client = call.client_for("", 1)
         if not stream:
-            yield _Done(client.chat.completions.create(**call.kwargs))
+            yield _Done(call.wire.create(client, call.kwargs))
             return
-        for chunk in client.chat.completions.create(**dict(call.kwargs, stream=True)):
+        for chunk in call.wire.open(client, call.kwargs, call):
             yield chunk
         yield _Done(None)
 
@@ -1629,7 +1765,7 @@ class KameTransport:
         # text it is trimmed against.
         seen = ""
         resumes = 0
-        resume_budget = self._resume_budget(call.kwargs) if stream else 0
+        resume_budget = self._resume_budget(call.kwargs, call.wire) if stream else 0
         budget_label = resume_budget if resume_budget is not None else "ongoing"
         # 1.6.0.0: which keys were asked to continue and added nothing. This,
         # not a count, ends the stitching loop.
@@ -1650,7 +1786,8 @@ class KameTransport:
                     raise call.cut(last_error)
                 raise last_error if last_error is not None else call.cancel_error()
 
-            key, status = self.engine.select(identity, keys)
+            key, status = self.engine.select(
+                identity, keys, spread=not settings.is_on(settings.SPREAD_DISABLED))
             if key is None:
                 if seen:
                     self.mid_stream_cuts += 1
@@ -1700,6 +1837,18 @@ class KameTransport:
                 logger.debug("kame: could not note the key in flight", exc_info=True)
 
             healthy = self.engine.healthy_count(identity, keys)
+            # 1.8.1.8's line, word for word: the health count, and at most a
+            # word saying a rotation is happening — never an attempt number.
+            resting = attempt > 1 or healthy < len(keys)
+            _Spinner.update(
+                call.status_owner(),
+                status_line(
+                    healthy, len(keys),
+                    "trying the next key" if resting else "",
+                    subject=model_label(identity),
+                    symbol="↻" if resting else "⏳",
+                ),
+            )
             _publish(
                 self,
                 {
@@ -1733,9 +1882,9 @@ class KameTransport:
             try:
                 client = call.client_for(key, attempt)
                 if not stream:
-                    result = client.chat.completions.create(**request)
+                    result = call.wire.create(client, request)
                 else:
-                    raw = client.chat.completions.create(**dict(request, stream=True))
+                    raw = call.wire.open(client, request, call)
                     try:
                         for chunk in raw:
                             if call.cancelled():
@@ -2075,6 +2224,16 @@ class KameTransport:
                         key=fingerprint(key),
                         reason=f"continuing the answer on another key ({resumes}/{budget_label})",
                     )
+                    _Spinner.update(
+                        call.status_owner(),
+                        status_line(
+                            self.engine.healthy_count(identity, keys),
+                            len(keys),
+                            "continuing the answer on the next key",
+                            subject="a cut answer",
+                            symbol="↻",
+                        ),
+                    )
                     _publish(
                         self,
                         {
@@ -2174,6 +2333,17 @@ class KameTransport:
                     logger.debug("kame: could not record the answer in the journal", exc_info=True)
             if vigil is not None:
                 vigil.done()
+                _Spinner.update(
+                    call.status_owner(),
+                    status_line(
+                        self.engine.healthy_count(identity, keys),
+                        len(keys),
+                        f"back after {format_duration(time.monotonic() - started)}",
+                        subject="",
+                        symbol="↻",
+                        opener="model returned",
+                    ),
+                )
                 _publish(
                     self,
                     {
@@ -2227,7 +2397,7 @@ class KameTransport:
         return tail
 
     @staticmethod
-    def _resume_budget(api_kwargs: Any) -> Optional[int]:
+    def _resume_budget(api_kwargs: Any, wire: Any = None) -> Optional[int]:
         """How many times this call may continue a cut answer. Zero disables it.
 
         1.8.1.8 also refused when the host had no delivery funnel to watch.
@@ -2236,7 +2406,7 @@ class KameTransport:
         """
         if settings.is_on(settings.STREAM_STITCH_DISABLED):
             return 0
-        if stitch.resumable(api_kwargs) is None:
+        if not (wire or wires.CHAT).resumable(api_kwargs):
             return 0
         fallback = settings.ALL_NUMBERS.get(settings.STREAM_RESUME_LIMIT, -1.0)
         try:
@@ -2290,6 +2460,18 @@ class KameTransport:
                 self.waited_s += slept
                 return False
             remaining = None if eta is None else max(eta - slept, 0.0)
+            _Spinner.update(
+                call.status_owner(),
+                status_line(
+                    healthy,
+                    total,
+                    f"next key in {recovery_clock(remaining)}",
+                    subject="a key to come back",
+                )
+                if remaining is not None
+                else status_line(healthy, total, subject="a key to come back"),
+                interval=_Spinner.cadence_for(remaining),
+            )
             _publish(
                 self,
                 {
@@ -2364,12 +2546,21 @@ def _text_chunk(text: str) -> Any:
 
 
 def _finish_only(chunk: Any, reason: Any) -> Any:
-    """The finish of ``chunk``, without any of its payload."""
+    """The finish of ``chunk``, without any of its payload.
+
+    A view of another wire's event keeps that event (``wires``): on the
+    Messages wire the finish *is* an event of its own, and dropping it would
+    lose the end of the message.
+    """
     delta = SimpleNamespace(role=None, content=None, tool_calls=None)
     choice = SimpleNamespace(index=0, delta=delta, finish_reason=reason, logprobs=None)
-    return SimpleNamespace(id=getattr(chunk, "id", None), model=getattr(chunk, "model", None),
-                           object="chat.completion.chunk", created=getattr(chunk, "created", int(time.time())),
-                           choices=[choice], usage=getattr(chunk, "usage", None))
+    finish = SimpleNamespace(id=getattr(chunk, "id", None), model=getattr(chunk, "model", None),
+                             object="chat.completion.chunk", created=getattr(chunk, "created", int(time.time())),
+                             choices=[choice], usage=getattr(chunk, "usage", None))
+    for name in (wires.NATIVE, wires.ATTEMPT):
+        if hasattr(chunk, name):
+            setattr(finish, name, getattr(chunk, name))
+    return finish
 
 
 def _set(target: Any, name: str, value: Any) -> None:

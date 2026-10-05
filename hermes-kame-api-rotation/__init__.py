@@ -348,6 +348,30 @@ def _on_api_error_classification(
     return _to_hook_result(verdict)
 
 
+def _on_session_reset(payload=None, **kwargs):
+    """Forget the status line, keep the keys' rests.
+
+    A reset clears the chat, not the calendar: cooldowns describe a quota that
+    is still spent, so they stay. The spinner line's throttle is what goes, so
+    the next line KAME draws in the new conversation is drawn at once. The
+    throttle is kept per client, not per session (a client does not know its
+    session), so every conversation's is cleared — the cost is at most one
+    extra redraw elsewhere, never a line held back.
+    """
+    session_id = None
+    if isinstance(payload, dict):
+        session_id = payload.get("session_id")
+    if session_id is None:
+        session_id = kwargs.get("session_id")
+    try:
+        from .transport import _Spinner
+
+        _Spinner.reset(session_id)
+    except Exception:  # pragma: no cover - defensive only
+        logger.debug("%s: could not reset the status line", PLUGIN_NAME, exc_info=True)
+    return None
+
+
 def _on_post_api_request(
     *,
     provider: str = "",
@@ -426,6 +450,10 @@ def register(ctx) -> None:
         ctx.register_hook("post_api_request", _on_post_api_request)
     except Exception:
         logger.debug("%s: post_api_request unavailable", PLUGIN_NAME, exc_info=True)
+    try:
+        ctx.register_hook("on_session_reset", _on_session_reset)
+    except Exception:
+        logger.debug("%s: on_session_reset unavailable", PLUGIN_NAME, exc_info=True)
 
     # The quota journal: refusals and answers, filed by the carousel. Kept under
     # the name the readouts have always looked for (``_binding``).
@@ -460,6 +488,16 @@ def register(ctx) -> None:
     except Exception:
         logger.warning("%s: /kame-keys unavailable, rotation still active",
                        PLUGIN_NAME, exc_info=True)
+
+    # 1.8.1.8 split ``GOOGLE_API_KEY=k1,k2,k3`` inside Hermes' resolver. With
+    # no wrap left to do that, the pool is kept with one row per key instead,
+    # at every start, following the variable as it changes (``envsync``).
+    try:
+        from . import envsync
+
+        envsync.sync()
+    except Exception:
+        logger.debug("%s: could not sync multi-key variables", PLUGIN_NAME, exc_info=True)
 
     try:
         from .status import register_command as register_status_command

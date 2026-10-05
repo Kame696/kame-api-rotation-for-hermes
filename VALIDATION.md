@@ -1,25 +1,94 @@
 # 1.8.1.9 validation and limitations
 
-Build fingerprint `eaa130adf7eb` (both packages at 1.8.1.9). Everything below
-ran offline: local fake providers, throwaway `HERMES_HOME`s, no real key and no
-real request. The Hermes used is 0.21.4 (`59004a6`), the same source the author
-runs; the Hermes test suites are that install's own.
+Both packages at 1.8.1.9 (rework of 2026-10-05). Unless a section says
+otherwise, everything below ran offline: local fake providers, throwaway
+`HERMES_HOME`s, no real key. The Hermes used is 0.21.4 (`59004a6`), the same
+source the author runs, with and without the two upstream seams this release
+uses when present: `ProviderProfile.create_messages_client`
+(NousResearch/hermes-agent#133461) and `agent.status_output.notify_turn_status`
+(NousResearch/hermes-agent#133474).
+
+## Every wire: 1.8.1.6 vs 1.8.1.8 vs 1.8.1.9
+
+Real Hermes turns, 15 keys, local fake providers. S0 healthy · S1 per-minute
+429 on keys 1-5 · S2 per-day 429 on model A only · S3 503 overload · S4 every
+key 429 for 8 s · S5 stream cut after 2 deltas on key 1. Cell: turns answered ·
+requests sent · slowest steady turn (s).
+
+| wire | scen | 1.8.1.6 | 1.8.1.8 | 1.8.1.9 |
+|---|---|---|---|---|
+| gemini | S0 | 3/3 · 3 · 0.27 | 3/3 · 3 · 0.20 | 3/3 · 3 · 0.19 |
+| gemini | S1 | 4/4 · 9 · 0.29 | 4/4 · 9 · 0.20 | 4/4 · 9 · 0.19 |
+| gemini | S2 | 6/6 · 16 · 0.32 | 6/6 · 16 · 0.23 | 6/6 · 16 · 0.26 |
+| gemini | S3 | 3/3 · 4 · 0.26 | 3/3 · 4 · 0.22 | 3/3 · 4 · 0.18 |
+| gemini | S4 | 3/3 · 28 · 0.24 | 3/3 · 33 · 0.21 | 3/3 · 33 · 0.20 |
+| gemini | S5 | 3/3 · 5 · 0.35 | 3/3 · 5 · 0.19 | 3/3 · 5 · 0.18 |
+| custom | S0 | 3/3 · 3 · 1.19 | 3/3 · 3 · 0.97 | 3/3 · 3 · 0.31 |
+| custom | S1 | 4/4 · 9 · 1.64 | 4/4 · 9 · 0.67 | 4/4 · 9 · 0.21 |
+| custom | S2 | 6/6 · 16 · 0.79 | 6/6 · 16 · 0.68 | 6/6 · 16 · 0.24 |
+| custom | S3 | 3/3 · 4 · 0.70 | 3/3 · 4 · 0.61 | 3/3 · 4 · 0.20 |
+| custom | S4 | 3/3 · 23 · 2.54 | 3/3 · 29 · 0.60 | 3/3 · 33 · 0.28 |
+| custom | S5 | 3/3 · 6 · 1.11 | 3/3 · 6 · 0.68 | 3/3 · 4 · 0.24 |
+| anthropic | S0 | 3/3 · 3 · 1.75 | 3/3 · 3 · 2.32 | 3/3 · 3 · 0.23 |
+| anthropic | S1 | 4/4 · 9 · 1.90 | 4/4 · 9 · 1.55 | 4/4 · 9 · 0.24 |
+| anthropic | S2 | 6/6 · 16 · 1.91 | 6/6 · 16 · 2.88 | 6/6 · 16 · 0.66 |
+| anthropic | S3 | 3/3 · 4 · 2.90 | 3/3 · 4 · 1.32 | 3/3 · 4 · 0.21 |
+| anthropic | S4 | 3/3 · 11 · 1.70 | 3/3 · 7 · 7.55 | 3/3 · 33 · 0.23 |
+| anthropic | S5 | 3/3 · 6 · 2.50 | 3/3 · 6 · 4.45 | 3/3 · 4 · 0.18 |
+| responses | S0 | 3/3 · 3 · 0.83 | 3/3 · 3 · 1.19 | 3/3 · 3 · 0.21 |
+| responses | S1 | 4/4 · 8 · 0.97 | 4/4 · 8 · 1.31 | 4/4 · 9 · 0.20 |
+| responses | S2 | 6/6 · 15 · 1.19 | 6/6 · 15 · 3.24 | 6/6 · 16 · 0.24 |
+| responses | S3 | 3/3 · 3 · 0.94 | 3/3 · 3 · 1.27 | 3/3 · 4 · 0.20 |
+| responses | S4 | 3/3 · 33 · 0.89 | 3/3 · 31 · 1.74 | 3/3 · 33 · 0.22 |
+| responses | S5 | 3/3 · 3 · 0.90 | 3/3 · 3 · 1.22 | 3/3 · 4 · 0.18 |
+| gemini-comma | S0 | 3/3 · 3 · 0.33 | 3/3 · 3 · 0.21 | 3/3 · 3 · 0.21 |
+| gemini-comma | S1 | 4/4 · 9 · 0.25 | 4/4 · 9 · 0.28 | 4/4 · 9 · 0.23 |
+| gemini-comma | S2 | 6/6 · 16 · 0.26 | 6/6 · 16 · 0.24 | 6/6 · 16 · 0.22 |
+| gemini-comma | S3 | 3/3 · 4 · 0.23 | 3/3 · 4 · 0.20 | 3/3 · 4 · 0.18 |
+| gemini-comma | S4 | 3/3 · 33 · 0.24 | 3/3 · 33 · 0.20 | 3/3 · 33 · 0.21 |
+| gemini-comma | S5 | 3/3 · 5 · 0.26 | 3/3 · 5 · 0.23 | 3/3 · 5 · 0.19 |
+
+On every wire every turn answered on all three versions, and 1.8.1.9 is the
+fastest on steady turns. On Anthropic Messages a cut answer is now continued on
+another key (S5: 4 requests instead of 6). S4 sends more refused probes on the
+Messages and Responses wires because the carousel now runs there (1.8.1.8 left
+those wires to Hermes' own retry loop); they are 429s inside the 8 s window.
+
+The status line — `⏳ waiting on <model> — KAME n/m keys healthy`, the
+countdown while every key rests, the "KAME: … resting" notices — was captured
+from the agent's thinking/status callbacks on every wire, with 1.8.1.8's wording
+and throttle.
+
+## Real keys, real providers
+
+The author's own keys (Gemini x14 in one comma-joined `GOOGLE_API_KEY`, NVIDIA
+x2), copied into a throwaway home and deleted after each run, 3 turns each,
+1.8.1.8 and 1.8.1.9 on the same Hermes. Every turn answered on both. Gemini
+returned real 503s ("model overloaded", some after ~80 s) and KAME took the
+next key. NVIDIA `moonshotai/kimi-k3` at a 32-token budget answered empty most
+of the time (direct probe: 5 of 6, `finish_reason=length` after reasoning);
+both versions apply the same rule (empty answer, next key) and show the same
+long turns. On start, the comma-joined variables became 14 and 2 pool rows,
+aliases (`google`, `nim`, …) untouched.
 
 ## Public regression
 
-The public checkout, run the way CI runs it (a clean Python 3.11 with only pytest installed, no Hermes, no third-party package): **2,722 passed, 368 skipped, 4 expected failures, 0 failed** (434 s). The skips are the 361 retired 1.8.1.8 tests listed below, plus tests that need Hermes or a POSIX platform. The four expected failures are the documented classifier tradeoffs and the unverified Codex OAuth refresh-error mapping carried from 1.8.1.8. Run `python -m pytest tests -q` after installing pytest.
+The public checkout, run the way CI runs it (a clean Python 3.11 with only pytest installed, no Hermes, no third-party package): **2,764 passed, 330 skipped, 4 expected failures** (398 s), and one timing-sensitive test, `test_continuity_gate.py::TestFullGateEndToEnd::test_run_gate_returns_the_same_scenarios_in_process`, whose negative control needs three processes to collide inside a short window; under the full run's load they did not, and the same test passes run alone (101 s). The skips are the 322 still-retired 1.8.1.8 tests listed below, plus tests that need Hermes or a POSIX platform. The four expected failures are the documented classifier tradeoffs and the unverified Codex OAuth refresh-error mapping carried from 1.8.1.8. Run `python -m pytest tests -q` after installing pytest.
 
-The development workspace ran **2,772 tests, all passing**, with Hermes 0.21.4
-on the path, and 2,746 without it. The 1.8.1.8 suite runs against 1.8.1.9
-unchanged: `tools/legacy_dispatch.py` answers the old dispatch import with the
-new transport. 361 1.8.1.8 tests are retired, each listed in
+The development workspace ran **2,821 tests, 0 failed**, with Hermes 0.21.4 on
+the path, both with and without the two upstream seams. The 1.8.1.8 suite runs
+against 1.8.1.9 unchanged: `tools/legacy_dispatch.py` answers the old dispatch
+import with the new transport. 322 1.8.1.8 tests stay retired, each listed in
 `tests/legacy_1818_retired_ids.txt` with its reason and the test that now holds
-the same promise in `tests/legacy_1818_retired.py`. Their subjects are gone: the
-wrapped host functions, the pool binding, the in-chat spinner, removed settings,
-or scans of a source file that moved (re-run on `transport.py` in
-`tests/test_source_invariants_1819.py`). New: `test_transport_1819.py` (wire-level
-stream behaviour), `test_facade_1819.py` (real HTTP through Hermes' own client
-classes), `test_source_invariants_1819.py`.
+the same promise in `tests/legacy_1818_retired.py`; 39 that the first 1.8.1.9
+build retired (spinner line, wait notices, settings) run again. The retired
+ones test what no longer exists: the wrapped host functions, the pool binding,
+the removed Gemini repair, or scans of a source file that moved (re-run on
+`transport.py` in `tests/test_source_invariants_1819.py`). New:
+`test_transport_1819.py` (wire-level stream behaviour and the status line),
+`test_facade_1819.py` (real HTTP through Hermes' own client classes, every
+wire), `test_envsync.py` (multi-key variables against Hermes' real pool),
+`test_source_invariants_1819.py`.
 
 Hermes runs on Python 3.11. Every module of both packages compiles under
 Hermes' own 3.11 interpreter, and the three 1.8.1.9 test files (54 tests) pass
@@ -118,6 +187,10 @@ each of its requests carried ~0.4 s of extra overhead.
 
 ## Hermes' own suites with KAME live (`tools/host_suite_1819.py`)
 
+Run on the first 1.8.1.9 build (chat-completions clients); the Messages and
+Responses clients added since are covered by `test_facade_1819.py` and the
+every-wire matrix above.
+
 25 Hermes suites (credential pool, provider-client seam, auxiliary client,
 streaming, Gemini adapter, error classifier, provider profiles), run clean and
 again with KAME's client handed out for every bundled chat-completions profile
@@ -144,33 +217,38 @@ and the `live_*.py` probes measure 1.8.1.8's bindings, which 1.8.1.9 no longer
 has; they stay in `tools/` as history and are not part of this release's
 evidence. `host_suite_1819.py` replaces `host_pool_suite.py`.
 
-## Known differences from 1.8.1.8
+## What depends on the Hermes version
 
-- **In-chat status line.** Drawn above the Desktop composer (`composer.top`),
-  not in Hermes' spinner. CLI, TUI and gateway clients have no plugin channel
-  for it; the chip, `/kame` and `/kame-quota` carry the same state.
-- **Where KAME steps aside.** Anthropic-Messages and Responses-API endpoints,
-  `api.openai.com`, `opencode-*`, `actual`, and any provider configured with a
-  non-chat `api_mode` keep Hermes' own client: Hermes uses a profile's client
-  without wrapping it for another wire. There KAME classifies and sizes every
-  refusal through the hook and Hermes' pool rotates; the in-call carousel
-  (least-loaded key first, waiting, continuation) does not run on those wires.
-- **Comma-joined keys.** KAME's client splits `GOOGLE_API_KEY=k1,k2,…` itself.
-  Hermes' own pool still sees one entry until `/kame-keys split` is run once;
-  that matters only on the wires above.
+- **Anthropic Messages** goes through KAME's carousel on a Hermes that asks
+  `create_messages_client` (#133461). An older Hermes builds its own Messages
+  client; KAME still classifies and sizes every refusal there.
+- **Status line on the spinner** (CLI, TUI, Desktop, messaging gateway) needs
+  `notify_turn_status` (#133474). Without it the Desktop panel draws the same
+  line above the composer (`composer.top`), and the chip, `/kame` and
+  `/kame-quota` carry the same state everywhere.
+- **Not carried over, because Hermes now does it itself** (since v2026.9.21,
+  the oldest supported): 1.8.1.8's repair of merged parallel Gemini tool calls
+  (Hermes keeps them apart; 1.8.1.8's own self-check stands down), and its
+  probe of the Settings key field (the Desktop saves a pasted key without
+  probing it).
 
 ## Disclosures
 
 - No core function, method, module attribute or private table is replaced,
   wrapped or rebound. `hermes-kame-provider` registers copies of Hermes'
-  bundled API-key chat-completions profiles, unchanged except for
-  `create_client`, through `register_provider` — the documented per-home
+  bundled API-key profiles, unchanged except for `create_client` and
+  `create_messages_client`, through `register_provider` — the documented per-home
   override.
 - `/kame-keys add|import|split` write keys to Hermes' `auth.json` through the
   pool's public API, after saving a plaintext backup `auth.json.kame-<stamp>.bak`
   beside it (last 5 kept). `split` also records a suppressed source with
-  Hermes' own `suppress_credential_source`. `.env` is never rewritten by
-  `split`.
+  Hermes' own `suppress_credential_source`.
+- On every start, a provider key variable that holds several keys
+  (`GOOGLE_API_KEY=k1,k2,…`) is kept as one `auth.json` pool row per key, the
+  same way `split` does it (`source: manual:kame-env:<VAR>`, backup first, the
+  comma source suppressed), and follows the variable as it changes; only rows
+  KAME made are ever removed. `resolver_disabled` turns this off. `.env` is
+  never rewritten.
 - Local, key-redacted logs (`refusals.jsonl`, `calls.jsonl`) and a status file
   per profile; each log can be switched off. No telemetry, no network call of
   KAME's own, no third-party package.

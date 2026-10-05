@@ -30,7 +30,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import settings
+from . import settings, wires
 from .core import multikey
 from .core.carousel import Carousel
 from .transport import Call, KameTransport, attempt_read_timeout
@@ -182,12 +182,21 @@ class _KeySource:
 class _FacadeCall(Call):
     """One request: the transport's view of the client making it."""
 
-    def __init__(self, client: "_KameMixin", kwargs: Dict[str, Any]) -> None:
+    def __init__(self, client: "_KameMixin", kwargs: Dict[str, Any], wire: Any = wires.CHAT) -> None:
         self._client = client
         self.kwargs = dict(kwargs)
         self.kwargs.pop("stream", None)
         self.provider = client._kame_provider
         self.identity = Carousel.identity(self.provider, str(self.kwargs.get("model") or ""))
+        self.wire = wire
+        self.response: Any = None
+
+    def attach_response(self, response: Any) -> None:
+        self.response = response
+
+    def status_owner(self) -> str:
+        # One client per agent, so one spinner throttle per conversation.
+        return f"client:{id(self._client):x}"
 
     def keys(self) -> List[str]:
         return self._client._kame_keys.keys()
@@ -222,6 +231,12 @@ class _KameMixin:
             return TRANSPORT.stream(call)
         return TRANSPORT.complete(call)
 
+    def _kame_responses_create(self, **kwargs: Any) -> Any:
+        call = _FacadeCall(self, kwargs, wires.RESPONSES)
+        if kwargs.get("stream"):
+            return _EventStream(TRANSPORT.stream(call), call)
+        return TRANSPORT.complete(call)
+
     def _kame_inner(self, key: str, attempt: int) -> Any:
         key = key or self._kame_keys.api_key
         with self._kame_lock:
@@ -245,18 +260,52 @@ class _KameMixin:
 
 
 class _WithTimeout:
-    """An inner client whose next request carries a per-attempt timeout."""
+    """An inner client whose next request carries a per-attempt timeout, on whichever wire it speaks."""
 
     def __init__(self, inner: Any, timeout: float) -> None:
         self._inner = inner
         self._timeout = timeout
         from types import SimpleNamespace
 
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._timed(
+            lambda: inner.chat.completions.create)))
+        self.responses = SimpleNamespace(create=self._timed(lambda: inner.responses.create))
+        self.messages = SimpleNamespace(create=self._timed(lambda: inner.messages.create),
+                                        stream=self._timed(lambda: inner.messages.stream))
 
-    def _create(self, **kwargs: Any) -> Any:
-        kwargs.setdefault("timeout", self._timeout)
-        return self._inner.chat.completions.create(**kwargs)
+    def _timed(self, target: Any) -> Any:
+        def call(**kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", self._timeout)
+            return target()(**kwargs)
+
+        return call
+
+
+class _EventStream:
+    """What ``responses.create(stream=True)`` returns: an iterable of the wire's events.
+
+    Hermes iterates it, closes it, and reads the attempt's HTTP response from
+    it for its interrupt and diagnostics paths; everything else is the events.
+    """
+
+    def __init__(self, events: Any, call: "_FacadeCall") -> None:
+        self._events = events
+        self._call = call
+
+    def __iter__(self) -> Any:
+        return iter(self._events)
+
+    def __next__(self) -> Any:
+        return next(self._events)
+
+    @property
+    def response(self) -> Any:
+        return self._call.response
+
+    def close(self) -> None:
+        close = getattr(self._events, "close", None)
+        if callable(close):
+            close()
 
 
 #: How long a reading of Hermes' configuration (TLS settings, declared wire)
@@ -349,6 +398,8 @@ def _keep_error_body(response: Any) -> None:
 
 
 def _with_error_body_hook(http: Any) -> Any:
+    if settings.is_on(settings.QUOTA_ID_DISABLED):
+        return http
     try:
         hooks = http.event_hooks
         response_hooks = list(hooks.get("response", []))
@@ -406,7 +457,7 @@ def _openai_client_class() -> Any:
     class KameOpenAIClient(_KameMixin, OpenAI):
         """An ``openai.OpenAI`` whose chat completions go through KAME's carousel."""
 
-        def __init__(self, provider: str, client_kwargs: Dict[str, Any]) -> None:
+        def __init__(self, provider: str, client_kwargs: Dict[str, Any], responses_wire: bool = False) -> None:
             kwargs = dict(client_kwargs)
             kwargs.setdefault("max_retries", 0)
             first, _rejected = multikey.split_value(str(kwargs.get("api_key") or ""))
@@ -429,10 +480,26 @@ def _openai_client_class() -> Any:
             from types import SimpleNamespace
 
             self._kame_chat = SimpleNamespace(completions=SimpleNamespace(create=self._kame_create))
+            self._kame_responses = SimpleNamespace(create=self._kame_responses_create)
+            if responses_wire:
+                # Declared Responses-only: Hermes' auxiliary path uses a profile's client
+                # as-is and calls ``chat.completions`` on it, where it would have wrapped its
+                # own client in ``CodexAuxiliaryClient``. Hermes' own adapter is put on that
+                # attribute instead, over this client's carousel ``responses``.
+                try:
+                    from agent.auxiliary_client import _ChatShim, _CodexCompletionsAdapter
+
+                    self._kame_chat = _ChatShim(_CodexCompletionsAdapter(self, ""))
+                except Exception:
+                    logger.debug("kame: Hermes' Responses chat adapter unavailable", exc_info=True)
 
         @property
         def chat(self) -> Any:  # type: ignore[override]
             return self._kame_chat
+
+        @property
+        def responses(self) -> Any:  # type: ignore[override]
+            return self._kame_responses
 
         def _kame_build(self, key: str) -> Any:
             return OpenAI(**dict(self._kame_openai_kwargs, api_key=key))
@@ -446,14 +513,9 @@ def _openai_client_class() -> Any:
 
 _CLASSES: Dict[str, Any] = {}
 
-#: Wires KAME's client does not speak. A profile's ``create_client`` answer is
-#: used as-is — Hermes' auxiliary path skips its own wire adapters for it
-#: (``auxiliary_client._wrap_transport``) — so a chat-completions client handed
-#: out where Hermes would have wrapped one for the Responses or Messages API
-#: would break that call. Wherever such a wire is possible, KAME answers
-#: ``None`` and Hermes builds its own client; the refusal hook still sizes
-#: every refusal on it.
 _CHAT_WIRE = "chat_completions"
+_RESPONSES_WIRE = "codex_responses"
+_MESSAGES_WIRE = "anthropic_messages"
 
 
 def _with_hermes_headers(provider: str, client_kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -481,29 +543,35 @@ def _with_hermes_headers(provider: str, client_kwargs: Dict[str, Any]) -> Dict[s
     return dict(client_kwargs, default_headers=dict(headers))
 
 
-def _other_wire(provider: str, base_url: str) -> str:
-    """Why this provider/endpoint may need a wire other than chat completions, or ``""``."""
-    return _cached("wire", provider, base_url, lambda: _read_other_wire(provider, base_url))
+def _wire(provider: str, base_url: str, declared: str = "") -> str:
+    """Which wire Hermes will speak to this provider/endpoint: chat, responses or messages."""
+    return _cached("wire", provider, f"{base_url}|{declared}", lambda: _read_wire(provider, base_url, declared))
 
 
-def _read_other_wire(provider: str, base_url: str) -> str:
+def _read_wire(provider: str, base_url: str, declared: str = "") -> str:
+    """The wire, from the same facts Hermes picks it from.
+
+    A Messages endpoint (by URL, as Hermes' auxiliary path detects it) or a
+    configured ``api_mode`` wins; then the profile's own declared mode.
+    """
     try:
         from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
 
         if _endpoint_speaks_anthropic_messages(base_url):
-            return "the endpoint speaks Anthropic Messages"
+            return _MESSAGES_WIRE
     except Exception:
         lowered = base_url.lower().rstrip("/")
         if lowered.endswith(("/anthropic", "/anthropic/v1")) or "api.anthropic.com" in lowered:
-            return "the endpoint speaks Anthropic Messages"
-    try:
-        from urllib.parse import urlparse
+            return _MESSAGES_WIRE
+    configured = _configured_mode(provider, base_url)
+    if configured in (_CHAT_WIRE, _RESPONSES_WIRE, _MESSAGES_WIRE):
+        return configured
+    mode = str(declared or "").strip().lower()
+    return mode if mode in (_RESPONSES_WIRE, _MESSAGES_WIRE) else _CHAT_WIRE
 
-        if (urlparse(base_url).hostname or "").lower() == "api.openai.com":
-            # Hermes picks the Responses API there by model name.
-            return "api.openai.com chooses its wire per model"
-    except Exception:
-        pass
+
+def _configured_mode(provider: str, base_url: str) -> str:
+    """An ``api_mode`` the owner configured for this provider or endpoint, or ``""``."""
     try:
         from hermes_cli.config import load_config_readonly
 
@@ -515,21 +583,20 @@ def _read_other_wire(provider: str, base_url: str) -> str:
     def _declared(section: Any) -> str:
         if not isinstance(section, dict):
             return ""
-        mode = str(section.get("api_mode") or "").strip().lower()
-        return mode if mode and mode != _CHAT_WIRE else ""
+        return str(section.get("api_mode") or "").strip().lower()
 
     model = config.get("model")
     if isinstance(model, dict) and str(model.get("provider") or "").strip().lower() == name:
         mode = _declared(model)
         if mode:
-            return f"model.api_mode is {mode}"
+            return mode
     aux = config.get("auxiliary")
     if isinstance(aux, dict):
-        for task, section in aux.items():
+        for section in aux.values():
             if isinstance(section, dict) and str(section.get("provider") or "").strip().lower() == name:
                 mode = _declared(section)
                 if mode:
-                    return f"auxiliary.{task}.api_mode is {mode}"
+                    return mode
     customs = config.get("custom_providers")
     if isinstance(customs, list):
         for entry in customs:
@@ -539,25 +606,58 @@ def _read_other_wire(provider: str, base_url: str) -> str:
                     name and str(entry.get("name") or "").strip().lower() == name):
                 mode = _declared(entry)
                 if mode:
-                    return f"custom provider api_mode is {mode}"
+                    return mode
     return ""
 
 
-def make_client(provider: str, client_kwargs: Dict[str, Any]) -> Optional[Any]:
+_SYNCED_LISTS: set = set()
+
+
+def _follow_the_list(api_key: Any) -> None:
+    """A list Hermes hands over that the pool has not seen yet: sync it, off the turn.
+
+    The variable was edited while Hermes ran (the Settings field writes .env).
+    ``envsync`` normally runs at start; this catches the edit without one. Once
+    per distinct value, on a daemon thread, so building a client never waits on
+    auth.json.
+    """
+    if not isinstance(api_key, str) or len(multikey.split_value(api_key)[0]) < 2:
+        return
+    import hashlib
+
+    digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    if digest in _SYNCED_LISTS:
+        return
+    _SYNCED_LISTS.add(digest)
+
+    def run() -> None:
+        try:
+            from . import envsync
+
+            envsync.sync()
+        except Exception:
+            logger.debug("kame: could not sync a new key list", exc_info=True)
+
+    threading.Thread(target=run, name="kame-envsync", daemon=True).start()
+
+
+def make_client(provider: str, client_kwargs: Dict[str, Any], api_mode: str = "") -> Optional[Any]:
     """KAME's client for ``provider``, or ``None`` to let Hermes build its own.
 
-    ``None`` whenever KAME is switched off, there is no key to rotate, or the
-    shape cannot be built — every one of those leaves Hermes exactly where it
-    would have been without this plugin.
+    ``None`` whenever KAME is switched off, there is no key to rotate, the
+    shape cannot be built, or the endpoint speaks Anthropic Messages (that
+    client comes through :func:`make_messages_client`) — every one of those
+    leaves Hermes exactly where it would have been without this plugin.
     """
     if not enabled():
         return None
     if not str(client_kwargs.get("api_key") or "").strip():
         return None
+    _follow_the_list(client_kwargs.get("api_key"))
     base_url = str(client_kwargs.get("base_url") or "")
-    why = _other_wire(provider, base_url)
-    if why:
-        logger.debug("kame: %s keeps Hermes' own client — %s", provider, why)
+    wire = _wire(provider, base_url, api_mode)
+    if wire == _MESSAGES_WIRE:
+        logger.debug("kame: %s speaks Anthropic Messages - its client comes from the Messages seam", provider)
         return None
     client_kwargs = _with_hermes_headers(provider, client_kwargs)
     try:
@@ -571,9 +671,204 @@ def make_client(provider: str, client_kwargs: Dict[str, Any]) -> Optional[Any]:
         cls = _CLASSES.get(shape)
         if cls is None:
             cls = _CLASSES[shape] = _gemini_client_class() if native_gemini else _openai_client_class()
-        return cls(provider, client_kwargs)
+        if native_gemini:
+            return cls(provider, client_kwargs)
+        return cls(provider, client_kwargs, responses_wire=(wire == _RESPONSES_WIRE))
     except Exception:
         logger.warning("kame: could not build a %s client; Hermes builds its own", provider, exc_info=True)
+        return None
+
+
+# --- the Anthropic Messages wire ---------------------------------------------
+
+
+class _MessagesProxy:
+    """``client.messages``: ``create`` and ``stream`` through the carousel, the rest Hermes' own."""
+
+    def __init__(self, owner: "KameMessagesClient") -> None:
+        self._owner = owner
+
+    def create(self, **kwargs: Any) -> Any:
+        call = _FacadeCall(self._owner, kwargs, wires.MESSAGES)
+        if kwargs.get("stream"):
+            return _MessageStream(call)
+        return TRANSPORT.complete(call)
+
+    def stream(self, **kwargs: Any) -> "_MessageStreamManager":
+        return _MessageStreamManager(_FacadeCall(self._owner, kwargs, wires.MESSAGES))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._owner._kame_primary.messages, name)
+
+
+class _MessageStreamManager:
+    """What ``messages.stream()`` returns: a context manager around one carousel call."""
+
+    def __init__(self, call: "_FacadeCall") -> None:
+        self._call = call
+        self._stream: Optional[_MessageStream] = None
+
+    def __enter__(self) -> "_MessageStream":
+        self._stream = _MessageStream(self._call)
+        return self._stream
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._stream is not None:
+            self._stream.close()
+
+
+class _MessageStream:
+    """The carousel's Messages events, with the SDK ``MessageStream`` surface Hermes reads.
+
+    One message however many keys it took: ``get_final_message`` is folded
+    from the events Hermes was actually handed (``wires._MessagesEmitter``),
+    so a continued answer arrives whole.
+    """
+
+    def __init__(self, call: "_FacadeCall") -> None:
+        self._call = call
+        self._emitter = wires._MessagesEmitter()
+        self._events = self._emitter.run(TRANSPORT._views(call))
+        self._done = False
+
+    def __iter__(self) -> Any:
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            return next(self._events)
+        except StopIteration:
+            self._done = True
+            raise
+
+    @property
+    def response(self) -> Any:
+        return self._call.response
+
+    def until_done(self) -> None:
+        for _ in self:
+            pass
+
+    def get_final_message(self) -> Any:
+        if not self._done:
+            self.until_done()
+        snapshot = self._emitter.final_message()
+        if snapshot is None:
+            raise RuntimeError("kame: the Messages stream ended without a message")
+        return snapshot
+
+    def get_final_text(self) -> str:
+        message = self.get_final_message()
+        return "".join(str(getattr(block, "text", "") or "") for block in getattr(message, "content", []) or []
+                       if getattr(block, "type", "") == "text")
+
+    def close(self) -> None:
+        close = getattr(self._events, "close", None)
+        if callable(close):
+            close()
+
+
+class KameMessagesClient(_KameMixin):
+    """An Anthropic Messages client whose requests go through KAME's carousel.
+
+    Every key's client is built by Hermes' own ``build_anthropic_client`` —
+    auth style, beta headers, endpoint normalisation and attribution exactly
+    as Hermes would have done it. Attributes the carousel does not own are the
+    first key's client's.
+    """
+
+    def __init__(self, provider: str, client_kwargs: Dict[str, Any]) -> None:
+        from agent.anthropic_adapter import build_anthropic_client
+
+        self._kame_builder = build_anthropic_client
+        self._kame_messages_kwargs = {
+            "timeout": client_kwargs.get("timeout"),
+            "drop_context_1m_beta": bool(client_kwargs.get("drop_context_1m_beta") or False),
+        }
+        self._kame_base_url = client_kwargs.get("base_url")
+        self._kame_options: Dict[str, Any] = {}
+        first, _rejected = multikey.split_value(str(client_kwargs.get("api_key") or ""))
+        self._kame_first_key = first[0] if first else str(client_kwargs.get("api_key") or "")
+        self._kame_primary = self._kame_build(self._kame_first_key)
+        self._kame_setup(provider, client_kwargs)
+        self.base_url = getattr(self._kame_primary, "base_url", self._kame_base_url)
+        self.messages = _MessagesProxy(self)
+
+    def _kame_build(self, key: str) -> Any:
+        # A fresh SDK client costs ~0.4 s (its own HTTP pool and TLS context), paid on the
+        # first request of every key. A key with the first key's credential shape gets the
+        # first client's copy instead: same headers, same connection pool, its own key.
+        primary = self.__dict__.get("_kame_primary")
+        if primary is not None and self._kame_same_auth(key):
+            field = "auth_token" if getattr(primary, "auth_token", None) else "api_key"
+            try:
+                return primary.with_options(**{field: key})
+            except Exception:  # pragma: no cover - fall back to Hermes' own builder
+                logger.debug("kame: could not derive a Messages client", exc_info=True)
+        client = self._kame_builder(key, self._kame_base_url, **self._kame_messages_kwargs)
+        if self._kame_options:
+            client = client.with_options(**self._kame_options)
+        return client
+
+    def _kame_same_auth(self, key: str) -> bool:
+        """Would Hermes authenticate ``key`` the way it authenticated the first key?
+
+        Only the key's own shape (OAuth token or API key) can make two keys of one
+        endpoint differ; every other part of Hermes' choice is the endpoint's.
+        """
+        try:
+            from agent.anthropic_adapter import _is_oauth_token
+        except Exception:
+            return False
+        try:
+            return bool(_is_oauth_token(key)) == bool(_is_oauth_token(self._kame_first_key))
+        except Exception:
+            return False
+
+    def with_options(self, **options: Any) -> "KameMessagesClient":
+        clone = object.__new__(KameMessagesClient)
+        clone.__dict__.update(self.__dict__)
+        clone._kame_options = dict(self._kame_options, **options)
+        clone._kame_primary = self._kame_primary.with_options(**options)
+        clone._kame_inners = {}
+        clone._kame_lock = threading.Lock()
+        clone._kame_cancelled = threading.Event()
+        clone.messages = _MessagesProxy(clone)
+        return clone
+
+    copy = with_options
+
+    def close(self) -> None:
+        self._kame_close()
+        try:
+            self._kame_primary.close()
+        except Exception:  # pragma: no cover - closing a client
+            logger.debug("kame: could not close the primary Messages client", exc_info=True)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_kame") or name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.__dict__["_kame_primary"], name)
+
+
+def make_messages_client(provider: str, client_kwargs: Dict[str, Any]) -> Optional[Any]:
+    """KAME's Anthropic Messages client, or ``None`` to let Hermes build its own.
+
+    Asked through ``ProviderProfile.create_messages_client``. A callable
+    ``api_key`` (an Entra / OAuth bearer provider that mints per request) is
+    Hermes' own business and is left to it, as is anything that fails to build.
+    """
+    if not enabled():
+        return None
+    api_key = client_kwargs.get("api_key")
+    if not isinstance(api_key, str) or not api_key.strip():
+        return None
+    _follow_the_list(api_key)
+    try:
+        return KameMessagesClient(provider, client_kwargs)
+    except Exception:
+        logger.warning("kame: could not build a Messages client for %s; Hermes builds its own", provider,
+                       exc_info=True)
         return None
 
 

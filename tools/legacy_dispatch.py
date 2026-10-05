@@ -42,6 +42,31 @@ def build(package: str) -> types.ModuleType:
     """The ``<package>.dispatch_binding`` module for a loaded plugin package."""
     transport = importlib.import_module(f"{package}.transport")
     multikey = importlib.import_module(f"{package}.core.multikey")
+
+    # 1.8.1.8 drew its spinner line through ``agent._emit_wait_notice`` and its
+    # wait notices through ``agent._emit_status``. 1.8.1.9 draws both through
+    # Hermes' ``notify_turn_status``, which the host routes to those same two
+    # methods of the agent whose call is in flight. Here the old tests' agent
+    # is that agent: the router below plays the host's part.
+    from contextvars import ContextVar
+
+    _AGENT: "ContextVar[Any]" = ContextVar(f"{package}_legacy_agent", default=None)
+    try:
+        from agent.status_output import notify_turn_status as _host_notify
+    except Exception:
+        _host_notify = None
+
+    def _route(message: str, *, kind: str = "lifecycle") -> bool:
+        agent = _AGENT.get()
+        if agent is None:
+            return bool(_host_notify(message, kind=kind)) if _host_notify else False
+        method = getattr(agent, "_emit_wait_notice" if kind == "activity" else "_emit_status", None)
+        if not callable(method):
+            return False
+        method(message)
+        return True
+
+    transport._NOTIFY = _route
     carousel = importlib.import_module(f"{package}.core.carousel")
     settings = importlib.import_module(f"{package}.settings")
 
@@ -253,6 +278,9 @@ def build(package: str) -> types.ModuleType:
         def cancelled(self) -> bool:
             return _interrupted(self.agent)
 
+        def status_owner(self) -> str:
+            return _Spinner.key_for(self.agent)
+
     def _response(content, tool_calls, finish, rid):
         message = NS(content=content, tool_calls=tool_calls, role="assistant")
         return NS(id=rid, model="m", choices=[NS(index=0, message=message, finish_reason=finish)], usage=None)
@@ -301,6 +329,13 @@ def build(package: str) -> types.ModuleType:
             return True
 
         def run(self, original, agent, api_kwargs, args: Sequence[Any] = (), kwargs: Optional[Dict[str, Any]] = None) -> Any:
+            token = _AGENT.set(agent)
+            try:
+                return self._run(original, agent, api_kwargs, args, kwargs)
+            finally:
+                _AGENT.reset(token)
+
+        def _run(self, original, agent, api_kwargs, args: Sequence[Any] = (), kwargs: Optional[Dict[str, Any]] = None) -> Any:
             call = _AgentCall(original, agent, api_kwargs, args, kwargs)
             funnel = getattr(type(agent), "_fire_stream_delta", None)
             callback = getattr(agent, "stream_delta_callback", None)
@@ -370,37 +405,48 @@ def build(package: str) -> types.ModuleType:
         binding.install(module)
         return binding
 
-    class _Spinner:
-        """1.8.1.8's in-chat status line. Gone: there is no agent at the client.
+    class _Spinner(transport._Spinner):
+        """1.8.1.8's spinner API over 1.8.1.9's ``transport._Spinner``.
 
-        Kept as an inert name so fixtures that reset it between tests still
-        run the rest of their test; every assertion about what it *showed*
-        still fails, which is the honest result (the line moved to the
-        Desktop composer slot — ``desktop/plugin.js`` ``KameComposerLine``).
+        Same throttle, same state; 1.8.1.8 keyed it by the agent's session and
+        drew through the agent, which is what ``key_for`` and the router above
+        supply.
         """
-
-        _DEFAULT_INTERVAL_S = 10.0
-        _REFRESH_S = 30.0
-        _MAX_TRACKED = 64
-        _state: Dict[str, Any] = {}
-        import threading as _threading
-        _lock = _threading.Lock()
-
-        @classmethod
-        def reset(cls, session_id: Any = None) -> None:
-            cls._state.clear()
-
-        @classmethod
-        def update(cls, agent: Any, text: str, interval: Any = None) -> None:
-            return None
 
         @staticmethod
         def key_for(agent: Any) -> str:
-            return str(getattr(agent, "session_id", "") or "")
+            session = getattr(agent, "session_id", None)
+            if session:
+                return str(session)
+            return f"anon:{id(agent):x}"
 
-        @staticmethod
-        def cadence_for(remaining: Any) -> float:
-            return 10.0
+        @classmethod
+        def update(cls, agent: Any, text: str, *, interval: Any = None) -> None:
+            token = _AGENT.set(agent)
+            try:
+                transport._Spinner.update(cls.key_for(agent), text, interval=interval)
+            finally:
+                _AGENT.reset(token)
+
+        @classmethod
+        def reset(cls, session_id: Any = None) -> None:
+            transport._Spinner.reset(session_id)
+
+    class _Vigil(transport._Vigil):
+        """1.8.1.8's ``_Vigil(agent, label)``: the notice reaches that agent's status rail."""
+
+        __slots__ = ("agent",)
+
+        def __init__(self, agent: Any, label: str) -> None:
+            super().__init__(label)
+            self.agent = agent
+
+        def _emit(self, message: str) -> None:
+            token = _AGENT.set(self.agent)
+            try:
+                super()._emit(message)
+            finally:
+                _AGENT.reset(token)
 
     class _Forwarding(types.ModuleType):
         """Reads and ``monkeypatch.setattr`` both land on ``transport`` itself."""
@@ -431,6 +477,7 @@ def build(package: str) -> types.ModuleType:
         "_interrupted": _interrupted,
         "_AgentCall": _AgentCall,
         "_Spinner": _Spinner,
+        "_Vigil": _Vigil,
         "__file__": transport.__file__,
         "__package__": package,
     }.items():
