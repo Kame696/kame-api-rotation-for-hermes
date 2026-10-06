@@ -1,0 +1,11 @@
+name: hermes-kame-bridge
+version: "1.8.2.0"
+manifest_version: 1
+api_version: 1
+author: Kame696
+license: MIT
+homepage: https://github.com/Kame696/kame-api-rotation-for-hermes
+tags:
+  - api-key-rotation
+  - status
+description: "Optional companion to hermes-kame-api-rotation, NOT for the plugin catalog. It adds two seams that are proposed to Hermes and not merged yet, and only on a Hermes that lacks them. notify_turn_status (NousResearch/hermes-agent#133474) puts KAME's live rotation line on the spinner. ProviderProfile.create_messages_client (#133461) lets KAME rotate keys on the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding). Each seam whose real version already ships in Hermes is left alone. Remove the bridge once your Hermes includes both."

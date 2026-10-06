@@ -193,7 +193,9 @@ def record(
         }
         if record_type:
             row["record_type"] = str(record_type)[:24]
-        with open(path, "a", encoding="utf-8") as handle:
+        from .recorder import private_append
+
+        with private_append(path) as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         # Never twice: an instrument that logs its own failure on every call

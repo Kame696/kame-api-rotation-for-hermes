@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.8.1.9"
+version: "1.8.2.0"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -83,6 +83,10 @@ config_schema:
     type: int
     default: 64
     description: "Where the RESOURCE_EXHAUSTED ladder stops growing. The default, 64, runs 1, 2, 4, 8, 16, 32, 64 seconds and then holds at 64. max_hold_seconds still bounds it. Clamped to 1-3600. Same as KAME_UNSIZED_BACKOFF_MAX."
+  max_total_wait_seconds:
+    type: int
+    default: 0
+    description: "Zero, the default, means a call waits for as long as every key is resting - each key's own rest is already capped by max_hold_seconds and the call retries the moment one comes back, so a spent quota ends with an answer on the same model. For cron jobs or a gateway nobody watches, set a number: once one call has waited that long in total, KAME stops waiting and hands Hermes the provider's original refusal, so Hermes' own failure and fallback path runs. Clamped to 0-604800. Same as KAME_MAX_TOTAL_WAIT."
   stream_silence_timeout_seconds:
     type: int
     default: 0

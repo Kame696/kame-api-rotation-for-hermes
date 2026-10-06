@@ -222,7 +222,49 @@ def _safe_headers(headers: Any) -> Dict[str, str]:
     return kept
 
 
-def _safe_text(value: Any, limit: int = 20000) -> str:
+#: 1.8.2.0: provider bodies can echo the prompt, so each free-text field is
+#: capped near ``core.redact.DEFAULT_LIMIT``. What the corpus actually measures
+#: from a body — ``quotaId``, ``quotaMetric``, ``retryDelay``, ``reason`` — is
+#: pulled out first into ``fields`` (see :func:`_quota_fields`), so the cap
+#: costs no evidence.
+TEXT_LIMIT = 600
+
+_FIELD_RE = re.compile(
+    r'"(quotaId|quotaMetric|quotaDimensions|retryDelay|reason|domain|quotaValue)"\s*:\s*'
+    r'("(?:[^"\\]|\\.){0,200}"|\{[^{}]{0,400}\}|-?\d+(?:\.\d+)?)'
+)
+
+
+def _quota_fields(*texts: Any) -> Dict[str, List[Any]]:
+    """Every quota/retry field the provider named, from the full uncapped text."""
+    found: Dict[str, List[Any]] = {}
+    for text in texts:
+        if not text:
+            continue
+        for name, raw in _FIELD_RE.findall(str(text)):
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                value = raw
+            bucket = found.setdefault(name, [])
+            if value not in bucket and len(bucket) < 8:
+                bucket.append(value)
+    return found
+
+
+def private_append(path: Any) -> Any:
+    """Open a KAME jsonl for appending, owner-only (0600) — created that way and
+    tightened if an older release created it wider. On Windows the mode is
+    advisory; the file sits in the user's own profile directory."""
+    descriptor = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+    return os.fdopen(descriptor, "a", encoding="utf-8")
+
+
+def _safe_text(value: Any, limit: int = TEXT_LIMIT) -> str:
     if value is None:
         return ""
     if isinstance(value, (dict, list)):
@@ -244,7 +286,7 @@ def _response_payload(error: Any) -> str:
     try:
         from .core.classify import _response_text  # type: ignore[attr-defined]
 
-        return _safe_text(_response_text(error))
+        return _redact(str(_response_text(error) or ""))
     except Exception:
         return ""
 
@@ -307,6 +349,8 @@ def record(
             pass  # not created yet
 
         kind = error_type or (type(error).__name__ if error is not None else "")
+        body_full = _safe_text(error_body, limit=1_000_000)
+        response_full = _response_payload(error)
         row: Dict[str, Any] = {
             "at": round(time.time(), 3),
             "provider": _safe_text(provider, 256),
@@ -315,9 +359,12 @@ def record(
             "type": _safe_text(kind, 256),
             "code": _safe_text(error_code, 256),
             "message": _safe_text(error_message),
-            "body": _safe_text(error_body),
-            "response": _response_payload(error),
+            "body": body_full[:TEXT_LIMIT],
+            "response": response_full[:TEXT_LIMIT],
         }
+        fields = _quota_fields(body_full, response_full, error_message)
+        if fields:
+            row["fields"] = fields
 
         # Decision 0004 D1's consequence: keep the headers, allowlisted and
         # redacted, so the next corpus can actually measure a stated 5xx
@@ -329,7 +376,7 @@ def record(
         if headers_payload:
             row["headers"] = headers_payload
 
-        with open(path, "a", encoding="utf-8") as handle:
+        with private_append(path) as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("kame: refusal recorder failed; carrying on without it", exc_info=True)

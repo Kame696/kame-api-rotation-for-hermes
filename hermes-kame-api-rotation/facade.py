@@ -638,7 +638,12 @@ def _follow_the_list(api_key: Any) -> None:
         except Exception:
             logger.debug("kame: could not sync a new key list", exc_info=True)
 
-    threading.Thread(target=run, name="kame-envsync", daemon=True).start()
+    # The caller's context carries the profile's secret scope (Hermes reads keys
+    # through ``agent.secret_scope``); a bare thread would start without it.
+    import contextvars
+
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(run,), name="kame-envsync", daemon=True).start()
 
 
 def make_client(provider: str, client_kwargs: Dict[str, Any], api_mode: str = "") -> Optional[Any]:
@@ -780,6 +785,11 @@ class KameMessagesClient(_KameMixin):
     def __init__(self, provider: str, client_kwargs: Dict[str, Any]) -> None:
         from agent.anthropic_adapter import build_anthropic_client
 
+        # The optional hermes-kame-bridge wraps this function to ask profiles
+        # first (its stand-in for #133461). A per-key client must come from
+        # Hermes' own builder, never from the profile again.
+        if getattr(build_anthropic_client, "_kame_bridge", False):
+            build_anthropic_client = getattr(build_anthropic_client, "__wrapped__", build_anthropic_client)
         self._kame_builder = build_anthropic_client
         self._kame_messages_kwargs = {
             "timeout": client_kwargs.get("timeout"),
@@ -848,7 +858,12 @@ class KameMessagesClient(_KameMixin):
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_kame") or name.startswith("__"):
             raise AttributeError(name)
-        return getattr(self.__dict__["_kame_primary"], name)
+        primary = self.__dict__.get("_kame_primary")
+        if primary is None:
+            # Still being built: nothing to forward to, and getattr's contract
+            # is AttributeError (a KeyError here broke hasattr() callers).
+            raise AttributeError(name)
+        return getattr(primary, name)
 
 
 def make_messages_client(provider: str, client_kwargs: Dict[str, Any]) -> Optional[Any]:

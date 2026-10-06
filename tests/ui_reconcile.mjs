@@ -236,15 +236,25 @@ let served = null
 let poll = null
 
 globalThis.document = { visibilityState: 'visible' }
+// 1.8.2.0: the panel reaches its own backend through `ctx.rest` (the SDK's
+// door to `dashboard/plugin_api.py`), not the preload file bridge. The stub
+// answers the two routes that file declares.
+async function rest(path, opts = {}) {
+  if (path === '/state') {
+    return structuredClone(served ?? DOCUMENT)
+  }
+
+  if (path === '/control' && opts.method === 'POST') {
+    written = { body: JSON.stringify(opts.body), target: 'control' }
+
+    return { id: opts.body?.id, ok: true }
+  }
+
+  throw new Error(`HTTP 404 ${path}`)
+}
+
 globalThis.window = {
   clearInterval: id => timers.delete(id),
-  hermesDesktop: {
-    desktopPluginsRoot: async () => 'C:/fake/hermes/desktop-plugins',
-    readFileText: async () => ({ text: JSON.stringify(served ?? DOCUMENT) }),
-    writeTextFile: async (target, body) => {
-      written = { body, target }
-    }
-  },
   setInterval: fn => {
     // Kept rather than dropped: the reader installs itself here, and a
     // check that wants to see the second read has to be able to cause one.
@@ -339,16 +349,23 @@ async function check(name, run) {
 const plugin = await loadPlugin()
 
 const contributions = []
+const settingsPages = []
 plugin.default.register({
   onDispose: () => {},
-  registerMany: entries => contributions.push(...entries)
+  register: entry => contributions.push(entry),
+  registerMany: entries => contributions.push(...entries),
+  registerSettingsPage: entry => settingsPages.push(entry),
+  rest
 })
 
 const page = contributions.find(entry => entry.id === 'page')
 const chip = contributions.find(entry => entry.id === 'chip')
+// 1.8.2.0: the settings form lives under Settings ▸ Plugins.
+const settingsPage = settingsPages.find(entry => entry.id === 'settings')
 
 assert.ok(page, 'the plugin registers a page')
 assert.ok(chip, 'the plugin registers a status-bar chip')
+assert.ok(settingsPage, 'the plugin registers its Settings ▸ Plugins page')
 
 // The reader ticks once on start; give the awaits in `readSnapshot` a turn.
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -364,7 +381,12 @@ await check('the snapshot reached the page', () => {
 await check('every variadic child list is keyed, on every tab', () => {
   const seen = new Set()
   const offenders = []
-  const surfaces = [chip.render(), page.render()]
+  const surfaces = [chip.render(), page.render(), settingsPage.render()]
+
+  assert.ok(
+    JSON.stringify(render(settingsPage.render())).includes('KAME works with none of these'),
+    'the Settings ▸ Plugins page did not render the form — this check would then prove nothing about it'
+  )
 
   // The three tabs are three different trees, and the one that regressed in
   // 1.2.2 was the one holding the inputs — so all three are walked. Each is
@@ -376,16 +398,20 @@ await check('every variadic child list is keyed, on every tab', () => {
   const landmark = {
     Events: 'Reading this list',
     Overview: 'Pool health',
-    Settings: 'KAME works with none of these'
+    Settings: 'Open KAME settings'
   }
 
   for (const label of ['Settings', 'Events', 'Overview']) {
     openTab(page, label)
 
-    const tree = page.render()
+    // Rendered now, while this tab is the open one. Until 1.8.2.0 the element
+    // was kept and rendered after the loop, by which time every tab had been
+    // swapped for Overview — so the Settings and Events trees were never
+    // actually walked, and the keyless lists in the settings rows hid there.
+    const tree = render(page.render())
 
     assert.ok(
-      JSON.stringify(render(tree)).includes(landmark[label]),
+      JSON.stringify(tree).includes(landmark[label]),
       `the ${label} tab did not open — this check would then prove nothing about it`
     )
     surfaces.push(tree)
@@ -421,10 +447,8 @@ await check('every variadic child list is keyed, on every tab', () => {
   )
 })
 
-await check('the settings tab renders an editable number field', () => {
-  openTab(page, 'Settings')
-
-  const nodes = walk(render(page.render()))
+await check('the settings page renders an editable number field', () => {
+  const nodes = walk(render(settingsPage.render()))
   const inputs = nodes.filter(node => node.type === 'Input')
 
   assert.ok(inputs.length > 0, 'the number setting rendered an input')

@@ -1,4 +1,111 @@
-# 1.8.1.9 validation and limitations
+# 1.8.2.0 validation and limitations
+
+Three packages at 1.8.2.0. `hermes-kame-api-rotation` and `hermes-kame-provider`
+form the catalog entry. `hermes-kame-bridge` is optional and not part of it.
+
+Unless a section says otherwise, everything below ran offline, against a copy
+of Hermes `56f7986` (main of 2026-10-05, the version the author runs): local
+fake providers, throwaway `HERMES_HOME`s, no real key. The 1.8.1.9 sections
+further down are kept as they were.
+
+## Every wire: 1.8.1.8 vs 1.8.2.0, on today's Hermes
+
+Real Hermes turns, 15 keys. Scenarios:
+
+- **S0** healthy
+- **S1** per-minute 429 on keys 1-5
+- **S2** per-day 429 on model A only
+- **S3** 503 overload
+- **S4** every key 429 for 8 s
+- **S5** stream cut after 2 deltas on key 1
+
+Each cell reads: turns answered · requests sent · slowest steady turn (s).
+The bridge column was measured where the bridge changes something: the
+Anthropic wire, and the spinner check on two scenarios each for Gemini and the
+OpenAI-compatible (`custom`) wire.
+
+| wire | scen | 1.8.1.8 | 1.8.2.0 | 1.8.2.0 + bridge |
+|---|---|---|---|---|
+| gemini | S0 | 3/3 · 3 · 0.30 | 3/3 · 3 · 0.24 | — |
+| gemini | S1 | 4/4 · 9 · 0.39 | 4/4 · 9 · 0.23 | 4/4 · 9 · 0.21 |
+| gemini | S2 | 6/6 · 16 · 0.33 | 6/6 · 16 · 0.52 | — |
+| gemini | S3 | 3/3 · 4 · 1.36 | 3/3 · 4 · 0.24 | — |
+| gemini | S4 | 3/3 · 19 · 0.44 | 3/3 · 33 · 0.25 | 3/3 · 33 · 0.25 |
+| gemini | S5 | 3/3 · 5 · 0.22 | 3/3 · 5 · 0.24 | — |
+| custom | S0 | 3/3 · 3 · 0.84 | 3/3 · 3 · 0.22 | — |
+| custom | S1 | 4/4 · 9 · 0.88 | 4/4 · 9 · 0.38 | 4/4 · 9 · 0.23 |
+| custom | S2 | 6/6 · 16 · 0.57 | 6/6 · 16 · 0.20 | — |
+| custom | S3 | 3/3 · 4 · 0.52 | 3/3 · 4 · 0.18 | — |
+| custom | S4 | 3/3 · 33 · 0.70 | 3/3 · 33 · 0.23 | 3/3 · 33 · 0.21 |
+| custom | S5 | 3/3 · 6 · 0.83 | 3/3 · 4 · 0.21 | — |
+| anthropic | S0 | 3/3 · 3 · 2.03 | 3/3 · 3 · 0.16 | 3/3 · 3 · 0.22 |
+| anthropic | S1 | 4/4 · 9 · 1.99 | **3/4** · 9 · 22.13 | 4/4 · 9 · 0.31 |
+| anthropic | S2 | 6/6 · 16 · 1.51 | **3/6** · 18 · 0.62 | 6/6 · 16 · 0.88 |
+| anthropic | S3 | 3/3 · 4 · 1.59 | 3/3 · 5 · 0.16 | 3/3 · 4 · 0.23 |
+| anthropic | S4 | 3/3 · 11 · 1.75 | 3/3 · 6 · 1.57 | 3/3 · 32 · 0.20 |
+| anthropic | S5 | 3/3 · 6 · 1.66 | **0/1** · 36 · — | 3/3 · 4 · 0.23 |
+| responses | S0 | 3/3 · 3 · 0.83 | 3/3 · 3 · 0.20 | — |
+| responses | S1 | 4/4 · 8 · 1.09 | 4/4 · 9 · 0.20 | — |
+| responses | S2 | 6/6 · 15 · 0.88 | 6/6 · 16 · 0.23 | — |
+| responses | S3 | 3/3 · 3 · 0.94 | 3/3 · 4 · 0.22 | — |
+| responses | S4 | 3/3 · 33 · 0.78 | 3/3 · 33 · 0.23 | — |
+| responses | S5 | 3/3 · 3 · 0.76 | 3/3 · 4 · 0.21 | — |
+
+How to read it:
+
+- **Native Gemini, OpenAI chat completions and Responses.** Every turn
+  answered, as in 1.8.1.8, and steady turns are faster.
+- **Gemini S4, 19 vs 33 requests.** This difference is timing variance:
+  1.8.1.8's own reference run of S4 sent 33.
+- **The Anthropic Messages wire.** Without the bridge, Hermes `56f7986` has no
+  `create_messages_client`, so it builds its own client. The 1.8.2.0 column
+  then matches Hermes with no plugin, cell for cell. KAME still classifies
+  every refusal there, but cannot pick the key per call.
+- **The Anthropic wire with `create_messages_client` present.** Through the
+  bridge, or through Hermes with #133461 applied (S1 4/4, S2 6/6, S5 3/3), the
+  wire rotates again and is faster than 1.8.1.8.
+
+## The status line
+
+KAME's line (`⏳ waiting on … — KAME 15/15 keys healthy`) needs
+`notify_turn_status`. Measured on the spinner (`thinking`) rail:
+
+- **Hermes `56f7986` alone:** no line on the rail. The Desktop composer line
+  shows it instead.
+- **With the bridge:** the line is on the rail on every wire measured.
+  Example: Gemini S4, 12 KAME lines in the first turn.
+- **Hermes with #133474 applied, no bridge:** the same lines as with the
+  bridge.
+
+## Real keys (owner's NVIDIA pool, 2 keys, `z-ai/glm-5.3`)
+
+The run used 1.8.2.0 with the bridge, on the owner's own config, in a
+throwaway home:
+
+- 3 of 3 turns answered.
+- One key answered empty and the next key finished the turn.
+- The spinner showed `⏳ waiting on z-ai/glm-5.3 — KAME 2/2 keys healthy` and
+  `↻ … trying the next key`.
+- Turns took 72-236 s. That is the model's own latency on NVIDIA: one call
+  took 567 s in the owner's own session the same morning.
+- The key sync read the comma-joined `GOOGLE_API_KEY` (14 keys) and
+  `NVIDIA_API_KEY` (2 keys) through Hermes' new scoped secret store. In
+  1.8.1.9 that read failed with `UnscopedSecretError`.
+
+## Checks
+
+| Check | Result |
+|---|---|
+| Plugin suite on Hermes `56f7986` | 2,851 passed, 0 failed (23 new 1.8.2.0 tests included) |
+| Plugin suite on Hermes with #133461 applied, and with #133474 applied | 2,851 passed, 0 failed on each |
+| `hermes plugins validate` | `hermes-kame-api-rotation` and `hermes-kame-provider` pass, `desktop surface` and `no core override` included. `hermes-kame-bridge` fails `no core override` by design, which is why it is not in the catalog entry |
+| UI harness (`tests/ui_reconcile.mjs`) | all checks pass. It now walks the Settings and Events tabs it opens; until 1.8.2.0 it rendered them after switching back to Overview |
+| host_corpus · host_prose | pass (5 documented intentional differences) |
+| host_assumptions | 2 checks fail on Hermes `56f7986` with 1.8.1.9 and 1.8.2.0 alike: the host now starts a subprocess inside two code paths the offline contract blocks. These are host-side facts and do not depend on the KAME version |
+
+---
+
+## 1.8.1.9 validation and limitations (kept as published)
 
 Both packages at 1.8.1.9 (rework of 2026-10-05). Unless a section says
 otherwise, everything below ran offline: local fake providers, throwaway

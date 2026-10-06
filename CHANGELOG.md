@@ -7,6 +7,69 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.2.0] — 2026-10-06 — the catalog review, every call on the Events tab, keys read on the new Hermes
+
+Everything 1.8.1.9 does, plus what the catalog review of
+NousResearch/hermes-agent#133362 asked for and what the owner's own test on the
+newest Hermes found.
+
+### The catalog review
+- **The panel uses only `@hermes/plugin-sdk`.** It reads the snapshot and sends
+  its requests through `ctx.rest`, the SDK's door to a plugin's own backend.
+  The backend is a new `dashboard/plugin_api.py` with two routes, `/state` and
+  `/control`. Nothing calls `window.hermesDesktop.*` any more. `ctx.rest` is
+  profile-scoped, so the panel now shows the profile you are looking at, where
+  1.8.1.9 read the base home while each profile wrote its own.
+- **Settings moved to Settings ▸ Plugins ▸ KAME API Rotation.** The form, its
+  switches, numbers, validation and buttons are unchanged. The panel's
+  Settings tab now holds a link to that page.
+- **`max_total_wait_seconds`** (`KAME_MAX_TOTAL_WAIT`) is new and **off by
+  default**, so ADR 0002 is unchanged. A call waits for as long as every key is
+  resting, each key's rest is capped by `max_hold_seconds`, and the call retries
+  the moment one key returns. Set a number for cron or an unattended gateway:
+  once one call has waited that long, the provider's original refusal goes to
+  Hermes and Hermes' own failure path runs. The Events tab records this as
+  `gave_up`.
+- **Refusal records are smaller and private.** `message`, `body` and `response`
+  are capped at 600 characters, the same as `core.redact`. The fields the
+  corpus measures (`quotaId`, `quotaMetric`, `retryDelay`, `reason`, …) are
+  pulled out of the full text first, into `fields`, so the cap loses no
+  evidence. `refusals.jsonl`, `calls.jsonl` and `settings-changes.jsonl` are
+  created owner-only (0600).
+
+### Events show everything
+- Every call now leaves a `sent` row: the key, and how many keys were ready.
+  Every first-try answer leaves an `answered` row: how long the first word took
+  and how long the whole call took. A slow answer on a healthy pool used to
+  leave no trace on the panel. The buffer holds 400 rows (it held 150).
+
+### The newest Hermes
+- **Multi-key variables sync again.** Hermes now reads keys through a
+  profile-scoped secret store and refuses an unscoped read
+  (`UnscopedSecretError`). The `.env` sync binds the profile's own scope
+  (`agent.secret_scope.build_profile_secret_scope`), and the background sync
+  thread inherits the caller's context.
+- The status line looks for `notify_turn_status` again on every use instead of
+  once at start, so the seam is found even when it appears after KAME loads.
+
+### Optional: `hermes-kame-bridge` (not in the catalog)
+This separate plugin adds the two Hermes seams KAME uses that are not merged
+yet, and only where Hermes lacks them:
+- **`notify_turn_status` (#133474):** KAME's live line appears on the spinner
+  in the CLI, the TUI and the Desktop.
+- **`ProviderProfile.create_messages_client` (#133461):** per-call key
+  rotation on the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding).
+  Without it, that wire used Hermes' own client, and measured exactly like
+  Hermes without KAME. 1.8.1.8 had rotated there by patching Hermes.
+
+A seam Hermes already ships is left alone, so the bridge is harmless after
+updating Hermes. It patches Hermes code, which is why it is not in the catalog.
+
+### Tests
+- The UI harness now walks the Settings and Events tabs it opens. It used to
+  render them only after switching back to Overview. The keyless rows it then
+  found in the settings form are keyed.
+
 ## [1.8.1.9] — 2026-10-05 — the carousel through a provider profile, no runtime overrides
 
 The plugin catalog's rule 9 (a listed plugin must not replace, wrap or rebind
@@ -50,7 +113,7 @@ one model only; 503 overload; every key limited; stream cut mid-answer) on the
 native Gemini wire and the OpenAI wire: same turns answered, same requests per
 key. Steady turns on the OpenAI wire take 0.2 s instead of 0.6 s. On the
 OpenAI wire a cut answer is no longer repeated ("Hello there," three times in
-1.8.1.8, once now). Tables: [VALIDATION.md](VALIDATION.md).
+1.8.1.8, once now). Tables: `research/1.8.1.9/harness/`.
 
 ### Fixed while porting
 - A continuation that dropped after sending a few words lost them between keys.

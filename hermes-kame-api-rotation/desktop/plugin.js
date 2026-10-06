@@ -13,15 +13,16 @@
  * HOW THE DATA GETS HERE. The Python half writes a small JSON document to
  * `<hermes home>/plugin-data/hermes-kame-api-rotation/state.json` (see
  * `state.py`) — fingerprints and counts, never key material. This file reads
- * it through the desktop bridge (`window.hermesDesktop.readFileText`) on a
- * one-second tick. No backend route, nothing to enable, nothing to restart:
- * the alternative, `plugin_api.py` behind `dashboard/plugin.json` and an
- * `plugins.enabled` entry, is the door for a plugin built around a dashboard,
- * not for one the user already has running.
+ * it on a one-second tick through `ctx.rest('/state')`, the SDK's door to the
+ * plugin's own backend (`dashboard/plugin_api.py`). Until 1.8.2.0 it used the
+ * raw preload bridge (`window.hermesDesktop.readFileText`); the catalog asks
+ * plugins to stay on `@hermes/plugin-sdk`, and `ctx.rest` is also
+ * profile-scoped, so the panel now reads the profile it is looking at instead
+ * of the base home.
  *
- * HOW A SWITCH GETS BACK (1.1.1). The same way, mirrored. This page writes
- * `control.json` next to the snapshot (`hermesDesktop.writeTextFile`) and the
- * Python half applies it on its own heartbeat, then reports the outcome in the
+ * HOW A SWITCH GETS BACK (1.1.1). The same way, mirrored. This page posts
+ * `ctx.rest('/control')`, the route writes `control.json` next to the snapshot,
+ * and the Python half applies it on its own heartbeat, then reports the outcome in the
  * next snapshot — see `control.py`. The page never edits configuration itself:
  * it asks, and the process that owns the settings decides. That is why every
  * value here is validated twice, once for a readable message before the write
@@ -352,32 +353,26 @@ function validateNumber(setting, raw) {
 // -- the reader -------------------------------------------------------------
 
 /**
- * Where the Python half writes, and where this page writes back.
+ * The plugin's own backend door, `ctx.rest`, captured at `register`.
  *
- * Derived from the bridge's own plugin roots rather than from `HERMES_HOME`,
- * because the renderer is Electron-local and the backend's idea of home can
- * be a different machine entirely. `desktop-plugins` and `plugins` are both
- * direct children of the Hermes home, so either one names the parent.
+ * Routes live in `dashboard/plugin_api.py` (`/state`, `/control`). They are
+ * mounted only when the plugin is in `plugins.enabled` and the backend has
+ * restarted since it was installed, so a missing route is reported as that,
+ * not as an error.
  */
-async function dataDir() {
-  const desktop = window.hermesDesktop
+let rest = null
 
-  if (!desktop) {
-    return null
+function restProblem(error) {
+  const text = error instanceof Error ? error.message : String(error ?? '')
+
+  if (/\b404\b/.test(text)) {
+    return /no snapshot/i.test(text)
+      ? 'No snapshot yet. KAME writes one as soon as the backend loads it.'
+      : "KAME's panel route is not mounted yet. Restart Hermes once after installing or updating KAME."
   }
 
-  const root = (await desktop.desktopPluginsRoot?.()) || (await desktop.agentPluginsRoot?.())
-
-  if (!root) {
-    return null
-  }
-
-  const home = String(root).replace(/[\\/]+(?:desktop-plugins|plugins)[\\/]*$/, '')
-
-  return `${home}/plugin-data/${PLUGIN_ID}`
+  return `The snapshot could not be read: ${text || 'unknown error'}`
 }
-
-let cachedDir = null
 
 /** The exact bytes behind the reading currently on screen.
  *
@@ -391,25 +386,9 @@ let cachedDir = null
 let lastText = ''
 
 async function readSnapshot() {
-  const desktop = window.hermesDesktop
-
-  if (!desktop?.readFileText) {
+  if (!rest) {
     $snapshot.set(null)
-    $problem.set('This Hermes shell has no file bridge, so the pool cannot be read.')
-
-    // Settling here too: this branch can hold for as long as the
-    // condition does, and a Save in flight would otherwise stay "Saving..."
-    // for ever with every control disabled. settle() only ever clears a
-    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
-    settle($snapshot.get())
-
-    return
-  }
-
-  cachedDir ??= await dataDir()
-
-  if (!cachedDir) {
-    $problem.set('This Hermes shell reports no plugin root, so the snapshot cannot be located.')
+    $problem.set('This Hermes has no plugin backend door (ctx.rest), so the pool cannot be read.')
 
     // Settling here too: this branch can hold for as long as the
     // condition does, and a Save in flight would otherwise stay "Saving..."
@@ -423,12 +402,14 @@ async function readSnapshot() {
   let text
 
   try {
-    ;({ text } = await desktop.readFileText(`${cachedDir}/state.json`))
-  } catch {
-    // Absent is the ordinary case on a fresh install, and on any Hermes
-    // running a KAME older than 1.1.0 — say which, rather than "error".
+    const body = await rest('/state')
+
+    text = typeof body === 'string' ? body : JSON.stringify(body)
+  } catch (error) {
+    // Absent is the ordinary case on a fresh install — say which, rather
+    // than "error".
     $snapshot.set(null)
-    $problem.set('No snapshot yet. KAME writes one as soon as the backend loads it.')
+    $problem.set(restProblem(error))
 
     // Settling here too: this branch can hold for as long as the
     // condition does, and a Save in flight would otherwise stay "Saving..."
@@ -669,18 +650,8 @@ function settle(snap) {
  * fingerprint, which is a hash and not a prefix.
  */
 async function request(action, key = '', value = null) {
-  const desktop = window.hermesDesktop
-
-  if (!desktop?.writeTextFile) {
-    $notice.set({ detail: 'This Hermes shell cannot write files, so settings are read-only here. Use /kame set instead.', ok: false })
-
-    return
-  }
-
-  cachedDir ??= await dataDir()
-
-  if (!cachedDir) {
-    $notice.set({ detail: 'This Hermes shell reports no plugin root, so the request cannot be delivered.', ok: false })
+  if (!rest) {
+    $notice.set({ detail: 'This Hermes has no plugin backend door, so settings are read-only here. Use /kame set instead.', ok: false })
 
     return
   }
@@ -691,15 +662,12 @@ async function request(action, key = '', value = null) {
   $pending.set({ action, at: Date.now(), id, key })
 
   try {
-    await desktop.writeTextFile(
-      `${cachedDir}/control.json`,
-      JSON.stringify({ action, id, key, schema: CONTROL_SCHEMA, value })
-    )
+    await rest('/control', { body: { action, id, key, schema: CONTROL_SCHEMA, value }, method: 'POST' })
   } catch (error) {
     $pending.set(null)
-    // The bridge refuses to create directories, and the only directory this
-    // writes into is the one the snapshot already lives in — so this really
-    // does mean the backend never started.
+    // The route writes only into the directory the snapshot already lives
+    // in, so a refusal here means the backend never started KAME in this
+    // profile, or the route is not mounted yet.
     $notice.set({
       detail: `The request could not be written: ${error instanceof Error ? error.message : 'unknown error'}`,
       ok: false
@@ -1204,13 +1172,13 @@ function SettingShell({ setting, control, error }) {
     },
     h(
       'div',
-      { className: 'flex items-start justify-between gap-4' },
+      { className: 'flex items-start justify-between gap-4', key: 'row' },
       h(
         'div',
-        { className: 'min-w-0' },
+        { className: 'min-w-0', key: 'text' },
         h(
           'p',
-          { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)' },
+          { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)', key: 'title' },
           setting.title,
           changed
             ? h(
@@ -1227,21 +1195,22 @@ function SettingShell({ setting, control, error }) {
           'p',
           {
             className: 'mt-0.5 line-clamp-2 text-xs leading-relaxed text-(--ui-text-tertiary)',
+            key: 'help',
             title: setting.help
           },
           setting.help
         ),
         h(
           'p',
-          { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)' },
-          h('span', null, setting.key),
-          setting.env ? h('span', null, setting.env) : null,
-          h(Source, { setting })
+          { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)', key: 'names' },
+          h('span', { key: 'name' }, setting.key),
+          setting.env ? h('span', { key: 'env' }, setting.env) : null,
+          h(Source, { key: 'source', setting })
         )
       ),
-      h('div', { className: 'flex shrink-0 items-center gap-2' }, control)
+      h('div', { className: 'flex shrink-0 items-center gap-2', key: 'control' }, control)
     ),
-    error ? h('p', { className: 'mt-2 text-xs text-destructive' }, error) : null
+    error ? h('p', { className: 'mt-2 text-xs text-destructive', key: 'error' }, error) : null
   )
 }
 
@@ -1307,6 +1276,7 @@ function FlagSetting({ setting, busy }) {
     }),
     h(ConfirmDialog, {
       confirmLabel: 'Turn it on',
+      key: 'confirm',
       description:
         `${setting.help} This is the switch people reach for when they suspect KAME of breaking something — ` +
         'it is reversible, and nothing is uninstalled.',
@@ -1493,7 +1463,7 @@ function SettingsPage({ snap }) {
   const settings = snap.settings ?? []
   const changedCount = settings.filter(setting => setting.source !== 'default').length
   const busy = Boolean(pending)
-  const writable = Boolean(window.hermesDesktop?.writeTextFile)
+  const writable = Boolean(rest)
   const stale = snap.settings_pending_restart ?? []
 
   // Every child below carries a key, and that is the whole of the 1.2.3 fix
@@ -1576,6 +1546,7 @@ function SettingsPage({ snap }) {
         h(
           Tip,
           {
+            key: 'refresh',
             label:
               "Reads Hermes' .env again and rebuilds this page on the spot. Use it after editing that " +
               'file by hand, or after adding a key somewhere else, instead of restarting.'
@@ -1588,17 +1559,17 @@ function SettingsPage({ snap }) {
         ),
         h(
           Tip,
-          { label: 'Removes every KAME_ line from the .env and forgets the environment value, so every setting falls back to its built-in default.' },
+          { key: 'reset', label: 'Removes every KAME_ line from the .env and forgets the environment value, so every setting falls back to its built-in default.' },
           h(Button, { disabled: busy || !writable, onClick: () => setConfirming('reset_all'), size: 'sm', variant: 'outline' }, 'Reset to defaults')
         ),
         h(
           Tip,
-          { label: 'Only clears rotation and quarantine; it does not delete any key.' },
+          { key: 'clear-pool', label: 'Only clears rotation and quarantine; it does not delete any key.' },
           h(Button, { disabled: busy || !writable, onClick: () => setConfirming('clear_pool'), size: 'sm', variant: 'outline' }, 'Clear pool')
         ),
         h(
           Tip,
-          { label: 'Empties the event list on the Events page. Nothing else changes.' },
+          { key: 'clear-events', label: 'Empties the event list on the Events page. Nothing else changes.' },
           h(Button, { disabled: busy || !writable, onClick: () => void request('clear_events'), size: 'sm', variant: 'ghost' }, 'Clear events')
         )
       )
@@ -1637,11 +1608,14 @@ function SettingsPage({ snap }) {
 
 /** How each kind of event is said, and how loudly. */
 const EVENT_LABELS = {
+  answered: ['Answered', 'good'],
   denied_model: ['Not this model', 'warn'],
+  gave_up: ['Stopped waiting', 'bad'],
   invalid_key: ['Invalid key', 'bad'],
   quarantine: ['Quarantined', 'bad'],
   recovery: ['Answered', 'good'],
   rotation: ['Rested', 'plain'],
+  sent: ['Sent', 'plain'],
   setting: ['You changed a setting', 'good'],
   stitch: ['Continued', 'good'],
   storm: ['Outage', 'warn'],
@@ -1659,6 +1633,9 @@ const EVENT_LABELS = {
  * row's tooltip and as the legend under the filters.
  */
 const EVENT_MEANING = {
+  answered: 'The key this call went out on answered, first time. The time is the whole call; the reason says how long the first word took.',
+  gave_up: 'Every key stayed resting past max_total_wait_seconds, so KAME stopped waiting and handed Hermes the original refusal.',
+  sent: 'A call went out on this key. Every call leaves one of these, so a slow answer is visible while it is still coming.',
   denied_model: 'The provider refused this key for THIS model only — a plan that does not include it, or an API not switched on. The key is fine everywhere else, and replacing it would change nothing.',
   invalid_key: 'The provider said this is not a valid credential. Replace it — waiting will not repair one.',
   quarantine: 'This key was rested for a minute or more before it will be offered again.',
@@ -1706,7 +1683,7 @@ const REASON_WORDS = {
  * only ever recorded failures, so a rotation engine doing its job produced a
  * screen that read like a fault report.
  */
-const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait'])
+const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait', 'setting', 'sent', 'answered'])
 
 /** The three views. `id` is what the filter chip stores. */
 const EVENT_VIEWS = [
@@ -2169,9 +2146,10 @@ function EventsPage({ snap }) {
     { className: 'flex flex-col gap-4' },
     Card(
       {
+        key: 'events',
         note:
-          'Every decision this Hermes process made about your keys, newest first — the failures and the ' +
-          'rotations that answered them. Keys appear as fingerprints: a hash, never a prefix of the key ' +
+          'Every call this Hermes process sent and every decision it made about your keys, newest first — ' +
+          'each answer, the failures and the rotations that answered them. Keys appear as fingerprints: a hash, never a prefix of the key ' +
           'itself. Provider error text is scrubbed before it is written down, because a provider can quote ' +
           'your own prompt back inside an error.',
         title: 'Events'
@@ -2229,7 +2207,7 @@ function EventsPage({ snap }) {
       h(Heartbeat, { key: 'heartbeat', now, snap })
     ),
     Card(
-      { key: 'legend', note: 'Nine words, and what each one means.', title: 'Reading this list' },
+      { key: 'legend', note: 'Each word on this list, and what it means.', title: 'Reading this list' },
       h(
         'div',
         { className: 'grid gap-x-6 gap-y-2 sm:grid-cols-2' },
@@ -2744,7 +2722,7 @@ function KamePage() {
       ),
 
     tab === 'settings'
-      ? h(SettingsPage, { key: 'body', snap })
+      ? h(SettingsLink, { key: 'body' })
       : tab === 'events'
         ? h(EventsPage, { key: 'body', snap })
         : h(
@@ -2835,6 +2813,41 @@ function KamePage() {
   )
 }
 
+// -- settings, under Settings ▸ Plugins (1.8.2.0) ---------------------------
+
+/** Where KAME's settings live now, as a link.
+ *
+ *  The same controls, the same validation and the same control requests —
+ *  Hermes asks plugins to keep preferences under Settings ▸ Plugins, so the
+ *  form moved there and this tab points at it. */
+function settingsHref() {
+  return typeof sdk.pluginSettingsHref === 'function'
+    ? sdk.pluginSettingsHref(PLUGIN_ID)
+    : `/settings?tab=plugins&plugin=${PLUGIN_ID}`
+}
+
+function SettingsLink() {
+  return h(
+    'div',
+    { className: 'flex flex-col items-start gap-3 py-2' },
+    h(
+      'p',
+      { className: 'text-sm text-(--ui-text-secondary)', key: 'where' },
+      'KAME settings now live in Settings ▸ Plugins ▸ KAME API Rotation — every switch and number is still there.'
+    ),
+    h(Button, { key: 'go', onClick: () => host.navigate(settingsHref()) }, 'Open KAME settings')
+  )
+}
+
+function KameSettingsEntry() {
+  const snap = useValue($snapshot)
+  const problem = useValue($problem)
+
+  return snap
+    ? h(SettingsPage, { snap })
+    : h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, problem || 'Waiting for the first snapshot…')
+}
+
 // -- registration -----------------------------------------------------------
 
 export default {
@@ -2842,7 +2855,25 @@ export default {
   name: PRODUCT,
   description: 'Live key-pool health, rotation and recovery countdowns — a status-bar chip and a full panel.',
   register(ctx) {
+    rest = typeof ctx.rest === 'function' ? (path, opts) => ctx.rest(path, opts) : null
+    ctx.onDispose(() => {
+      rest = null
+    })
     ctx.onDispose(startReading())
+
+    const settingsPage = {
+      icon: 'sync',
+      id: 'settings',
+      order: 0,
+      render: () => h(KameSettingsEntry, null),
+      title: PRODUCT
+    }
+
+    if (typeof ctx.registerSettingsPage === 'function') {
+      ctx.registerSettingsPage(settingsPage)
+    } else if (sdk.SETTINGS_PLUGINS_AREA) {
+      ctx.register({ area: sdk.SETTINGS_PLUGINS_AREA, data: { icon: 'sync' }, id: 'settings', render: settingsPage.render, title: PRODUCT })
+    }
 
     const composerTop = sdk.COMPOSER_AREAS?.top
 

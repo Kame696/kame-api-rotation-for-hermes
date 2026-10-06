@@ -40,7 +40,11 @@ from collections import deque
 #: produced one, and fifty would have shown a third of the incident it was
 #: sized to explain. A hundred and fifty rows is about 25 KB inside a snapshot
 #: file the panel already re-reads every two seconds.
-MAX_EVENTS = 150
+#:
+#: 400 since 1.8.2.0, when every call started to leave a ``sent`` row and an
+#: ``answered`` row: at 150 a busy hour of healthy traffic would have pushed
+#: the last incident off the screen. About 65 KB in the snapshot.
+MAX_EVENTS = 400
 
 #: The kinds. Named for what the user sees, not for the code path: "quarantine"
 #: rather than "mark(ok=False, kind=auth)", because the first is what the pool
@@ -77,16 +81,26 @@ SURFACED = "surfaced"
 #: only be answered with a guessed window.
 SETTING = "setting"
 
+#: 1.8.2.0. The ordinary half of every call, so the tab shows everything KAME
+#: did and not only what went wrong: which key a call went out on (``sent``)
+#: and that it answered, how fast (``answered``). The owner's own test of
+#: 1.8.1.9 sent a nine-minute NVIDIA answer through a healthy pool and found
+#: no trace of it anywhere on the panel.
+SENT = "sent"
+ANSWERED = "answered"
+#: The opt-in ``max_total_wait_seconds`` ran out and the refusal went to Hermes.
+GAVE_UP = "gave_up"
+
 _KINDS = frozenset(
     {ROTATION, SWITCH, QUARANTINE, INVALID_KEY, DENIED_MODEL, STORM,
-     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING}
+     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING, SENT, ANSWERED, GAVE_UP}
 )
 
 #: The kinds that are KAME working rather than a provider failing. The panel
 #: colours and filters on this split, and the distinction is the point of the
 #: 1.6.0.1 Events tab: a screen that shows only refusals reads like a fault
 #: report, and a rotation engine that is doing its job is not a fault.
-GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING})
+GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING, SENT, ANSWERED})
 #: ``SETTING`` sits on this side of the split for the same reason: it is
 #: not a provider refusing, and a row painted as a fault would be read as
 #: one. It is the owner acting, which is neither, and of the two colours

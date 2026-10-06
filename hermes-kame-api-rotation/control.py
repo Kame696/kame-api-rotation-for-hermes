@@ -452,7 +452,9 @@ def _write_the_change_down(action: str, key: str, result: Dict[str, Any]) -> Non
             "ok": bool(result.get("ok")),
             "detail": str(result.get("detail") or "")[:400],
         }
-        with open(path, "a", encoding="utf-8") as handle:
+        from .recorder import private_append
+
+        with private_append(path) as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + chr(10))
     except Exception:
         logger.debug("kame: could not write the setting change down", exc_info=True)

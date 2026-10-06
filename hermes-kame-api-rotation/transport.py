@@ -403,11 +403,14 @@ def _turn_status(kind: str, message: str) -> bool:
     or outside a turn; never raises.
     """
     global _NOTIFY
-    if _NOTIFY is None:
+    if not _NOTIFY:
+        # Looked up again while absent (1.8.2.0): the seam can appear after
+        # KAME loads — the optional hermes-kame-bridge installs it at its own
+        # registration — and an attribute read on an imported module is cheap.
         try:
-            from agent.status_output import notify_turn_status
+            import agent.status_output as status_output
 
-            _NOTIFY = notify_turn_status
+            _NOTIFY = getattr(status_output, "notify_turn_status", None) or False
         except Exception:
             _NOTIFY = False
     if not _NOTIFY:
@@ -1802,9 +1805,27 @@ class KameTransport:
                 # since 1.0.1, but never in silence.
                 if vigil is None:
                     vigil = _Vigil(label)
-                wait_started = time.monotonic()
-                recovered = yield from self._wait_for_recovery(call, identity, keys, vigil)
-                pool_waited += max(0.0, time.monotonic() - wait_started)
+                # 1.8.2.0: the opt-in total bound (0 = none, ADR 0002).
+                total_cap = settings.number(settings.MAX_TOTAL_WAIT, 0.0)
+                recovered = True
+                if total_cap > 0 and pool_waited >= total_cap:
+                    recovered = False
+                    EVENTS.add(
+                        "gave_up",
+                        identity=identity,
+                        reason=f"every key resting for {format_duration(pool_waited)} — "
+                        f"max_total_wait_seconds is {format_duration(total_cap)}",
+                    )
+                else:
+                    wait_started = time.monotonic()
+                    bound = {"budget": total_cap - pool_waited} if total_cap > 0 else {}
+                    recovered = yield from self._wait_for_recovery(call, identity, keys, vigil, **bound)
+                    pool_waited += max(0.0, time.monotonic() - wait_started)
+                if not recovered and total_cap > 0 and pool_waited >= total_cap and last_error is None:
+                    self.surfaced += 1
+                    raise ConnectionError(
+                        f"kame: every key for {label} stayed resting for {format_duration(pool_waited)}, "
+                        "past max_total_wait_seconds")
                 if not recovered:
                     if seen:
                         self.mid_stream_cuts += 1
@@ -1830,6 +1851,15 @@ class KameTransport:
                         if slept
                         else f"attempt {attempt} — this key took over"
                     ),
+                )
+            else:
+                # 1.8.2.0: every call, not only the troubled ones — the owner
+                # watched a nine-minute NVIDIA answer leave no row at all.
+                EVENTS.add(
+                    "sent",
+                    identity=identity,
+                    key=fingerprint(key),
+                    reason=f"{self.engine.healthy_count(identity, keys)} of {len(keys)} key(s) ready",
                 )
             try:
                 runtime.note_sent(call.provider, call.entry_id(key), fingerprint(key), now=time.time())
@@ -2379,6 +2409,16 @@ class KameTransport:
                     reason=f"answered on attempt {attempt}",
                     seconds=elapsed,
                 )
+            else:
+                first = progress.first_text_at or progress.first_sign_at
+                EVENTS.add(
+                    "answered",
+                    identity=identity,
+                    key=fingerprint(key),
+                    reason=(f"first word after {format_duration(first - attempt_started)}"
+                            if first else ("tool call" if saw_tools else "answered")),
+                    seconds=time.monotonic() - started,
+                )
             _publish(self, None)
             yield _Done(result)
             return
@@ -2416,7 +2456,8 @@ class KameTransport:
             return None if fallback < 0 else int(fallback)
 
     def _wait_for_recovery(
-        self, call: "Call", identity: str, keys: Sequence[str], vigil: "_Vigil"
+        self, call: "Call", identity: str, keys: Sequence[str], vigil: "_Vigil",
+        budget: Optional[float] = None,
     ) -> Iterator[Any]:
         """Sleep until the soonest key is usable. Returns ``False`` to stop waiting.
 
@@ -2438,6 +2479,10 @@ class KameTransport:
             wait = min(eta + 0.5 + self._jitter(), _MAX_SLEEP_S)
         if wait <= 0:
             wait = _SLEEP_SLICE_S
+        if budget is not None:
+            # Never sleep past the operator's total bound; the caller checks
+            # it again on the way back in.
+            wait = max(min(wait, budget), 0.0)
         logger.debug(
             "kame: %s every key is resting — waiting %s (no requests sent); "
             "earliest recovery %s",

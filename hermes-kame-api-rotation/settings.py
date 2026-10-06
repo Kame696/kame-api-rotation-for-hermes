@@ -325,6 +325,15 @@ SILENT_STREAM_PATIENCE = STREAM_SILENCE_TIMEOUT
 #: productive; 0 disables continuation; 1..10 explicitly bounds resumes.
 STREAM_RESUME_LIMIT = "stream_resume_limit"
 
+# 1.8.2.0, asked for by the catalog review (NousResearch/hermes-agent#133362):
+# a bound on how long one call may wait while *every* key is resting. Zero, the
+# default, keeps ADR 0002 exactly — the wait has no total ceiling, because each
+# key's own rest is already capped by :data:`MAX_HOLD` and the call retries the
+# moment one comes back. An operator running cron or a gateway nobody watches
+# can set a number; past it the original refusal is raised so Hermes' own
+# failure path runs.
+MAX_TOTAL_WAIT = "max_total_wait_seconds"
+
 _NUMBER_ENV_FOR = {
     DAILY_COOLDOWN: "KAME_DAILY_COOLDOWN",
     STREAM_SILENCE_TIMEOUT: "KAME_STREAM_SILENCE_TIMEOUT",
@@ -332,6 +341,7 @@ _NUMBER_ENV_FOR = {
     MAX_HOLD: "KAME_MAX_HOLD",
     UNSIZED_THROTTLE_REST: "KAME_UNSIZED_REST",
     UNSIZED_BACKOFF_MAX: "KAME_UNSIZED_BACKOFF_MAX",
+    MAX_TOTAL_WAIT: "KAME_MAX_TOTAL_WAIT",
 }
 
 #: Names this plugin used to answer to, and still does. Read only when the
@@ -403,6 +413,8 @@ _NUMBER_RANGE = {
     # the ceiling, 3600, is ``MAX_HOLD``'s own default — the uncapped
     # doubling, still bounded by ``max_hold_seconds`` itself.
     UNSIZED_BACKOFF_MAX: (1.0, 3600.0),
+    # 0 = no total bound (the default). A week is a guard rail, not advice.
+    MAX_TOTAL_WAIT: (0.0, 604800.0),
 }
 
 #: Values inside the range that are still refused, per setting. A silence
@@ -805,6 +817,7 @@ ALL_NUMBERS = {
     UNSIZED_THROTTLE_REST: 30.0,
     # 1.8.1.0: see :data:`UNSIZED_BACKOFF_MAX`.
     UNSIZED_BACKOFF_MAX: 64.0,
+    MAX_TOTAL_WAIT: 0.0,
 }
 
 #: What each number counts, for a UI that has to label a field and for a
@@ -816,6 +829,7 @@ UNITS = {
     MAX_HOLD: "seconds",
     UNSIZED_THROTTLE_REST: "seconds",
     UNSIZED_BACKOFF_MAX: "seconds",
+    MAX_TOTAL_WAIT: "seconds",
 }
 
 #: Switches whose "on" position stops KAME doing the thing it was installed
@@ -996,6 +1010,16 @@ META = {
         "long outage costs about one refused request per interval instead "
         "of a healthy key sitting out for however long a provider claimed.",
     ),
+    MAX_TOTAL_WAIT: (
+        "Give up waiting after",
+        "Zero, the default, means a call waits for as long as every key is "
+        "resting: each key's own rest is already capped by the ceiling above, "
+        "and the call retries the moment one returns, so a spent quota ends "
+        "with an answer on the same model. For cron jobs or a gateway nobody "
+        "is watching, set a number: once one call has waited that long in "
+        "total, KAME stops waiting and hands Hermes the provider's original "
+        "refusal, so Hermes' own failure and fallback path runs.",
+    ),
     UNSIZED_THROTTLE_REST: (
         "Rest after an unsized throttle",
         "How long a credential rests after a per-minute or rate-limit "
@@ -1138,7 +1162,8 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "Tuning",
         "Already set to what this plugin was built against. Safe to change, "
         "rarely worth changing.",
-        (DAILY_COOLDOWN, STREAM_RESUME_LIMIT, MAX_HOLD, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX),
+        (DAILY_COOLDOWN, STREAM_RESUME_LIMIT, MAX_HOLD, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX,
+         MAX_TOTAL_WAIT),
     ),
     (
         "off",

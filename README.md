@@ -8,10 +8,10 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.9-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.2.0-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/local_tests-2722_passing-brightgreen.svg)](#verified)
-[![Catalog admission](https://img.shields.io/badge/catalog-1.8.1.9_review_pending-orange.svg)](#verified)
+[![Tests](https://img.shields.io/badge/local_tests-2851_passing-brightgreen.svg)](#verified)
+[![Catalog admission](https://img.shields.io/badge/catalog-1.8.2.0_review_pending-orange.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -20,25 +20,30 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 
 </div>
 
-**1.8.1.9 — the same carousel, with no runtime overrides of Hermes.** Plugin
-catalog rule 9 asks listed plugins not to replace, wrap or rebind Hermes core;
-1.8.1.8 did, and its catalog update was closed for it
-([#131918](https://github.com/NousResearch/hermes-agent/pull/131918)). 1.8.1.9
-removes every rebind. Hermes asks a provider profile for its model client
+**1.8.2.0 — the same carousel, with no runtime overrides of Hermes, and
+nothing given up for it.** Hermes asks a provider profile for its model client
 (`ProviderProfile.create_client`, the documented way to bring a transport), and
 the companion package `hermes-kame-provider` answers with a client that rotates
-your keys. Every rotation, wait, refusal-sizing and continuation decision is
-1.8.1.8's, moved unchanged. `hermes plugins validate` passes both packages with
-no warnings.
+your keys. No Hermes module, class or dict is rebound. The Desktop panel uses
+only `@hermes/plugin-sdk`, through its own backend route.
 
-Measured on real Hermes turns against local fake providers, six scenarios on
-every wire (native Gemini, OpenAI chat completions, Anthropic Messages,
-Responses API): the same turns answered as 1.8.1.8, steady turns faster, no
-repeated text after a cut answer, and a cut Anthropic answer continued on
-another key instead of restarted. The status line (`⏳ waiting on … — KAME
-13/15 keys healthy`) is on every surface again through Hermes'
-`notify_turn_status`. See
-[validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
+Every rotation, wait, refusal-sizing and continuation decision is 1.8.1.8's.
+The Events tab now shows every call and every answer, not only failures.
+Multi-key variables sync on the newest Hermes, whose profile-scoped secrets
+broke the sync in 1.8.1.9.
+
+**Two Hermes seams that are not merged yet.** KAME uses each one as soon as
+your Hermes has it:
+
+| Seam | Hermes PR | Without it |
+|---|---|---|
+| `notify_turn_status` | [#133474](https://github.com/NousResearch/hermes-agent/pull/133474) | The live status line (`⏳ waiting on … — KAME 13/15 keys healthy`) appears only above the Desktop composer, not on the spinner. |
+| `create_messages_client` | [#133461](https://github.com/NousResearch/hermes-agent/pull/133461) | On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding), KAME sizes each refusal but does not pick the key per call. |
+
+Until both are merged, the optional `hermes-kame-bridge` adds them. It is not
+part of the catalog entry, because it patches Hermes.
+
+See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
 ---
 
@@ -179,7 +184,7 @@ Every refusal is sized from what the provider actually sent. Decisions are made 
 <a id="settings"></a>
 ## ⚙️ Settings
 
-Nothing needs changing. Every setting is in the panel, in `/kame set`, and as an environment variable (the environment wins).
+Nothing needs changing. Every setting is in Desktop **Settings ▸ Plugins ▸ KAME API Rotation**, in `/kame set`, and as an environment variable. When the same setting is set in more than one place, the environment variable wins.
 
 <details>
 <summary><b>The ones worth knowing</b></summary>
@@ -187,6 +192,7 @@ Nothing needs changing. Every setting is in the panel, in `/kame set`, and as an
 | Setting | Default | What it does |
 |---|---|---|
 | `max_hold_seconds` | `3600` | No key sits out longer than this, whatever caused the hold |
+| `max_total_wait_seconds` | `0` (off) | For cron or an unattended gateway: the longest one call waits while every key is resting. Past it, the provider's refusal goes to Hermes |
 | `unsized_throttle_backoff` | on | The 1-2-4-8s ladder for Gemini's bare `RESOURCE_EXHAUSTED` |
 | `unsized_backoff_max_seconds` | `64` | Where that ladder stops growing |
 | `unsized_throttle_rest_seconds` | `30` | Rest after any other throttle that names no wait |
@@ -223,16 +229,17 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
-1.8.1.9, all offline — local fake providers, no real key, no real request. Details in [VALIDATION.md](VALIDATION.md).
+1.8.2.0, on a copy of Hermes `56f7986` (main of 2026-10-05). Local fake
+providers, except the real-key row. Details in [VALIDATION.md](VALIDATION.md).
 
 | Check | Result |
 |---|---|
-| `hermes plugins validate` (both packages) | **ok, no warnings** — `no core override` and `desktop surface` included |
-| Real Hermes turns vs 1.8.1.8, six scenarios × two wires | **same turns answered, same requests per key**; faster steady turns on the OpenAI wire; no repeated text after a cut answer |
-| Hermes' own 25 suites with KAME's client in every test home | **no unexpected divergence**; one real gap found this way and fixed (auxiliary NVIDIA calls lacked Hermes' billing header) |
-| Host gates (classifier corpus, prose, host facts, Gemini contracts, clock, continuity) | **all pass**; the 200-case corpus keeps its five documented intentional differences |
-| Plugin suite | **2,772 passing** with Hermes on the path; public checkout offline result in [VALIDATION.md](VALIDATION.md); 361 1.8.1.8 tests whose subject is gone retired one by one, each with its reason |
-| Python 3.11 (Hermes' own interpreter) | every module compiles; the 1.8.1.9 transport, client and invariant tests pass |
+| `hermes plugins validate` (the two catalog packages) | **pass**, `no core override` and `desktop surface` included |
+| Real Hermes turns vs 1.8.1.8, six scenarios × four wires | **every turn answered** on native Gemini, OpenAI chat and Responses, with faster steady turns. On the Anthropic Messages wire this needs `create_messages_client` (#133461 or the optional bridge); with it, every turn is answered |
+| Status line on the spinner | present with #133474 or the optional bridge. Otherwise it appears above the Desktop composer |
+| Real keys (NVIDIA, 2 keys) | 3 of 3 turns answered. One empty answer was rotated to the next key, and the live line showed on the spinner |
+| Plugin suite | **2,851 passing** on Hermes `56f7986`, and on Hermes with each upstream seam applied |
+| Host gates (classifier corpus, prose) | **pass**, with the corpus keeping its five documented intentional differences |
 
 ### Historical validation (not a new-build certification)
 
@@ -306,6 +313,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.2.0** | Catalog review, full Events | The panel uses only `@hermes/plugin-sdk`, through its own `plugin_api.py` route, and reads the profile you are looking at. Settings moved to Desktop Settings ▸ Plugins. New `max_total_wait_seconds` (off by default) for unattended runs. Every call and every answer is on the Events tab. Refusal records are capped and owner-only, and the quota fields are kept. Multi-key sync works on Hermes' scoped secrets. Optional `hermes-kame-bridge` adds the two unmerged Hermes seams (spinner line #133474, Anthropic Messages rotation #133461). |
 | **1.8.1.9** | No runtime overrides | Every rebind of Hermes core removed for catalog rule 9; the carousel now runs inside the client Hermes asks a provider profile for (companion package `hermes-kame-provider`). Same decisions as 1.8.1.8 on real Hermes turns, on every wire (Anthropic Messages and Responses through new provider-profile clients); status line through `notify_turn_status`; comma-joined key variables kept as one pool row per key automatically; two settings retired because Hermes now does their job. |
 | **1.8.1.8** | Serial reliability | Independent profile leases and stoppable heartbeats; progress-based continuation, exact stream boundaries and original-request incomplete-tool replay; writer-owned snapshot cache and defensive Desktop formatting. Engine retained, no request racing; catalog update needs renewed review. |
 | **1.8.1.7** | Reproducible verification *(local candidate)* | Deterministic Windows clock regressions, paired 1/2/14-key overhead measurement, live-key and isolated Hermes acceptance, byte-exact ZIP verification, and explicit current catalog admission dependency. Existing runtime features retained. |

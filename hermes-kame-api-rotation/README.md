@@ -1,21 +1,31 @@
 # KAME — API Key Rotation for Hermes
 
-**1.8.1.9 — the carousel through a provider profile, with no runtime
-overrides.** Plugin catalog rule 9 asks listed plugins not to replace, wrap or
-rebind Hermes core; 1.8.1.8 did, and its catalog update was closed for it
-([#131918](https://github.com/NousResearch/hermes-agent/pull/131918)). 1.8.1.9
-removes every rebind and keeps the carousel: Hermes asks a provider profile for
-its model client (`ProviderProfile.create_client`, the documented way to bring
-a transport), and KAME's companion package `hermes-kame-provider` answers with
-a client that rotates the keys. Every rotation, wait, refusal-sizing and
-continuation decision is 1.8.1.8's, moved unchanged. `hermes plugins validate`
-passes both packages with no warnings.
+**1.8.2.0 — no runtime overrides, and nothing given up for it.** Hermes asks a
+provider profile for its model client (`ProviderProfile.create_client`, the
+documented way to bring a transport), and KAME's companion package
+`hermes-kame-provider` answers with a client that rotates the keys. No Hermes
+module, class or dict is rebound. The Desktop panel uses only
+`@hermes/plugin-sdk`, through its own backend route (`dashboard/plugin_api.py`).
+`hermes plugins validate` passes both packages.
 
-Measured on real Hermes turns against local fake providers, in six scenarios on
-every wire (native Gemini, OpenAI chat completions, Anthropic Messages,
-Responses API): the same turns answered as 1.8.1.8, steady turns faster, no
-repeated text after a cut answer, and the status line back on every surface
-through Hermes' `notify_turn_status`. Full notes: [CHANGELOG](https://github.com/Kame696/kame-api-rotation-for-hermes/blob/main/CHANGELOG.md).
+The rotation, wait, refusal-sizing and continuation decisions are the same as
+in 1.8.1.8. The Events tab now shows every call, and settings live under
+Desktop Settings ▸ Plugins. Full notes: [CHANGELOG](https://github.com/Kame696/kame-api-rotation-for-hermes/blob/main/CHANGELOG.md).
+
+**Two Hermes seams that are not merged yet.** KAME uses each one as soon as
+your Hermes has it:
+
+- **`notify_turn_status`
+  ([#133474](https://github.com/NousResearch/hermes-agent/pull/133474)):** the
+  live status line ("next key in 2m 10s") on the spinner. Without it, the line
+  appears only above the Desktop composer.
+- **`create_messages_client`
+  ([#133461](https://github.com/NousResearch/hermes-agent/pull/133461)):**
+  per-call key rotation on the Anthropic Messages wire. Without it, KAME sizes
+  each refusal there but does not pick the key.
+
+Until both are merged, the optional `hermes-kame-bridge` package adds them. It
+is not part of the catalog entry, because it patches Hermes.
 
 **Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
 
@@ -29,7 +39,7 @@ Full documentation and screenshots: <https://github.com/Kame696/kame-api-rotatio
 - **The healthiest key, every call** — fewest requests in the last 60 seconds, least recently used on a tie.
 - **It reads the error instead of guessing.** Throttle, daily quota, outage and dead key each get their own wait — the provider's own number whenever it states one.
 - **No key sits out longer than an hour**, and KAME never silently switches you to another model.
-- **When every key is resting, it waits** for the first one back and tells you how long.
+- **When every key is resting, it waits** for the first one back and tells you how long. For cron or an unattended gateway, `max_total_wait_seconds` (off by default) bounds that wait. Past the bound, the provider's refusal goes to Hermes.
 
 ## Install
 
@@ -43,7 +53,7 @@ Both are needed: `hermes-kame-api-rotation` is the carousel, the commands and
 the panel; `hermes-kame-provider` (a `model-provider` plugin) is how Hermes asks
 it for a client. Either one alone changes nothing — Hermes builds its own client.
 
-Restart Hermes once. The Desktop panel ships in `desktop/plugin.js`; turn it on in Desktop Settings → Plugins. Then paste your keys, comma separated, into one provider field:
+Restart Hermes once. This also mounts the panel's backend route. The Desktop panel ships in `desktop/plugin.js`. Turn it on in Desktop Settings → Plugins, and you will find KAME's settings there too. Then paste your keys, comma separated, into one provider field:
 
 ```
 GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc

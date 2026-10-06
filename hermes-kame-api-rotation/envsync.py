@@ -191,11 +191,47 @@ def _sync_one(provider: str, var: str, base_url: str, report: List[str], backup:
         report.append(f"{provider}: {var} holds {len(keys)} keys; {added} row(s) added, {removed} removed")
 
 
+@contextlib.contextmanager
+def _profile_scope() -> Any:
+    """Run inside this profile's secret scope when none is bound.
+
+    Hermes reads keys through ``agent.secret_scope.get_secret``, which raises
+    ``UnscopedSecretError`` on a multiplexed process with no scope installed —
+    the case at plugin start and on a helper thread. Binding the profile's own
+    scope (``build_profile_secret_scope`` of the active home) is the documented
+    fix; on a Hermes without the module this does nothing.
+    """
+    token = None
+    try:
+        from agent import secret_scope
+
+        if secret_scope.current_secret_scope() is None:
+            from hermes_constants import get_hermes_home
+
+            home = get_hermes_home()
+            token = secret_scope.set_secret_scope(
+                secret_scope.build_profile_secret_scope(home), profile_home=str(home))
+    except Exception:
+        logger.debug("kame: no secret scope bound for the key sync", exc_info=True)
+    try:
+        yield
+    finally:
+        if token is not None:
+            from agent import secret_scope
+
+            secret_scope.reset_secret_scope(token)
+
+
 def sync() -> List[str]:
     """Bring the pool in line with every multi-key variable. Returns what changed."""
-    report: List[str] = []
     if settings.is_on(settings.RESOLVER_DISABLED) or settings.is_on(settings.ROTATION_DISABLED):
-        return report
+        return []
+    with _profile_scope():
+        return _sync_all()
+
+
+def _sync_all() -> List[str]:
+    report: List[str] = []
     variables = _variables()
     pending = [(p, v, u) for p, v, u in variables if len(split_value(_env_value(v))[0]) > 1]
     try:
