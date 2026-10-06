@@ -61,13 +61,6 @@ import types
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-
-# 1.8.1.9: the carousel moved from dispatch_binding.py to transport.py; an
-# older plugin version that still ships dispatch_binding.py is loaded as is.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import legacy_dispatch  # noqa: E402
-
-legacy_dispatch.enable()
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------

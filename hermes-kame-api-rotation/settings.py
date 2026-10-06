@@ -45,6 +45,7 @@ _FALSE = frozenset({"0", "false", "no", "off"})
 # key in config.yaml -> environment variable that outranks it
 ROTATION_DISABLED = "disabled"
 SPREAD_DISABLED = "spread_disabled"
+FIELD_PROBE_DISABLED = "field_probe_disabled"
 RESOLVER_DISABLED = "resolver_disabled"
 CAROUSEL_DISABLED = "carousel_disabled"
 # Every switch here turns a KAME behaviour *off*, which is why this one is
@@ -56,6 +57,10 @@ STORM_COLLAPSE_DISABLED = "storm_collapse_disabled"
 # 1.0.9. Same naming rule: the live status line is on by default, so the switch
 # is named for turning it off.
 LIVE_STATUS_DISABLED = "live_status_disabled"
+# 1.1.0. Repairs a host bug in the Gemini stream translator that merges two
+# parallel tool calls into one broken argument string; see gemini_slots.py.
+# Named for turning it off, like the rest: the repair is on by default.
+GEMINI_TOOL_CALL_FIX_DISABLED = "gemini_tool_call_fix_disabled"
 
 # 1.1.1. Continuing an answer the provider cut off, on another key, instead of
 # handing the cut back to Hermes to paper over with a synthetic
@@ -174,10 +179,12 @@ UNSIZED_BACKOFF_MAX = "unsized_backoff_max_seconds"
 _ENV_FOR = {
     ROTATION_DISABLED: "KAME_ROTATION_DISABLED",
     SPREAD_DISABLED: "KAME_SPREAD_DISABLED",
+    FIELD_PROBE_DISABLED: "KAME_FIELD_PROBE_DISABLED",
     RESOLVER_DISABLED: "KAME_RESOLVER_DISABLED",
     CAROUSEL_DISABLED: "KAME_CAROUSEL_DISABLED",
     STORM_COLLAPSE_DISABLED: "KAME_STORM_COLLAPSE_DISABLED",
     LIVE_STATUS_DISABLED: "KAME_LIVE_STATUS_DISABLED",
+    GEMINI_TOOL_CALL_FIX_DISABLED: "KAME_GEMINI_TOOL_CALL_FIX_DISABLED",
     STREAM_STITCH_DISABLED: "KAME_STREAM_STITCH_DISABLED",
     RECORDER_DISABLED: "KAME_RECORDER_DISABLED",
     QUOTA_ID_DISABLED: "KAME_QUOTA_ID_DISABLED",
@@ -766,10 +773,12 @@ def _env_names(key: str) -> Tuple[str, ...]:
 ALL_FLAGS = (
     ROTATION_DISABLED,
     SPREAD_DISABLED,
+    FIELD_PROBE_DISABLED,
     RESOLVER_DISABLED,
     CAROUSEL_DISABLED,
     STORM_COLLAPSE_DISABLED,
     LIVE_STATUS_DISABLED,
+    GEMINI_TOOL_CALL_FIX_DISABLED,
     STREAM_STITCH_DISABLED,
     NO_MODEL_FALLBACK,
     RECORDER_DISABLED,
@@ -840,14 +849,18 @@ META = {
     ),
     SPREAD_DISABLED: (
         "Give back key selection",
-        "Cooldown sizing stays, but each call carries the first healthy key in "
-        "the pool's order (Hermes' own fill_first) instead of the least-loaded one.",
+        "Cooldown sizing stays, but Hermes chooses which key each call carries "
+        "instead of KAME picking the least-loaded one.",
+    ),
+    FIELD_PROBE_DISABLED: (
+        "Restore the one-key field check",
+        "The Settings key field goes back to refusing a paste that holds "
+        "several comma-separated keys.",
     ),
     RESOLVER_DISABLED: (
         "Send multi-key values whole",
-        "KAME stops keeping a comma-separated key variable as one pool row per "
-        "key, and Hermes reads it as one long key again, which no provider "
-        "accepts. `/kame-keys split` still does it once by hand.",
+        "A comma-separated key variable is sent to the provider exactly as "
+        "Hermes resolves it — as one long key, which no provider accepts.",
     ),
     CAROUSEL_DISABLED: (
         "Stop rotating per call",
@@ -864,6 +877,12 @@ META = {
         "Hide the status line",
         "Pool health and the recovery countdown stop appearing on the spinner "
         "line. Rotation is unchanged.",
+    ),
+    GEMINI_TOOL_CALL_FIX_DISABLED: (
+        "Stop repairing Gemini tool calls",
+        "Two parallel calls to one tool arrive merged into one unparseable "
+        "argument string, which Hermes reports as 'Response truncated due to "
+        "output length limit'. This switch turns the repair off.",
     ),
     STREAM_STITCH_DISABLED: (
         "Stop continuing cut answers",
@@ -930,9 +949,10 @@ META = {
         "Stop reading the quota window",
         "Google's per-minute and per-day free-tier quotas report the identical "
         "metric name and differ only in one field, quotaId, which Hermes' Gemini "
-        "adapter drops before KAME sees the error. KAME reads the refusal body on "
-        "its own connection so that field survives; nothing else about the error "
-        "changes. Turn this on to leave the refusal exactly as Hermes reads it.",
+        "adapter parses and throws away before KAME sees the error. KAME keeps "
+        "the parsed error body on the exception so that field survives; nothing "
+        "else about the error changes, and no other provider is touched. Turn "
+        "this on to leave the adapter exactly as Hermes wrote it.",
     ),
     NO_MODEL_FALLBACK: (
         "Stay on this model, always",

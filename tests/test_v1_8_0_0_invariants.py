@@ -67,10 +67,8 @@ stitch = importlib.import_module(f"{PACKAGE}.core.stitch")
 host_text = importlib.import_module(f"{PACKAGE}.host_text")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 state_module = importlib.import_module(f"{PACKAGE}.state")
-try:
-    gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
-except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
-    gemini_slots = None
+gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
+
 DispatchBinding = dispatch_binding.DispatchBinding
 Carousel = carousel.Carousel
 EVENTS = events_module.EVENTS

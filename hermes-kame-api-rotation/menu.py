@@ -280,12 +280,38 @@ class MenuCommand:
         return lines
 
     def _repair_lines(self) -> List[str]:
-        """The Gemini parallel-tool-call repair, retired in 1.8.1.9.
+        """Whether the Gemini parallel-tool-call repair is in place.
 
-        Hermes separates parallel tool calls itself since #111686, so KAME no
-        longer patches its stream translator and there is nothing to report.
+        Shown unconditionally, including when it is off, because "why am I
+        still seeing 'Response truncated due to output length limit'" needs an
+        answer that is not silence.
         """
-        return []
+        try:
+            from . import gemini_slots
+
+            report = gemini_slots.report()
+        except Exception:
+            logger.debug("kame: could not read the Gemini repair state", exc_info=True)
+            return []
+        lines = ["Gemini parallel tool-call repair:", ""]
+        if report.get("applied"):
+            lines.append(_row("status", "in place"))
+            lines.append(_row("calls separated", str(report.get("repaired", 0))))
+        else:
+            lines.append(_row("status", "not applied"))
+            lines.append(_row("because", str(report.get("reason") or "unknown")))
+        lines.append("")
+        lines.append(
+            "  Two parallel calls to one tool arrive under the same slot key and"
+        )
+        lines.append(
+            "  their arguments are concatenated into one unparseable string, which"
+        )
+        lines.append(
+            "  Hermes reports as 'Response truncated due to output length limit'."
+        )
+        lines.append("  Host bug; KAME repairs the stream on the way past.")
+        return lines
 
     def _host_lines(self) -> List[str]:
         """The four host variables KAME reasons about, and who set them.

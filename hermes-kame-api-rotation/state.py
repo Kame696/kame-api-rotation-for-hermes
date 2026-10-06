@@ -416,10 +416,6 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # this to say "on key 3" while a turn is running and fall back to plain
         # health when nothing is in flight.
         "activity": activity,
-        # 1.8.1.9. Whether Hermes draws KAME's status line on its own spinner
-        # (``notify_turn_status``). When it does, the panel's composer line
-        # stays empty, so the Desktop shows the one line 1.8.1.8 showed.
-        "status_rail": _status_rail(),
         "gemini_tool_call_fix": _gemini_fix_state(),
         # 1.6.0.0. The panel's answer to "is it even seeing my keys?".
         #
@@ -638,20 +634,14 @@ def _desktop_ui_state() -> Dict[str, Any]:
         return {"installed": False, "reason": "unavailable", "path": ""}
 
 
-def _status_rail() -> bool:
-    try:
-        from .transport import status_rail_available
-
-        return bool(status_rail_available())
-    except Exception:
-        return False
-
-
 def _gemini_fix_state() -> Dict[str, Any]:
-    """1.8.1.9: Hermes fixed the parallel tool-call slots itself (#111686), so
-    KAME no longer patches the translator. Kept in the snapshot so an older
-    panel reading this field gets an honest answer instead of a missing key."""
-    return {"applied": False, "reason": "fixed in Hermes itself", "repaired": 0}
+    try:
+        from . import gemini_slots
+
+        return gemini_slots.report()
+    except Exception:
+        logger.debug("kame: could not read the Gemini patch state", exc_info=True)
+        return {"applied": False, "reason": "unavailable", "repaired": 0}
 
 
 def neighbours(now: Optional[float] = None) -> List[Dict[str, Any]]:

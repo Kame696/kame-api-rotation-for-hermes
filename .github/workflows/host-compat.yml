@@ -2,10 +2,10 @@
 #
 # Weekly, and on demand with any Hermes tag or branch. Installs that Hermes
 # into a throwaway HERMES_HOME and runs the host witnesses from tools/:
-# the host's own error corpus with and without KAME, the host facts KAME's
-# non-decisions rest on, the Gemini error contracts (each with its negative
-# control), and Hermes' own provider, pool, auxiliary and streaming suites
-# with KAME's client handed out in every test home. No provider is contacted and no credential exists.
+# the host's own error corpus and credential-pool suites with and without
+# KAME, the runtime contracts (each with its mutation control), the host
+# facts KAME's non-decisions rest on, and the sandbox binding against the
+# real CredentialPool. No provider is contacted and no credential exists.
 #
 # A red run here is news about Hermes, not necessarily a bug in KAME: read
 # the failing tool's own output, then DESIGN.md and HOST_ALERTS.md.
@@ -66,11 +66,14 @@ jobs:
       - name: Host error corpus with and without KAME
         run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_corpus.py
 
+      - name: Host credential-pool suites with and without KAME
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_pool_suite.py
+
       - name: Host prose stripping
         run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_prose.py
 
-      - name: Gemini error contracts (with negative controls)
-        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_gemini_contracts.py --host "$KAME_HERMES_ROOT" --out "$RUNNER_TEMP/gemini_contracts.json"
+      - name: Gemini error transport
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_gemini_error_transport.py --host "$KAME_HERMES_ROOT" --out "$RUNNER_TEMP/gemini_error_transport.json"
 
-      - name: Hermes' own suites with KAME's client in every test home
-        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_suite_1819.py --hermes "$KAME_HERMES_ROOT"
+      - name: Sandbox binding on the real CredentialPool
+        run: $KAME_HERMES_ROOT/venv/bin/python -B tools/sandbox_binding.py

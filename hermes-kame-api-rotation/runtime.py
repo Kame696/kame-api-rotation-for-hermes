@@ -586,26 +586,3 @@ def record_rotation(**fields: Any) -> None:
         recorder(**fields)
     except Exception:  # pragma: no cover - defensive
         logger.debug("kame: the rotation could not be journalled", exc_info=True)
-
-
-# 1.8.1.9. The success half of the same seam. ``pool_binding`` used to learn
-# that a key answered from a mirror of the host's selection; the client now
-# knows exactly which key answered, and says so here.
-_ANSWER_RECORDER: Optional[Callable[..., None]] = None
-
-
-def set_answer_recorder(recorder: Optional[Callable[..., None]]) -> None:
-    """Register (or clear) the function that files a call that answered."""
-    global _ANSWER_RECORDER
-    _ANSWER_RECORDER = recorder
-
-
-def note_answered(provider: Any, model: Any, credential_id: Any) -> None:
-    """File one answered call, if anything is listening. Never raises."""
-    recorder = _ANSWER_RECORDER
-    if recorder is None:
-        return
-    try:
-        recorder(provider=str(provider or ""), model=str(model or ""), credential_id=str(credential_id or ""))
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("kame: the answer could not be journalled", exc_info=True)

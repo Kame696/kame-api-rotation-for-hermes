@@ -439,10 +439,7 @@ def test_both_lanes_still_record():
 import os
 import types
 
-try:
-    quota_id_mod = importlib.import_module(f"{PACKAGE}.quota_id_binding")
-except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
-    quota_id_mod = None
+quota_id_mod = importlib.import_module(f"{PACKAGE}.quota_id_binding")
 classify_mod = importlib.import_module(f"{PACKAGE}.core.classify")
 
 GOOGLE_429_BODY = {

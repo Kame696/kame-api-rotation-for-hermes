@@ -57,13 +57,7 @@ def _load_package():
 _load_package()
 runtime = importlib.import_module(f"{PACKAGE}.runtime")
 store_module = importlib.import_module(f"{PACKAGE}.store")
-try:
-    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
-except ModuleNotFoundError:
-    # 1.8.1.9 removed the pool binding (plugin catalog rule 9). This module's
-    # own tests are about it and are retired; the helpers below (PACKAGE,
-    # FakeState, the stand-in pool) still serve test_journal/status/probe.
-    pool_binding = None
+pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
 
 journal_module = importlib.import_module(f"{PACKAGE}.core.journal")
 probe_module = importlib.import_module(f"{PACKAGE}.core.probe")
@@ -73,8 +67,8 @@ DAY = 86400.0
 
 LedgerStore = store_module.LedgerStore
 JournalStore = store_module.JournalStore
-PoolBinding = getattr(pool_binding, "PoolBinding", None)
-Incompatible = getattr(pool_binding, "Incompatible", Exception)
+PoolBinding = pool_binding.PoolBinding
+Incompatible = pool_binding.Incompatible
 
 NOW = 1_000_000.0
 HOUR = 3600.0

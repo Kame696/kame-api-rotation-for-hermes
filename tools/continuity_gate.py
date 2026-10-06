@@ -71,13 +71,6 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-
-# 1.8.1.9: the carousel moved from dispatch_binding.py to transport.py. The
-# gate keeps its own words; tools/legacy_dispatch.py answers the old import.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import legacy_dispatch  # noqa: E402
-
-legacy_dispatch.enable()
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
