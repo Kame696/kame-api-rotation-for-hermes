@@ -7,6 +7,27 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.2.2] — 2026-10-07 — what the owner's own test found against 1.8.1.8
+
+- **The Settings form is back on the panel's Settings tab.** 1.8.2.0 had moved
+  it to Settings ▸ Plugins and left a link, which took away the 1.1.1
+  editable panel. The form is now in both places: the same component, sending
+  the same requests.
+- **A setting saved from the panel is now in force in every Hermes process on
+  the profile.** The first process to poll applies the request: the Desktop
+  backend, the messaging gateway, or a second window. That process also writes
+  `.env`, but before 1.8.2.2 only its own environment changed. In the owner's
+  test the gateway took a `stream_silence_timeout_seconds` of 20 s, and the
+  Desktop process serving the chat never had it. Every process now rereads
+  `.env` within a second of it changing.
+- **The panel no longer refreshes by itself.** Over `ctx.rest` a read can take
+  longer than the one-second tick. Overlapping reads then resolved out of
+  order, and the page flipped between an older and a newer snapshot. A single
+  failed read also blanked the page and rebuilt it, which remounted the
+  settings form. Now one read runs at a time, and the last good reading stays
+  on screen for up to 15 s of failed reads. `tests/ui_reconcile.mjs` has two
+  new checks for this; both fail on 1.8.2.1.
+
 ## [1.8.2.1] — 2026-10-07 — the cron bound the catalog review asked for
 
 - **`max_total_wait_seconds`, unset, now depends on where the call runs.**

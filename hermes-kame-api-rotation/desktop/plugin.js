@@ -385,6 +385,11 @@ function restProblem(error) {
  *  tab that is a form rebuilding itself under the cursor. */
 let lastText = ''
 
+/** When the backend last answered, and how long a run of failed reads may
+ *  last before the page admits it (1.8.2.2). */
+let lastGoodReadAt = 0
+const READ_GRACE_MS = 15000
+
 async function readSnapshot() {
   if (!rest) {
     $snapshot.set(null)
@@ -405,7 +410,17 @@ async function readSnapshot() {
     const body = await rest('/state')
 
     text = typeof body === 'string' ? body : JSON.stringify(body)
+    lastGoodReadAt = Date.now()
   } catch (error) {
+    // A backend busy for a moment is not a missing pool (1.8.2.2): keep the
+    // last good reading on screen for READ_GRACE_MS of failures instead of
+    // blanking the page and rebuilding it — which remounted the settings form.
+    if ($snapshot.get() && Date.now() - lastGoodReadAt < READ_GRACE_MS) {
+      settle($snapshot.get())
+
+      return
+    }
+
     // Absent is the ordinary case on a fresh install — say which, rather
     // than "error".
     $snapshot.set(null)
@@ -705,8 +720,23 @@ function startReading() {
       return
     }
 
-    void readSnapshot()
+    // One read at a time (1.8.2.2). Over `ctx.rest` a read can take longer
+    // than the tick; overlapping reads then resolve out of order and the
+    // panel flips between an older and a newer snapshot — the "refreshing by
+    // itself" a file read never produced.
+    if (reading) {
+      return
+    }
+
+    reading = true
+
+    // Returned so a caller that wants to wait for this read can.
+    return readSnapshot().finally(() => {
+      reading = false
+    })
   }
+
+  let reading = false
 
   tick()
 
@@ -2722,7 +2752,7 @@ function KamePage() {
       ),
 
     tab === 'settings'
-      ? h(SettingsLink, { key: 'body' })
+      ? h(SettingsPage, { key: 'body', snap })
       : tab === 'events'
         ? h(EventsPage, { key: 'body', snap })
         : h(
@@ -2815,30 +2845,13 @@ function KamePage() {
 
 // -- settings, under Settings ▸ Plugins (1.8.2.0) ---------------------------
 
-/** Where KAME's settings live now, as a link.
+/** The same form, also under Settings ▸ Plugins (1.8.2.0).
  *
- *  The same controls, the same validation and the same control requests —
- *  Hermes asks plugins to keep preferences under Settings ▸ Plugins, so the
- *  form moved there and this tab points at it. */
-function settingsHref() {
-  return typeof sdk.pluginSettingsHref === 'function'
-    ? sdk.pluginSettingsHref(PLUGIN_ID)
-    : `/settings?tab=plugins&plugin=${PLUGIN_ID}`
-}
-
-function SettingsLink() {
-  return h(
-    'div',
-    { className: 'flex flex-col items-start gap-3 py-2' },
-    h(
-      'p',
-      { className: 'text-sm text-(--ui-text-secondary)', key: 'where' },
-      'KAME settings now live in Settings ▸ Plugins ▸ KAME API Rotation — every switch and number is still there.'
-    ),
-    h(Button, { key: 'go', onClick: () => host.navigate(settingsHref()) }, 'Open KAME settings')
-  )
-}
-
+ *  Hermes keeps plugin preferences under Settings ▸ Plugins, so the form is
+ *  registered there too. 1.8.2.1 keeps it on the panel's own Settings tab as
+ *  well: the owner edits from the panel, and moving the form away was a loss
+ *  of the 1.1.1 editable panel. Both are the same component, sending the same
+ *  control requests. */
 function KameSettingsEntry() {
   const snap = useValue($snapshot)
   const problem = useValue($problem)

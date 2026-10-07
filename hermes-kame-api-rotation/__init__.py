@@ -555,6 +555,22 @@ _CONTROL_TICK_S = 1.0
 _SNAPSHOT_TICK_S = 5.0
 
 
+def _env_stamp() -> Any:
+    """``(mtime_ns, size)`` of this profile's ``.env``, or ``None``."""
+    try:
+        from . import envfile
+
+        target = envfile.path()
+        if target is None:
+            return None
+        info = target.stat()
+        return (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return None
+    except Exception:  # pragma: no cover
+        return None
+
+
 def _start_state_heartbeat() -> None:
     """Refresh the snapshot on a slow tick, and take the panel's requests on a fast one.
 
@@ -581,6 +597,7 @@ def _start_state_heartbeat() -> None:
         from . import control, state
 
         ticks = 0
+        env_stamp = _env_stamp()
         while not stop.wait(_CONTROL_TICK_S):
             ticks += 1
             try:
@@ -589,6 +606,24 @@ def _start_state_heartbeat() -> None:
                 control.poll()
             except Exception:  # pragma: no cover — ``poll`` swallows its own
                 logger.debug("%s: control poll failed", PLUGIN_NAME, exc_info=True)
+            # 1.8.2.1. A panel request is applied by whichever Hermes process
+            # on this profile polls first (Desktop backend, gateway, a second
+            # window); it writes .env, but only that process's environment
+            # changed. Every other process now picks the edit up from the file
+            # within a second, so a setting saved in the panel is in force in
+            # the process actually serving the chat.
+            stamp = _env_stamp()
+            if stamp != env_stamp:
+                env_stamp = stamp
+                try:
+                    from . import settings as _settings
+
+                    changed = _settings.reread_environment()
+                    if changed:
+                        logger.info("%s: .env changed — now in force here: %s",
+                                    PLUGIN_NAME, ", ".join(changed))
+                except Exception:  # pragma: no cover - a daemon that cannot die
+                    logger.debug("%s: could not reread .env", PLUGIN_NAME, exc_info=True)
             if ticks * _CONTROL_TICK_S < _SNAPSHOT_TICK_S:
                 continue
             ticks = 0

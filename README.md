@@ -8,10 +8,10 @@
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.2.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.2.2-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-2851_passing-brightgreen.svg)](#verified)
-[![Catalog admission](https://img.shields.io/badge/catalog-1.8.2.1_review_pending-orange.svg)](#verified)
+[![Catalog admission](https://img.shields.io/badge/catalog-1.8.2.2_review_pending-orange.svg)](#verified)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -20,7 +20,7 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 
 </div>
 
-**1.8.2.1 — the same carousel, with no runtime overrides of Hermes, and
+**1.8.2.2 — the same carousel, with no runtime overrides of Hermes, and
 nothing given up for it.** Hermes asks a provider profile for its model client
 (`ProviderProfile.create_client`, the documented way to bring a transport), and
 the companion package `hermes-kame-provider` answers with a client that rotates
@@ -229,7 +229,7 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
-1.8.2.1, on a copy of Hermes `56f7986` (main of 2026-10-05). Local fake
+1.8.2.2, on a copy of Hermes `56f7986` (main of 2026-10-05). Local fake
 providers, except the real-key row. Details in [VALIDATION.md](VALIDATION.md).
 
 | Check | Result |
@@ -313,6 +313,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.2.2** | Fixes from real use | The Settings form is back on the panel's Settings tab. A setting saved in the panel is in force in every Hermes process. The panel no longer refreshes by itself: one read runs at a time, and a brief backend hiccup keeps the last reading. |
 | **1.8.2.1** | Cron bound | Unset, `max_total_wait_seconds` bounds a cron run at 300 s, below Hermes' own cron timeout. Chats keep the unbounded wait, and any value you set wins everywhere, so 0 keeps cron unbounded too. The catalog README marks the optional bridge as unsupported. |
 | **1.8.2.0** | Catalog review, full Events | The panel uses only `@hermes/plugin-sdk`, through its own `plugin_api.py` route, and reads the profile you are looking at. Settings moved to Desktop Settings ▸ Plugins. New `max_total_wait_seconds` (off by default) for unattended runs. Every call and every answer is on the Events tab. Refusal records are capped and owner-only, and the quota fields are kept. Multi-key sync works on Hermes' scoped secrets. Optional `hermes-kame-bridge` adds the two unmerged Hermes seams (spinner line #133474, Anthropic Messages rotation #133461). |
 | **1.8.1.9** | No runtime overrides | Every rebind of Hermes core removed for catalog rule 9; the carousel now runs inside the client Hermes asks a provider profile for (companion package `hermes-kame-provider`). Same decisions as 1.8.1.8 on real Hermes turns, on every wire (Anthropic Messages and Responses through new provider-profile clients); status line through `notify_turn_status`; comma-joined key variables kept as one pool row per key automatically; two settings retired because Hermes now does their job. |

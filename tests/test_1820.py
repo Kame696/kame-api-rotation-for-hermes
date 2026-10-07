@@ -399,3 +399,61 @@ class TestTheCronBound1821:
             list(_transport(clock).stream(FakeCall(_everyone_refuses(times=30))))
         assert "Quota exceeded" in str(caught.value)
         assert 299 <= clock.slept <= 301
+
+
+class TestEveryProcessFollowsThePanel1822:
+    """1.8.2.2: a setting saved from the panel reaches every Hermes process on the profile."""
+
+    def test_the_heartbeat_rereads_env_when_the_file_changes(self):
+        source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+        assert "stamp = _env_stamp()" in source and "_settings.reread_environment()" in source
+
+    def test_reread_puts_a_saved_value_in_force(self, monkeypatch):
+        envfile = importlib.import_module(f"{PACKAGE}.envfile")
+        target = Path(os.environ["HERMES_HOME"]) / ".env"
+        before = target.read_text(encoding="utf-8") if target.exists() else None
+        monkeypatch.delenv("KAME_STREAM_SILENCE_TIMEOUT", raising=False)
+        try:
+            target.write_text("KAME_STREAM_SILENCE_TIMEOUT=20\n", encoding="utf-8")
+            monkeypatch.setattr(envfile, "path", lambda: target)
+            assert "KAME_STREAM_SILENCE_TIMEOUT" in settings.reread_environment()
+            assert settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0) == 20.0
+        finally:
+            os.environ.pop("KAME_STREAM_SILENCE_TIMEOUT", None)
+            if before is None:
+                target.unlink()
+            else:
+                target.write_text(before, encoding="utf-8")
+
+    def test_the_panel_settings_tab_holds_the_form_again(self):
+        source = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
+        assert "? h(SettingsPage, { key: 'body', snap })" in source
+
+
+class TestEveryProcessFollowsThePanel1822:
+    """1.8.2.2: a setting saved from the panel reaches every Hermes process on the profile."""
+
+    def test_the_heartbeat_rereads_env_when_the_file_changes(self):
+        source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+        assert "stamp = _env_stamp()" in source and "_settings.reread_environment()" in source
+
+    def test_reread_puts_a_saved_value_in_force(self, monkeypatch):
+        envfile = importlib.import_module(f"{PACKAGE}.envfile")
+        target = Path(os.environ["HERMES_HOME"]) / ".env"
+        before = target.read_text(encoding="utf-8") if target.exists() else None
+        monkeypatch.delenv("KAME_STREAM_SILENCE_TIMEOUT", raising=False)
+        try:
+            target.write_text("KAME_STREAM_SILENCE_TIMEOUT=20\n", encoding="utf-8")
+            monkeypatch.setattr(envfile, "path", lambda: target)
+            assert "KAME_STREAM_SILENCE_TIMEOUT" in settings.reread_environment()
+            assert settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0) == 20.0
+        finally:
+            os.environ.pop("KAME_STREAM_SILENCE_TIMEOUT", None)
+            if before is None:
+                target.unlink()
+            else:
+                target.write_text(before, encoding="utf-8")
+
+    def test_the_panel_settings_tab_holds_the_form_again(self):
+        source = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
+        assert "? h(SettingsPage, { key: 'body', snap })" in source

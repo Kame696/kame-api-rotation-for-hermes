@@ -239,8 +239,20 @@ globalThis.document = { visibilityState: 'visible' }
 // 1.8.2.0: the panel reaches its own backend through `ctx.rest` (the SDK's
 // door to `dashboard/plugin_api.py`), not the preload file bridge. The stub
 // answers the two routes that file declares.
+// 1.8.2.2: a slow or failing backend, switchable per check.
+let restDelayMs = 0
+let restFails = false
+let stateReads = 0
+
 async function rest(path, opts = {}) {
   if (path === '/state') {
+    stateReads += 1
+    if (restDelayMs) {
+      await new Promise(resolve => setTimeout(resolve, restDelayMs))
+    }
+    if (restFails) {
+      throw new Error('HTTP 503 busy')
+    }
     return structuredClone(served ?? DOCUMENT)
   }
 
@@ -398,7 +410,7 @@ await check('every variadic child list is keyed, on every tab', () => {
   const landmark = {
     Events: 'Reading this list',
     Overview: 'Pool health',
-    Settings: 'Open KAME settings'
+    Settings: 'KAME works with none of these'
   }
 
   for (const label of ['Settings', 'Events', 'Overview']) {
@@ -612,6 +624,28 @@ await check('the gateway is never mistaken for this screen', () => {
   }
 
   assert.equal(plugin.__ownSection(withGateway, NOW_MS).pid, 200)
+})
+
+// 1.8.2.2. The two causes of a panel that "refreshes by itself" over ctx.rest.
+await check('a slow backend never gets two overlapping reads', async () => {
+  assert.ok(poll, 'the panel installed no reader')
+  restDelayMs = 50
+  stateReads = 0
+  const first = poll()
+  await poll()
+  await poll()
+  await first
+  restDelayMs = 0
+  assert.equal(stateReads, 1, 'reads overlapped, so answers could land out of order')
+})
+
+await check('a backend busy for a moment does not blank the page', async () => {
+  const before = JSON.stringify(render(page.render()))
+  restFails = true
+  await poll()
+  restFails = false
+  const during = JSON.stringify(render(page.render()))
+  assert.ok(during === before, 'a single failed read rebuilt the page')
 })
 
 if (failures.length) {

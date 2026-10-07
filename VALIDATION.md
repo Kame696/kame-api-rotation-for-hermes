@@ -1,4 +1,19 @@
-# 1.8.2.1 validation
+# 1.8.2.2 validation
+
+1.8.2.2 fixes three things the author found by using 1.8.2.1 side by side with 1.8.1.8:
+
+- the Settings form is back on the panel's own tab, and stays under Settings ▸ Plugins too;
+- a setting saved from the panel is in force in every Hermes process on the profile;
+- the panel no longer refreshes by itself over `ctx.rest`.
+
+| Check | Result |
+|---|---|
+| Plugin suite on Hermes `56f7986` | 2,859 passed, 0 failed |
+| `tests/ui_reconcile.mjs` | all checks pass. Two new checks (overlapping reads, a failed read) fail on 1.8.2.1 and pass on 1.8.2.2 |
+
+---
+
+## 1.8.2.1 validation
 
 1.8.2.1 changes one default and one paragraph of the README. Everything else
 is the 1.8.2.0 measured below.
