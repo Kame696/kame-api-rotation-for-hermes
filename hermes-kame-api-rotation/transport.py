@@ -1805,8 +1805,9 @@ class KameTransport:
                 # since 1.0.1, but never in silence.
                 if vigil is None:
                     vigil = _Vigil(label)
-                # 1.8.2.0: the opt-in total bound (0 = none, ADR 0002).
-                total_cap = settings.number(settings.MAX_TOTAL_WAIT, 0.0)
+                # 1.8.2.0: the total bound. 1.8.2.1: unset, a cron session gets
+                # 300 s; a value the user set (0 included) always wins.
+                total_cap = settings.total_wait_bound()
                 recovered = True
                 if total_cap > 0 and pool_waited >= total_cap:
                     recovered = False

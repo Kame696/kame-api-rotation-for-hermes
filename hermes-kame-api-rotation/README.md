@@ -24,8 +24,10 @@ your Hermes has it:
   per-call key rotation on the Anthropic Messages wire. Without it, KAME sizes
   each refusal there but does not pick the key.
 
-Until both are merged, the optional `hermes-kame-bridge` package adds them. It
-is not part of the catalog entry, because it patches Hermes.
+Both seams arrive with those Hermes pull requests. Until then, the author's
+repository also has an optional `hermes-kame-bridge` package that adds them
+early. It **patches Hermes core at runtime**, is **not supported by Hermes**,
+and is not part of this catalog entry.
 
 **Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
 

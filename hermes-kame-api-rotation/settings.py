@@ -751,6 +751,34 @@ def number(key: str, default: float) -> float:
 DEFAULTS_ON = frozenset({NO_MODEL_FALLBACK, SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF})
 
 
+#: 1.8.2.1, asked for by the catalog review: the bound a cron run gets when
+#: nobody set ``max_total_wait_seconds``. Below Hermes' own
+#: ``HERMES_CRON_TIMEOUT`` (600 s by default), so an unattended job ends with
+#: the provider's refusal instead of sitting on a spent pool.
+CRON_TOTAL_WAIT_DEFAULT_S = 300.0
+
+
+def _in_cron_session() -> bool:
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_CRON_SESSION", "").strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def total_wait_bound() -> float:
+    """The ``max_total_wait_seconds`` this call runs under. 0 means no bound.
+
+    A value the user set anywhere (environment or config, including an
+    explicit 0) always wins. Otherwise interactive calls keep 0, the ADR 0002
+    wait, and a cron session gets :data:`CRON_TOTAL_WAIT_DEFAULT_S`.
+    """
+    if provenance(MAX_TOTAL_WAIT) != "default":
+        return number(MAX_TOTAL_WAIT, 0.0)
+    return CRON_TOTAL_WAIT_DEFAULT_S if _in_cron_session() else 0.0
+
+
 def is_on(key: str) -> bool:
     """Whether the named switch is set, environment first.
 
@@ -1012,13 +1040,13 @@ META = {
     ),
     MAX_TOTAL_WAIT: (
         "Give up waiting after",
-        "Zero, the default, means a call waits for as long as every key is "
-        "resting: each key's own rest is already capped by the ceiling above, "
-        "and the call retries the moment one returns, so a spent quota ends "
-        "with an answer on the same model. For cron jobs or a gateway nobody "
-        "is watching, set a number: once one call has waited that long in "
-        "total, KAME stops waiting and hands Hermes the provider's original "
-        "refusal, so Hermes' own failure and fallback path runs.",
+        "Unset, a chat waits for as long as every key is resting: each key's "
+        "own rest is already capped by the ceiling above, and the call retries "
+        "the moment one returns, so a spent quota ends with an answer on the "
+        "same model. A cron job, unset, stops after 300 s — below Hermes' own "
+        "cron timeout — and hands Hermes the provider's original refusal. "
+        "Any value you set wins everywhere: 0 means never stop waiting, chats "
+        "and cron alike; a number bounds both.",
     ),
     UNSIZED_THROTTLE_REST: (
         "Rest after an unsized throttle",

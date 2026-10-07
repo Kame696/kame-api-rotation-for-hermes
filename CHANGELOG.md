@@ -7,6 +7,14 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.2.1] — 2026-10-07 — the cron bound the catalog review asked for
+
+- **`max_total_wait_seconds`, unset, now depends on where the call runs.**
+  - **A cron run** (detected with `gateway.session_context.get_session_env("HERMES_CRON_SESSION")`) gets 300 s. That is below Hermes' own `HERMES_CRON_TIMEOUT` of 600 s. Past it, the provider's original refusal goes to Hermes, and the Events tab records `gave_up`.
+  - **A chat** keeps the unbounded wait (ADR 0002).
+  - **Any value you set wins everywhere**, from the environment or from config. `0` means never stop waiting, in chats and cron alike.
+- **The README the catalog renders states plainly** that `hermes-kame-bridge` patches Hermes core at runtime and is not supported by Hermes.
+
 ## [1.8.2.0] — 2026-10-06 — the catalog review, every call on the Events tab, keys read on the new Hermes
 
 Everything 1.8.1.9 does, plus what the catalog review of

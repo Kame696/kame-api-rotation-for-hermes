@@ -1,4 +1,25 @@
-# 1.8.2.0 validation and limitations
+# 1.8.2.1 validation
+
+1.8.2.1 changes one default and one paragraph of the README. Everything else
+is the 1.8.2.0 measured below.
+
+**The default.** When the user has not set `max_total_wait_seconds`, a cron
+session (`HERMES_CRON_SESSION`) waits at most 300 s and then gets the
+provider's original refusal. A chat keeps the unbounded wait. A value the user
+sets wins everywhere, `0` included.
+
+**The paragraph.** The catalog README now states plainly that the optional
+bridge patches Hermes core and is not supported.
+
+| Check | Result |
+|---|---|
+| Plugin suite on Hermes `56f7986` | 2,856 passed. 5 new tests cover a chat with nothing set (no bound), a cron run with nothing set (300 s), an explicit 0 in cron (no bound), an explicit number in cron, and the original refusal raised after 300 s in cron |
+| Continuity gate | 23/23 when run with the machine idle. Under a parallel load (Hermes open), one end-to-end scenario timed out, as noted for 1.8.1.9 |
+| `hermes plugins validate` | both catalog packages pass, `no core override` and `desktop surface` included |
+
+---
+
+## 1.8.2.0 validation and limitations
 
 Three packages at 1.8.2.0. `hermes-kame-api-rotation` and `hermes-kame-provider`
 form the catalog entry. `hermes-kame-bridge` is optional and not part of it.

@@ -361,3 +361,41 @@ class TestTheBridgeNeverNestsRotatingClients:
     def test_kame_unwraps_the_bridge_for_its_per_key_clients(self):
         source = (PLUGIN_DIR / "facade.py").read_text(encoding="utf-8")
         assert 'getattr(build_anthropic_client, "_kame_bridge", False)' in source
+
+
+class TestTheCronBound1821:
+    """1.8.2.1: unset, a cron run is bounded at 300 s; a chat is not; a user value wins."""
+
+    @pytest.fixture()
+    def cron(self, monkeypatch):
+        monkeypatch.delenv("KAME_MAX_TOTAL_WAIT", raising=False)
+        settings.forget()
+        session = pytest.importorskip("gateway.session_context")
+        var = session._VAR_MAP["HERMES_CRON_SESSION"]
+        token = var.set("1")
+        yield
+        var.reset(token)
+        settings.forget()
+
+    def test_unset_in_a_chat_is_unbounded(self, monkeypatch):
+        monkeypatch.delenv("KAME_MAX_TOTAL_WAIT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        settings.forget()
+        assert settings.total_wait_bound() == 0.0
+
+    def test_unset_in_cron_is_300_seconds(self, cron):
+        assert settings.total_wait_bound() == settings.CRON_TOTAL_WAIT_DEFAULT_S == 300.0
+
+    def test_an_explicit_zero_keeps_cron_unbounded(self, cron, monkeypatch):
+        monkeypatch.setenv("KAME_MAX_TOTAL_WAIT", "0")
+        assert settings.total_wait_bound() == 0.0
+
+    def test_an_explicit_number_wins_in_cron(self, cron, monkeypatch):
+        monkeypatch.setenv("KAME_MAX_TOTAL_WAIT", "900")
+        assert settings.total_wait_bound() == 900.0
+
+    def test_a_cron_call_hands_over_the_refusal_after_the_bound(self, cron, clock):
+        with pytest.raises(Exception) as caught:
+            list(_transport(clock).stream(FakeCall(_everyone_refuses(times=30))))
+        assert "Quota exceeded" in str(caught.value)
+        assert 299 <= clock.slept <= 301
