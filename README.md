@@ -2,9 +2,9 @@
 
 <img src="assets/kame-cover.png" alt="KAME — Key-Aware Management Engine" width="420" />
 
-# 🐢⚡ KAME — API Key Rotation for Hermes
+# 🐢⚡ KAME — the best free API key rotation for Hermes Agent
 
-**Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
+**Paste several API keys — from many projects and accounts — and use their quota as one. KAME picks the healthiest key for every call, reads every refusal, races a slow reply with your next model, and never lets a rate limit end your turn.**
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
@@ -20,7 +20,7 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 
 </div>
 
-**1.8.2.8 — your next model the moment your provider is busy, everything automatic, the model of each reply on screen.**
+**1.8.2.8 — speed first: median reply 2.6 s live on a day the newest Gemini took 2 minutes per word.**
 
 - **A busy provider no longer holds your agent.** Two keys in a row answering "the model is
   overloaded" (or timing out) mean the model is busy, not your keys: the reply falls back to
@@ -31,7 +31,7 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
   key is resting, or nothing comes back in time — and the next reply starts at the top again.
   A model KAME knows is still busy or resting is passed down without spending a request, and
   Hermes' "⚠️ Model fallback … recovery is not guaranteed" line stays out of the chat for
-  these planned switches (with the optional bridge).
+  these planned switches (with `hermes-kame-bridge`).
 - **Speed first: the next model races a late reply.** Silent past ~3 × its usual first word
   (8 s at least), a reply also asks the next model of your list; the first to answer is
   shown. Your best model sits out only 30 s after losing, so it leads again almost at once.
@@ -94,8 +94,8 @@ your Hermes has it:
 | `notify_turn_status` | [#133474](https://github.com/NousResearch/hermes-agent/pull/133474) | The live status line (`⏳ waiting on … — KAME 13/15 keys healthy`) appears only above the Desktop composer, not on the spinner. |
 | `create_messages_client` | [#133461](https://github.com/NousResearch/hermes-agent/pull/133461) | On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding), KAME sizes each refusal but does not pick the key per call. |
 
-Until both are merged, the optional `hermes-kame-bridge` adds them. It is not
-part of the catalog entry, because it patches Hermes.
+Until both are merged, `hermes-kame-bridge` adds them (install it — see below). It is
+not part of the Hermes catalog entry, because it patches Hermes.
 
 See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
@@ -107,7 +107,7 @@ See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md
 - **One field, many keys.** Put `key1,key2,key3` in the provider field you already use. KAME reads it as three keys.
 - **The healthiest key, every call** — not only after a failure. Fewest requests in the last 60 seconds wins, least recently used breaks the tie, so fifteen keys share the load fifteen ways.
 - **It reads the error instead of guessing.** A per-minute throttle, a daily quota, an outage and a dead key are four different problems, and each gets its own wait — the provider's own number whenever it states one.
-- **No key sits out longer than an hour**, and KAME never silently switches you to another model.
+- **No key sits out longer than an hour**, and KAME only ever switches to models on your own fallback list — and says which model answered.
 - **When every key is resting, it waits** for the first one back and tells you how long, instead of failing the turn.
 
 <a id="vs"></a>
@@ -132,10 +132,12 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 ```bash
 hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation
 hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-provider
+hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-bridge
 hermes plugins enable hermes-kame-api-rotation
+hermes plugins enable hermes-kame-bridge
 ```
 
-Both are needed: `hermes-kame-api-rotation` is the carousel, the commands and the panel; `hermes-kame-provider` (a `model-provider` plugin, loaded by Hermes on its own) is how Hermes asks it for a client. Either one alone changes nothing — Hermes builds its usual client.
+`hermes-kame-api-rotation` is the carousel, the commands and the panel; `hermes-kame-provider` (a `model-provider` plugin, loaded by Hermes on its own) is how Hermes asks it for a client — both are needed, either one alone changes nothing. **`hermes-kame-bridge` gives you everything today**: the live status line on the spinner, the "which model answered" notice, no "⚠️ Model fallback" line for KAME's planned switches, and key rotation on the Anthropic Messages wire — without waiting for Hermes to merge its two seams. It installs each piece only where your Hermes lacks it, so it stays harmless after Hermes catches up. The same three ZIPs are on every [release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest).
 
 Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so — [step by step, with a screenshot](#panel)).
 
