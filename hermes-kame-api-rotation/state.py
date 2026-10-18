@@ -241,6 +241,72 @@ def _outside_pool() -> Dict[str, List[str]]:
     return found if isinstance(found, dict) else {}
 
 
+def _fallback_view(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Hermes' fallback chain as the panel shows it (1.8.2.7, read-only).
+
+    KAME never edits the chain: Hermes owns it (`hermes fallback add`). This
+    says what is in it, how each model's pool is doing, and whether KAME will
+    hand a call over to it, so "why did it stay on the slow model?" has an
+    answer on screen.
+    """
+    try:
+        from . import settings
+        from .core import fallback_chain
+
+        primary, chain = fallback_chain.read()
+        by_identity = {row["identity"]: row for row in rows}
+
+        def entry(identity: str, role: str) -> Dict[str, Any]:
+            row = next((r for i, r in by_identity.items()
+                        if i == identity or i.startswith(identity + ":")), None)
+            return {
+                "identity": identity,
+                "role": role,
+                "keys": row["keys"] if row else None,
+                "healthy": row["healthy"] if row else None,
+                "soonest_s": row["soonest_s"] if row else None,
+                # Has KAME served this model yet? (a missing row is "not yet", not "not a pool")
+                "kame_serves": bool(row),
+            }
+
+        entries = ([entry(primary, "primary")] if primary else []) + [entry(i, "fallback") for i in chain]
+        flag_on = settings.is_on(settings.NO_MODEL_FALLBACK)
+        mode = settings.model_switch_mode()
+        threshold = settings.number(settings.FAILOVER_AFTER, 60.0) if mode == "timed" else 0.0
+        if not chain:
+            state, why = "no_chain", ("Switching: off - no fallback models are set in Hermes, so KAME waits for your keys. "
+                                 "Add some with hermes fallback add and switching is automatic.")
+        elif flag_on:
+            state, why = "off_by_flag", "Switching: off - \"Ignore my fallback list\" is on, so KAME waits for your keys."
+        elif mode == "never":
+            state, why = "off_by_zero", "Fallback: off - 'Fallback' is set to Never."
+        elif mode == "timed" and threshold <= 0:
+            state, why = "off_by_zero", "Switching: off - your time is 0."
+        elif mode == "timed":
+            state, why = "on", (f"Switching: after your time - once you have waited {int(threshold)} s with nothing "
+                                "on screen, Hermes answers with the next model below, and comes back to your model "
+                                "as soon as it can answer.")
+        else:
+            state, why = "on", ("Switching: automatic - when your provider is busy, Hermes answers with the next "
+                                "model below at once; when your keys are resting, after a few seconds (KAME learns "
+                                "how long your model usually takes). Your model comes back as soon as it can answer, "
+                                "and the first model in the list is always tried first.")
+        # 1.8.2.7: Hermes switches at most agent.api_max_retries times in one
+        # message (default 3); past that the turn ends with "No reply".
+        limit = fallback_chain.switch_limit()
+        warning = ""
+        if chain and state == "on" and len(chain) > limit:
+            warning = (f"Hermes switches model at most {limit} times in one message, and your list has "
+                       f"{len(chain)} fallback models: when the first {limit} are all out, the rest are "
+                       f"never reached and the message ends with no reply. Set agent.api_max_retries: "
+                       f"{len(chain) + 1} in Hermes' config.yaml to reach all of them.")
+        return {"state": state, "why": why, "threshold_s": threshold, "entries": entries,
+                "switch_limit": limit, "warning": warning}
+    except Exception:
+        logger.debug("kame: could not build the fallback view", exc_info=True)
+        return {"state": "unknown", "why": "", "threshold_s": 0, "entries": []}
+
+
 def _pool_rows() -> List[Dict[str, Any]]:
     try:
         from .core.carousel import ENGINE
@@ -337,6 +403,14 @@ def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _reply_rows(binding: Any) -> List[Dict[str, Any]]:
+    try:
+        rows = list(getattr(binding, "replies", None) or [])
+    except Exception:
+        return []
+    return [dict(row) for row in reversed(rows[-12:])]
+
+
 def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The whole document. Pure — builds, never writes."""
     rows = _pool_rows()
@@ -353,6 +427,10 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         "rotations": int(getattr(binding, "rotations", 0) or 0),
         "recovered": int(getattr(binding, "recovered", 0) or 0),
         "surfaced": int(getattr(binding, "surfaced", 0) or 0),
+        # 1.8.2.7: calls handed to Hermes' fallback list, and dry pools probed
+        # several keys at once (decisions/0025, 0027).
+        "handed_over": int(getattr(binding, "handed_over", 0) or 0),
+        "probe_bursts": int(getattr(binding, "probe_bursts", 0) or 0),
         "waits": int(getattr(binding, "waits", 0) or 0),
         "waited_s": float(getattr(binding, "waited_s", 0.0) or 0.0),
         "mid_stream_cuts": int(getattr(binding, "mid_stream_cuts", 0) or 0),
@@ -434,6 +512,9 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # Counts and origins only. Never a key, never a prefix of one.
         "credentials": _credential_rows(),
         "settings": _settings_rows(),
+        # 1.8.2.7. Hermes' own fallback chain, read-only, and whether KAME will
+        # hand a call over to it.
+        "fallback": _fallback_view(rows),
         # 1.2.0. The shelves the rows above are sorted onto, titled and
         # explained here rather than in the panel: the reason one setting is
         # optional and another is an escape hatch is a fact about the plugin,
@@ -449,6 +530,25 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # The last fifty decisions, newest first, so the panel's Events screen
         # can answer "why did that stall" without anyone opening a log file.
         "events": _event_rows(),
+        # 1.8.2.3. The auxiliary tab: title/vision/compression and every
+        # other side channel, kept apart from the chat model's own rotations
+        # so a burst of background traffic cannot bury the conversation.
+        "secondary_events": _secondary_event_rows(),
+        # 1.8.2.6. Calls still running — for the "still waiting" line, so a
+        # background call stuck for an hour says so in one sentence.
+        "inflight": _inflight_rows(),
+        # 1.8.2.8: the last replies of the conversation, newest first - the
+        # model that wrote each and how long it took (decisions/0028 D6).
+        "replies": _reply_rows(binding),
+        # 1.8.2.3. The speed readouts: hedge budgets and learned
+        # thresholds per identity, and the pacer's live windows.
+        "hedge_state": _hedge_state_rows(),
+        "pacing_state": _pacing_state_rows(),
+        # 1.8.2.3. Which build line this is — the panel header shows it so
+        # "which version is actually installed" is one glance, not a guess.
+        # 1.8.2.4: read from the code's own version — 1.8.2.3 wrote the number
+        # here by hand, so every later build would have shown "1.8.2.3".
+        "build_line": __version__,
         # What became of the last thing the panel asked for. The panel writes a
         # request and has no other way to learn whether it was accepted.
         "control": _control_state(),
@@ -571,6 +671,46 @@ def _setting_groups() -> List[Dict[str, Any]]:
     except Exception:
         logger.debug("kame: could not read the setting groups", exc_info=True)
         return []
+
+
+def _secondary_event_rows() -> List[Dict[str, Any]]:
+    """The Secondary tab's rows — auxiliary calls only, newest first.
+
+    1.8.2.6: the whole buffer (200), not 50 — the tab now filters by task,
+    and a filter over a quarter of the buffer hid most of every task.
+    """
+    try:
+        from .core.events import SECONDARY_EVENTS
+        return SECONDARY_EVENTS.recent(200)
+    except Exception:
+        return []
+
+
+def _inflight_rows() -> List[Dict[str, Any]]:
+    """Calls that have not finished, longest-waiting first (1.8.2.6)."""
+    try:
+        from .core.events import INFLIGHT
+        return INFLIGHT.rows()
+    except Exception:
+        return []
+
+
+def _hedge_state_rows() -> Dict[str, Any]:
+    """Hedge readouts for the Speed card: budgets, thresholds, cooldowns."""
+    try:
+        from .core.hedging import HEDGE_TRACKER
+        return HEDGE_TRACKER.snapshot()
+    except Exception:
+        return {}
+
+
+def _pacing_state_rows() -> Dict[str, Any]:
+    """Pacer readouts: per-scope RPM, window occupancy, next-free."""
+    try:
+        from .core.pacing import PACER
+        return PACER.snapshot()
+    except Exception:
+        return {}
 
 
 def _event_rows() -> List[Dict[str, Any]]:
@@ -846,7 +986,7 @@ def publish(
                 # the destination immediately afterward. Its stamp must never
                 # be paired with our cached text.
                 stamp = _file_stamp(Path(temporary))
-                os.replace(temporary, path)
+                _replace_patiently(temporary, path)
             except BaseException:
                 try:
                     os.unlink(temporary)
@@ -863,6 +1003,24 @@ def publish(
         _disabled_reason = ""
     _sweep_once(path.parent)
     return True
+
+
+def _replace_patiently(temporary: str, path: Any, tries: int = 5, pause_s: float = 0.02) -> None:
+    """``os.replace`` that survives a reader holding the file for a moment.
+
+    1.8.2.7. On Windows the panel's read (``dashboard/plugin_api.py``) opens
+    ``state.json`` without delete-sharing, and for those milliseconds a replace
+    fails with ``PermissionError``; the snapshot was then skipped until the next
+    heartbeat. A few short retries, then the original error.
+    """
+    for attempt in range(tries):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt + 1 >= tries:
+                raise
+            time.sleep(pause_s)
 
 
 # Stale temporary files are swept at most once per process. Orphans only ever

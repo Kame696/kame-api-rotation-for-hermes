@@ -99,15 +99,23 @@ CALL_TIMINGS_DISABLED = "call_timings_disabled"
 # recovery, it is a different answer from a different model, and the user
 # finds out afterwards.
 #
-# So this is opt-in and off by default: falling back is Hermes' own behaviour
-# and this plugin does not get to decide that nobody wants it.
+# It was ON by default from 1.8.0.0 to the 1.8.2.7 drafts (R02). The owner
+# changed that on 2026-10-16 (decisions/0027): a fallback list he wrote himself
+# in Hermes IS his consent to switch, and with no list there is nothing to
+# switch to. So it is OFF by default now and lives among the advanced settings,
+# for someone who keeps a list but wants it ignored.
 #
-# **What it can and cannot reach.** ``should_fallback`` is a field on the
-# classification, so it governs every refusal KAME classifies — which is the
-# whole main conversation. The auxiliary lane fires no classification hook at
-# all (see ``aux_binding``), and Hermes routes summarisation and titling by
-# its own rules there; this switch does not reach it. That is a real limit
-# and it is written in the help text rather than left to be discovered.
+# **What it can and cannot reach** (corrected 1.8.2.7 after reading the host,
+# notes/2026-10-16-hermes-native-fallback-study.md s5). ``should_fallback`` is a
+# field on the classification, but Hermes reads it only on the non-retryable
+# client-error branch (``turn_api_error.py:334``). Rate limits, billing,
+# timeouts, overloads, auth and max-retries failures go to a fallback chain
+# WITHOUT consulting it, so if the user has set ``fallback_providers`` in
+# Hermes those can still switch model. With no chain (the owner's state today)
+# nothing can switch, and the flag is moot. Turning the flag OFF is the user's
+# opt-in to ``FAILOVER_AFTER``. The auxiliary lane fires no classification hook
+# (see ``aux_binding``) and Hermes routes summarisation and titling by its own
+# rules there; this switch does not reach it.
 NO_MODEL_FALLBACK = "never_fall_back_to_another_model"
 
 # 1.8.0.0, on by default since the continuity gate (G4, PLAN_1.8.0.0.md)
@@ -171,6 +179,89 @@ UNSIZED_THROTTLE_BACKOFF = "unsized_throttle_backoff"
 # bounds everything either way.
 UNSIZED_BACKOFF_MAX = "unsized_backoff_max_seconds"
 
+# 1.8.2.3. GCRA pacing interval — how long between calls on the same key.
+# Selection prefers keys whose window has passed; sleeping happens only when
+# ALL keys are inside their window. Zero disables pacing entirely.
+PACING_INTERVAL = "pacing_interval_seconds"
+
+# 1.8.2.3. Adaptive hedging mode: ``off`` (never), ``adaptive`` (a backup
+# leg only when this call is slower than the learned p90 time-to-first-token —
+# the default), ``max`` (fire legs from the start for latency-critical use;
+# auto-downgrades for 10 minutes when 429 pressure rises). A *choice* setting
+# carried as a string — see :data:`ALL_STRINGS` below.
+HEDGE_MODE = "hedge_mode"
+
+# 1.8.2.3. Most legs one call may use, primary included (2-3).
+HEDGE_MAX_LEGS = "hedge_max_legs"
+
+# 1.8.2.7 (decisions/0027). When two keys in a row are refused for a long rest
+# (a spent daily quota), the pool is running dry and asking the rest one by one
+# costs the user ~0.8 s per key (measured on the owner's Gemini refusals). The
+# next attempts then ask several keys at once - 4, then 8, then 16 - and the
+# first that answers wins; the others are cut. Keys whose rest ran out before
+# the moment the provider itself named are asked all at once from the start.
+# This is the most keys one such probe may use. 0 or 1 turns it off. Respects
+# hedge_mode "off".
+PROBE_BURST = "probe_burst_max_legs"
+
+# 1.8.2.3. Backup budget as a percent of calls, refilled as primaries
+# succeed (10% default); burst lets one slow incident hedge immediately.
+HEDGE_BUDGET_PCT = "hedge_budget_pct"
+HEDGE_BURST = "hedge_burst"
+
+# 1.8.2.3. Which learned percentile of time-to-first-token triggers the
+# backup leg (90 = p90).
+HEDGE_QUANTILE = "hedge_quantile"
+
+# 1.8.2.3. Cold-start thresholds: with no learned samples yet, a call
+# slower than this still hedges. Separate numbers for thinking models —
+# long thinking phases must not trigger backups.
+HEDGE_COLD_S = "hedge_cold_s"
+HEDGE_COLD_REASONING_S = "hedge_cold_reasoning_s"
+
+# 1.8.2.3. Skip backups for prompts above this size — a hedged huge
+# prompt burns TPM twice and is never cache-friendly.
+HEDGE_MAX_PROMPT_TOKENS = "hedge_max_prompt_tokens"
+
+# 1.8.2.3. Per-model requests-per-minute limits, e.g.
+# ``"gemini:gemini-2.5-flash=10, groq:*=30"``. Overrides what the pacer
+# learned on its own. A *string* setting — see :data:`ALL_STRINGS`.
+PACING_RPM_OVERRIDES = "pacing_rpm_overrides"
+
+# 1.8.2.3. Region per key, e.g. ``"a1b2=us-central1, c3d4=europe-west4"``.
+KEY_REGION_OVERRIDES = "key_region_overrides"
+
+# 1.8.2.3. Keys that share one provider project (and therefore one
+# quota), e.g. ``"a1b2=proj1, c3d4=proj1"``.
+#
+# 1.8.2.7: hidden (see :data:`HIDDEN`). The owner, 2026-10-17: KAME is built for
+# keys from different accounts/projects, one quota each, so a page that asks
+# every user which keys share a quota asks the wrong question. Still read, so an
+# old configuration that sets it keeps working.
+KEY_QUOTA_GROUPS = "key_quota_groups"
+
+# 1.8.2.3. Adaptive hedging: send a backup request when the current call is
+# slower than the learned p95 TTFT for this pool:model.
+HEDGING_DISABLED = "hedging_disabled"
+
+# 1.8.2.8 (decisions/0028). Three choices that replace a number a person had to
+# guess. Each has an "auto" that KAME sizes from what it has measured; the
+# number it used to be is still read when the choice says "timed".
+#
+# * ``model_switch`` - when the model you picked cannot answer, how soon Hermes
+#   answers with the next model of your fallback list: ``auto`` (a busy
+#   provider at once, otherwise about three times the model's usual first-word
+#   time, 6-20 s), ``timed`` (``failover_after_seconds``), ``never``.
+# * ``first_token_wait`` - how long a key may stay silent before the next one
+#   is asked: ``auto`` (learned from this model's first-word times, generous for
+#   thinking models), ``timed`` (``stream_silence_timeout_seconds``), ``off``.
+# * ``reply_notice`` - the short notice after a reply naming the model that
+#   wrote it and how long it took: ``always``, ``switches`` (only when a model
+#   from your fallback list answered), ``never``.
+MODEL_SWITCH = "model_switch"
+FIRST_TOKEN_WAIT = "first_token_wait"
+REPLY_NOTICE = "reply_notice"
+
 _ENV_FOR = {
     ROTATION_DISABLED: "KAME_ROTATION_DISABLED",
     SPREAD_DISABLED: "KAME_SPREAD_DISABLED",
@@ -185,7 +276,57 @@ _ENV_FOR = {
     NO_MODEL_FALLBACK: "KAME_NO_MODEL_FALLBACK",
     SHARE_POOL_HEALTH: "KAME_SHARE_POOL_HEALTH",
     UNSIZED_THROTTLE_BACKOFF: "KAME_UNSIZED_BACKOFF",
+    HEDGING_DISABLED: "KAME_HEDGING_DISABLED",
 }
+
+#: 1.8.2.3. String settings: values that are neither yes/no nor numbers.
+#: Declared the same way the other two kinds are — with a default, an env
+#: variable, and (when the set of answers is closed) a validity table.
+ALL_STRINGS: Dict[str, str] = {
+    HEDGE_MODE: "adaptive",
+    MODEL_SWITCH: "auto",
+    FIRST_TOKEN_WAIT: "auto",
+    REPLY_NOTICE: "always",
+    PACING_RPM_OVERRIDES: "",
+    KEY_REGION_OVERRIDES: "",
+    KEY_QUOTA_GROUPS: "",
+}
+
+#: Environment variables for string settings.
+_STRING_ENV_FOR: Dict[str, str] = {
+    HEDGE_MODE: "KAME_HEDGE_MODE",
+    MODEL_SWITCH: "KAME_MODEL_SWITCH",
+    FIRST_TOKEN_WAIT: "KAME_FIRST_TOKEN_WAIT",
+    REPLY_NOTICE: "KAME_REPLY_NOTICE",
+    PACING_RPM_OVERRIDES: "KAME_PACING_RPM_OVERRIDES",
+    KEY_REGION_OVERRIDES: "KAME_KEY_REGION_OVERRIDES",
+    KEY_QUOTA_GROUPS: "KAME_KEY_QUOTA_GROUPS",
+}
+
+#: String settings loaded from config.yaml, filled once at registration.
+_STRINGS_FROM_CONFIG: Dict[str, str] = {}
+
+#: Valid values for each string setting. An absent key means any string is
+#: accepted. An empty string in the set means "not set" is also valid.
+_STRING_VALID: Dict[str, frozenset] = {
+    HEDGE_MODE: frozenset({"off", "adaptive", "max"}),
+    MODEL_SWITCH: frozenset({"auto", "timed", "never"}),
+    FIRST_TOKEN_WAIT: frozenset({"auto", "timed", "off"}),
+    REPLY_NOTICE: frozenset({"always", "switches", "never"}),
+}
+
+#: 1.8.2.8. What each choice is called on screen, in the order it is shown
+#: (least to most). The stored values never change; only the words do.
+CHOICE_LABELS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    HEDGE_MODE: (("off", "Saver"), ("adaptive", "Balanced"), ("max", "Fastest")),
+    MODEL_SWITCH: (("auto", "Automatic"), ("timed", "Set time"), ("never", "Never")),
+    FIRST_TOKEN_WAIT: (("auto", "Automatic"), ("timed", "Set time"), ("off", "Off")),
+    REPLY_NOTICE: (("always", "Every reply"), ("switches", "Only another model"), ("never", "Never")),
+}
+
+#: 1.8.2.8. A number that only matters for one answer of a choice: shown under
+#: it only then.
+DEPENDS_ON: Dict[str, Tuple[str, str]] = {}
 
 # The settings that carry a number rather than a yes/no. Kept in a separate
 # table because they need a separate reader: a switch that cannot be parsed
@@ -334,7 +475,14 @@ STREAM_RESUME_LIMIT = "stream_resume_limit"
 # failure path runs.
 MAX_TOTAL_WAIT = "max_total_wait_seconds"
 
+#: 1.8.2.7. With a fallback chain set in Hermes AND ``never_fall_back_to_another_model``
+#: turned off, how long a call may spend waiting for the keys of one model to
+#: come back before KAME hands the call to Hermes so its own chain can answer.
+#: 0 = never hand over (wait, as before). Nothing else in KAME ever switches model.
+FAILOVER_AFTER = "failover_after_seconds"
+
 _NUMBER_ENV_FOR = {
+    FAILOVER_AFTER: "KAME_FAILOVER_AFTER",
     DAILY_COOLDOWN: "KAME_DAILY_COOLDOWN",
     STREAM_SILENCE_TIMEOUT: "KAME_STREAM_SILENCE_TIMEOUT",
     STREAM_RESUME_LIMIT: "KAME_STREAM_RESUME_LIMIT",
@@ -342,6 +490,16 @@ _NUMBER_ENV_FOR = {
     UNSIZED_THROTTLE_REST: "KAME_UNSIZED_REST",
     UNSIZED_BACKOFF_MAX: "KAME_UNSIZED_BACKOFF_MAX",
     MAX_TOTAL_WAIT: "KAME_MAX_TOTAL_WAIT",
+    PACING_INTERVAL: "KAME_PACING_INTERVAL",
+    # 1.8.2.3 — hedging.
+    HEDGE_MAX_LEGS: "KAME_HEDGE_MAX_LEGS",
+    PROBE_BURST: "KAME_PROBE_BURST",
+    HEDGE_BUDGET_PCT: "KAME_HEDGE_BUDGET_PCT",
+    HEDGE_BURST: "KAME_HEDGE_BURST",
+    HEDGE_QUANTILE: "KAME_HEDGE_QUANTILE",
+    HEDGE_COLD_S: "KAME_HEDGE_COLD_S",
+    HEDGE_COLD_REASONING_S: "KAME_HEDGE_COLD_REASONING_S",
+    HEDGE_MAX_PROMPT_TOKENS: "KAME_HEDGE_MAX_PROMPT_TOKENS",
 }
 
 #: Names this plugin used to answer to, and still does. Read only when the
@@ -415,6 +573,17 @@ _NUMBER_RANGE = {
     UNSIZED_BACKOFF_MAX: (1.0, 3600.0),
     # 0 = no total bound (the default). A week is a guard rail, not advice.
     MAX_TOTAL_WAIT: (0.0, 604800.0),
+    FAILOVER_AFTER: (0.0, 3600.0),
+    PACING_INTERVAL: (0.0, 60.0),
+    # 1.8.2.3 — hedging.
+    HEDGE_MAX_LEGS: (1.0, 3.0),
+    PROBE_BURST: (0.0, 32.0),
+    HEDGE_BUDGET_PCT: (0.0, 50.0),
+    HEDGE_BURST: (1.0, 10.0),
+    HEDGE_QUANTILE: (50.0, 99.0),
+    HEDGE_COLD_S: (0.5, 120.0),
+    HEDGE_COLD_REASONING_S: (2.0, 300.0),
+    HEDGE_MAX_PROMPT_TOKENS: (1000.0, 1000000.0),
 }
 
 #: Values inside the range that are still refused, per setting. A silence
@@ -426,7 +595,7 @@ _NUMBER_FLOOR_ABOVE_ZERO = {
 
 #: Numbers that must land on a whole number, because they count things. A
 #: budget of 2.5 resumes is not a smaller budget, it is a typo.
-_NUMBER_INTEGRAL = frozenset({STREAM_RESUME_LIMIT})
+_NUMBER_INTEGRAL = frozenset({STREAM_RESUME_LIMIT, HEDGE_MAX_LEGS, HEDGE_BURST, HEDGE_MAX_PROMPT_TOKENS, PROBE_BURST})
 
 # What the config file said, filled in once at registration. Empty until then,
 # and empty forever on a host that offers no config surface — which is the
@@ -538,6 +707,7 @@ def load(ctx) -> None:
     global _CTX, _drift, _drift_checked_at
     _FROM_CONFIG.clear()
     _NUMBERS_FROM_CONFIG.clear()
+    _STRINGS_FROM_CONFIG.clear()
     _CTX = ctx
     _drift = ()
     _drift_checked_at = 0.0
@@ -585,6 +755,24 @@ def load(ctx) -> None:
                 )
             continue
         _FROM_CONFIG[key] = flag
+    for key in _STRING_ENV_FOR:
+        try:
+            raw = getter(key, None)
+        except Exception:
+            logger.debug("%s: could not read the %r setting", __name__, key, exc_info=True)
+            continue
+        if raw is None:
+            continue
+        lowered = str(raw).strip().lower()
+        valid = _STRING_VALID.get(key, frozenset())
+        if valid and lowered not in valid:
+            logger.warning(
+                "kame: ignoring plugins.entries.hermes-kame-api-rotation"
+                ".settings.%s — %r is not one of %s",
+                key, lowered, ", ".join(sorted(v for v in valid if v)),
+            )
+            continue
+        _STRINGS_FROM_CONFIG[key] = lowered
 
 
 def forget() -> None:
@@ -592,6 +780,7 @@ def forget() -> None:
     global _CTX, _drift, _drift_checked_at
     _FROM_CONFIG.clear()
     _NUMBERS_FROM_CONFIG.clear()
+    _STRINGS_FROM_CONFIG.clear()
     _CTX = None
     _drift = ()
     _drift_checked_at = 0.0
@@ -615,7 +804,7 @@ def reread_environment() -> Tuple[str, ...]:
     """
     from . import envfile
 
-    known_keys = list(ALL_FLAGS) + list(ALL_NUMBERS)
+    known_keys = list(ALL_FLAGS) + list(ALL_NUMBERS) + list(ALL_STRINGS)
     mine = {name for key in known_keys for name in _env_names(key)}
     if not mine:
         return ()
@@ -729,14 +918,10 @@ def number(key: str, default: float) -> float:
 #: defaults off, which is the plugin doing its whole job: an unmentioned switch
 #: leaves every feature running.
 #:
-#: ``NO_MODEL_FALLBACK`` is here because the owner asked for it and the reason
-#: is the pool's whole purpose: it rotates, waits, and calls again at the right
-#: moment, so a quota that comes back continues the conversation. Hermes'
-#: instinct — answer a spent key with a different model, then a different
-#: provider — is a sensible default for an install without a pool and the wrong
-#: one for an install with fifteen keys. A silent switch mid-conversation is not
-#: a recovery: it is a different answer from a different model, found out
-#: afterwards.
+#: ``NO_MODEL_FALLBACK`` was here from 1.8.0.0 until the owner's 2026-10-16
+#: decision (decisions/0027): the fallback list he keeps in Hermes is his own
+#: consent to switch, and with no list nothing can switch, so the default no
+#: longer needs to guard anything. KAME still never chooses a model.
 #: ``SHARE_POOL_HEALTH`` joined this set once G4 (``PLAN_1.8.0.0.md``)
 #: passed — ``tools/continuity_gate.py``, ``research/1.8.0.0/continuity/``.
 #: ``decisions/0006`` set the switch's own rule ahead of time: on by default
@@ -748,7 +933,7 @@ def number(key: str, default: float) -> float:
 #: traffic from the moment he installs it, not as a knob he has to remember
 #: to flip first. See that constant's own comment for the measurement this
 #: default runs ahead of.
-DEFAULTS_ON = frozenset({NO_MODEL_FALLBACK, SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF})
+DEFAULTS_ON = frozenset({SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF})
 
 
 #: 1.8.2.1, asked for by the catalog review: the bound a cron run gets when
@@ -793,10 +978,57 @@ def is_on(key: str) -> bool:
 
 def _env_names(key: str) -> Tuple[str, ...]:
     """Every environment variable that speaks for one setting, best name first."""
-    current = _ENV_FOR.get(key) or _NUMBER_ENV_FOR.get(key) or ""
+    current = _ENV_FOR.get(key) or _NUMBER_ENV_FOR.get(key) or _STRING_ENV_FOR.get(key) or ""
     legacy = _LEGACY_ENV_FOR.get(key, "")
     oldest = _LEGACY_ENV_FOR_1_0_8.get(key, "")
     return tuple(name for name in (current, legacy, oldest) if name)
+
+
+def text_value(key: str) -> str:
+    """The value in force for one string setting, environment first.
+
+    Empty string means "not set" for every string setting this build carries.
+    """
+    for variable in _env_names(key):
+        val = os.environ.get(variable, "").strip()
+        if val:
+            return val.lower()
+    return _STRINGS_FROM_CONFIG.get(key, ALL_STRINGS[key])
+
+
+def _mode_with_legacy_number(mode_key: str, number_key: str, zero: str) -> str:
+    """A 1.8.2.8 choice, honouring the number a person set before it existed.
+
+    Unset, the choice is ``auto`` - unless the old number was set somewhere
+    (config or environment): then that person chose a time, and keeps it
+    (``timed``), or chose 0, which meant ``zero`` (never / off). A choice set
+    explicitly always wins.
+    """
+    if provenance(mode_key) != "default":
+        chosen = text_value(mode_key)
+        # A value outside the choices (``KAME_MODEL_SWITCH=off``) is no choice
+        # at all: the default, never something that silently means another.
+        if chosen in _STRING_VALID[mode_key]:
+            return chosen
+    if provenance(number_key) != "default":
+        return zero if number(number_key, ALL_NUMBERS[number_key]) <= 0 else "timed"
+    return ALL_STRINGS[mode_key]
+
+
+def reply_notice_mode() -> str:
+    """``always`` / ``switches`` / ``never`` (see :data:`REPLY_NOTICE`); an unknown value is the default."""
+    chosen = text_value(REPLY_NOTICE)
+    return chosen if chosen in _STRING_VALID[REPLY_NOTICE] else ALL_STRINGS[REPLY_NOTICE]
+
+
+def model_switch_mode() -> str:
+    """``auto`` / ``timed`` / ``never`` (see :data:`MODEL_SWITCH`)."""
+    return _mode_with_legacy_number(MODEL_SWITCH, FAILOVER_AFTER, "never")
+
+
+def first_token_mode() -> str:
+    """``auto`` / ``timed`` / ``off`` (see :data:`FIRST_TOKEN_WAIT`)."""
+    return _mode_with_legacy_number(FIRST_TOKEN_WAIT, STREAM_SILENCE_TIMEOUT, "off")
 
 # --- what /kame reads -------------------------------------------------------
 
@@ -817,6 +1049,7 @@ ALL_FLAGS = (
     CALL_TIMINGS_DISABLED,
     SHARE_POOL_HEALTH,
     UNSIZED_THROTTLE_BACKOFF,
+    HEDGING_DISABLED,
 )
 
 #: The subset that turns a KAME behaviour *off*. Every one is named
@@ -846,6 +1079,21 @@ ALL_NUMBERS = {
     # 1.8.1.0: see :data:`UNSIZED_BACKOFF_MAX`.
     UNSIZED_BACKOFF_MAX: 64.0,
     MAX_TOTAL_WAIT: 0.0,
+    FAILOVER_AFTER: 60.0,
+    PACING_INTERVAL: 1.0,
+    # 1.8.2.3 — adaptive hedging. Defaults from the design pass: adaptive
+    # mode, at most 3 legs, 10% of calls budgeted for backups with a burst of
+    # 3, backup fires at p90 of learned time-to-first-token, cold-start
+    # thresholds 6s (normal) / 30s (thinking models), no backups for prompts
+    # above 32k tokens.
+    HEDGE_MAX_LEGS: 3.0,
+    PROBE_BURST: 16.0,
+    HEDGE_BUDGET_PCT: 10.0,
+    HEDGE_BURST: 3.0,
+    HEDGE_QUANTILE: 90.0,
+    HEDGE_COLD_S: 6.0,
+    HEDGE_COLD_REASONING_S: 30.0,
+    HEDGE_MAX_PROMPT_TOKENS: 32000.0,
 }
 
 #: What each number counts, for a UI that has to label a field and for a
@@ -858,6 +1106,16 @@ UNITS = {
     UNSIZED_THROTTLE_REST: "seconds",
     UNSIZED_BACKOFF_MAX: "seconds",
     MAX_TOTAL_WAIT: "seconds",
+    FAILOVER_AFTER: "seconds",
+    PACING_INTERVAL: "seconds",
+    HEDGE_MAX_LEGS: "legs",
+    PROBE_BURST: "keys",
+    HEDGE_BUDGET_PCT: "% of calls",
+    HEDGE_BURST: "backups",
+    HEDGE_QUANTILE: "percentile",
+    HEDGE_COLD_S: "seconds",
+    HEDGE_COLD_REASONING_S: "seconds",
+    HEDGE_MAX_PROMPT_TOKENS: "tokens",
 }
 
 #: Switches whose "on" position stops KAME doing the thing it was installed
@@ -977,13 +1235,16 @@ META = {
         "changes. Turn this on to leave the refusal exactly as Hermes reads it.",
     ),
     NO_MODEL_FALLBACK: (
-        "Stay on this model, always",
-        "Hermes answers a spent key by rotating and, if that does not work, "
-        "by quietly switching to another model or provider. Turn this on and "
-        "KAME tells it not to: the pool waits out the quota and comes back on "
-        "the model you asked for, however long that takes. Summarisation and "
-        "titling are routed by Hermes on a lane this cannot reach, so those "
-        "may still fall back.",
+        "Ignore my fallback list",
+        "KAME itself never chooses a model. Off (the default): if you have set "
+        "fallback models in Hermes (hermes fallback add), they are used "
+        "automatically when every key of your model is resting for long, and "
+        "Hermes comes back to your model once its keys return. With no list "
+        "nothing ever switches. On: your list is ignored and KAME waits for "
+        "your keys however long that takes, and tells Hermes not to fall back "
+        "on the errors it classifies (Hermes can still move on its own for "
+        "some errors it sees itself, such as repeated timeouts). Summarisation "
+        "and titling are routed by Hermes on a lane this cannot reach.",
     ),
     STREAM_RESUME_LIMIT: (
         "Resume attempts per turn",
@@ -1007,7 +1268,7 @@ META = {
         "profile is running.",
     ),
     UNSIZED_THROTTLE_BACKOFF: (
-        "Short ladder for a bare RESOURCE_EXHAUSTED",
+        "Short ladder: bare RESOURCE_EXHAUSTED",
         "Applies to one error only: an HTTP 429 whose structured status is "
         "RESOURCE_EXHAUSTED and that carries no retry number and no quotaId "
         "(Gemini's bare refusal). On, that key rests 1s, then 2, 4, 8, 16, "
@@ -1048,6 +1309,17 @@ META = {
         "Any value you set wins everywhere: 0 means never stop waiting, chats "
         "and cron alike; a number bounds both.",
     ),
+    FAILOVER_AFTER: (
+        "Hand over to fallback models after",
+        "Works only when you have set fallback models in Hermes (hermes "
+        "fallback add); with no list nothing ever switches. "
+        "When every key of the model you picked is resting and the soonest one "
+        "is more than this many seconds away, KAME stops waiting and lets "
+        "Hermes answer with the next model in your list. Hermes brings you back "
+        "to the model you picked on the next message once its keys return. "
+        "Short rests (a minute of rate limit) are waited out on the model you "
+        "picked. 0 means never hand over. KAME itself never chooses a model.",
+    ),
     UNSIZED_THROTTLE_REST: (
         "Rest after an unsized throttle",
         "How long a credential rests after a per-minute or rate-limit "
@@ -1059,12 +1331,238 @@ META = {
         "immediately instead. Clamped to 0-300; past 300 this is no longer "
         "an unsized throttle's business.",
     ),
+    PACING_INTERVAL: (
+        "Pacing interval (no longer used)",
+        "Not read by anything since 1.8.2.3: pacing now learns each key's "
+        "real per-minute limit from the provider's own refusals, and a "
+        "per-model limit can be set in 'Per-model requests-per-minute "
+        "limits'. This "
+        "entry stays only so an older configuration that sets it still loads.",
+        "Ignore it.",
+    ),
+    HEDGING_DISABLED: (
+        "Stop adaptive hedging",
+        "When hedging is active and a reply is slower than usual, KAME asks "
+        "a second key (and, if that is slow too, a third) and uses whichever "
+        "answers first. In the chat the race is decided by the first word: "
+        "the moment one key starts answering, the others are cut. Each "
+        "backup is one extra request on a key of another project, held to a "
+        "budget (about 10% of calls) and stopped by itself when rate limits "
+        "appear. Turn this on to stop hedging everywhere.",
+        "Leave off — adaptive hedging is the whole point of the speed work.",
+    ),
+    # 1.8.2.3 — the new settings all carry a recommendation, the third
+    # element, so the panel can show it in italics under the description.
+    HEDGE_MODE: (
+        "Backup requests when slow",
+        "When a reply is slower than usual, send a backup request on "
+        "another key and use whichever answers first. Adaptive learns each "
+        "model's usual wait and only races the slow calls; Max starts a "
+        "backup on every call at once, for latency-critical work, and steps "
+        "down by itself when rate limits appear.",
+        "Leave on Adaptive. Use Max only if you have many keys and don't "
+        "care about daily limits.",
+    ),
+    HEDGE_MAX_LEGS: (
+        "Most parallel requests per call",
+        "1 turns backup requests off. 2 allows one backup per call. 3 lets "
+        "a chat reply that is still silent after the first backup try a "
+        "third key (calls that do not stream use one backup at most).",
+        "Leave at 3.",
+    ),
+    PROBE_BURST: (
+        "Keys asked at once when quota runs out",
+        "When two keys in a row are refused because their quota is spent, "
+        "asking the rest one at a time costs almost a second each. KAME then "
+        "asks 4 keys at once, then 8, then 16, and the first that answers "
+        "wins; in a chat the others are cut (a call that does not stream asks "
+        "at most 4 at once, and those finish on their own). Keys the provider "
+        "itself said are still spent are asked all at once, and only they. A "
+        "key that still had quota and lost the race may have spent one "
+        "request. 0 or 1 asks one key at a time. Off when backup requests are "
+        "off; never for background jobs.",
+        "Leave at 16.",
+    ),
+    HEDGE_BUDGET_PCT: (
+        "Backup budget (% of calls)",
+        "Roughly what share of calls may carry a backup request. The budget "
+        "refills as normal calls succeed, so a slow afternoon hedges a few "
+        "times and then pauses until it is earned back.",
+        "Leave at 10 — enough to cover slow incidents, cheap on daily quota.",
+    ),
+    HEDGE_BURST: (
+        "Backup burst allowance",
+        "How many backups can fire back-to-back after an idle period, before "
+        "the budget above has been earned back.",
+        "Leave at 3.",
+    ),
+    HEDGE_QUANTILE: (
+        "Send backup when slower than usual",
+        "For calls that do not stream: the percentile of learned response "
+        "times a call must exceed before a backup is sent. 90 means 'slower "
+        "than 9 calls in 10'. The chat uses its own trigger: twice the "
+        "model's usual time to the first word.",
+        "Leave at 90 — the measured sweet spot for tail latency.",
+    ),
+    HEDGE_COLD_S: (
+        "First backup while still learning",
+        "Before KAME has learned how fast this model usually answers, a call "
+        "slower than this still gets a backup. Keep it well above the "
+        "slowest honest first token so a merely normal call is never doubled.",
+        "Leave at 6s.",
+    ),
+    HEDGE_COLD_REASONING_S: (
+        "First backup while learning (thinking)",
+        "The same threshold, separate for models that think before they "
+        "answer — a long thinking phase is normal there and must not trigger "
+        "a backup.",
+        "Leave at 30s.",
+    ),
+    HEDGE_MAX_PROMPT_TOKENS: (
+        "Skip backups for very long prompts",
+        "A backup of a huge prompt spends your token quota twice and never "
+        "hits a warm cache, so above this size backups are skipped.",
+        "Leave at 32000.",
+    ),
+    PACING_RPM_OVERRIDES: (
+        "Per-model requests-per-minute limits",
+        "Tell the pacer what a provider really allows, e.g. "
+        "'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most KAME will "
+        "assume; a real per-minute refusal can still lower it, and nothing "
+        "learned can raise it above this. Leave empty to let it learn from "
+        "real answers and refusals.",
+        "Leave empty unless you know the provider's exact limit.",
+    ),
+    KEY_REGION_OVERRIDES: (
+        "Region per key",
+        "For regional providers (Vertex, Bedrock), name a key's region, "
+        "e.g. 'key:a1b2c3=us-central1' — the key as the Events tab shows "
+        "it (the six characters alone also work). It sets the region of "
+        "the whole model on that endpoint, so refusals there do not rest "
+        "the same model elsewhere. Auto-detected from the endpoint URL when "
+        "left empty.",
+        "Leave empty — the region is read from the URL.",
+    ),
+    MODEL_SWITCH: (
+        "Fallback",
+        "Uses the fallback models you set in Hermes (hermes fallback add), as one "
+        "big pool where your best model always comes first. Every reply starts on "
+        "your best model and uses all of its keys. The reply goes to the next "
+        "model of your list only when that model cannot answer: the provider says "
+        "it is busy (two keys answer 'overloaded' or time out: at once, whatever "
+        "the setting), every key is resting, or nothing has come back in time. "
+        "Automatic: in time is about three times the model's usual first word, 6 "
+        "to 20 s, learned on this computer. Set time: the seconds below. Never: "
+        "always wait for this model's keys. The next reply starts on your best "
+        "model again; one KAME knows is still busy or resting is passed down "
+        "without spending a request. Nothing switches after part of an answer is "
+        "on screen.",
+        "Leave on Automatic.",
+    ),
+    FIRST_TOKEN_WAIT: (
+        "Wait for the first token",
+        "How long a key may stay silent before KAME drops it and asks the next "
+        "one. Automatic learns each model's usual first-word time and drops a key "
+        "only when it is far past it (20 s at least, 60 s for thinking models); "
+        "never for a model on this computer. Backup keys still race a slow reply "
+        "much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
+        "Leave on Automatic.",
+    ),
+    REPLY_NOTICE: (
+        "Show which model answered",
+        "After a reply, a short notice says the model that wrote it and how long "
+        "it took, and when a model from your fallback list answered. Never part "
+        "of the conversation the model reads.",
+        "Every reply, or Only another model if the notice gets in your way.",
+    ),
+    KEY_QUOTA_GROUPS: (
+        "Keys that share one quota",
+        "When several keys belong to one provider project they share one "
+        "quota. Name the group for each key, e.g. 'key:a1b2c3=proj1, "
+        "key:d4e5f6=proj1' — the keys as the Events tab shows them (the six "
+        "characters alone also work). KAME then counts them together, and "
+        "never sends a backup request to a key of the same group.",
+        "Leave empty unless your keys share a project.",
+    ),
 }
+
+
+# 1.8.2.7 (notes/2026-10-16-settings-ux-review.md). The long help text above was
+# written by and for the author. The page now shows ONE plain sentence per
+# setting; the old text moves to ``_DETAIL`` and rides along as the tooltip.
+_DETAIL: Dict[str, str] = {key: entry[1] for key, entry in META.items()}
+
+_PLAIN: Dict[str, Tuple[Optional[str], str]] = {
+    NO_MODEL_FALLBACK: (
+        "Ignore my fallback list",
+        "Off (default): the fallback models you set in Hermes take over when your "
+        "keys are out; on: always wait for your keys.",
+    ),
+    FAILOVER_AFTER: (
+        "Fallback after (seconds)",
+        "Only with Fallback set to 'Set time': when a reply has waited this long "
+        "with nothing on screen (keys resting, failing or slow), it goes to the "
+        "next model of your list. A busy provider goes at once, whatever this "
+        "number.",
+    ),
+    MAX_TOTAL_WAIT: (
+        "Give up after (seconds)",
+        "Default: a chat never gives up, it waits for a key or uses your fallback "
+        "list; a scheduled job gives up after 5 minutes. A number here makes "
+        "both give up with an error after that long; 0 makes neither give up.",
+    ),
+    HEDGE_MODE: (
+        "Speed",
+        "Balanced (default) races a second key only when a reply is slower than "
+        "usual; Fastest races every reply (more requests); Saver asks one key at "
+        "a time.",
+    ),
+    STREAM_SILENCE_TIMEOUT: (
+        "First-token wait (seconds)",
+        "Only with 'Wait for the first token' set to 'Set time': how many seconds a "
+        "key may stay silent before KAME asks the next one; 60 suits most "
+        "providers. 0 (default) leaves the wait to Hermes' own 120 s.",
+    ),
+    KEY_QUOTA_GROUPS: (
+        None,
+        "If several keys come from the same provider account, give them the same "
+        "name so KAME knows they run out together (e.g. key:a1b2c3=work).",
+    ),
+    SHARE_POOL_HEALTH: (
+        "Profiles share what they learn",
+        "On: when several Hermes profiles use the same keys, a key resting in one "
+        "rests in all; no effect with one profile.",
+    ),
+}
+# (``UNSIZED_THROTTLE_BACKOFF`` keeps its original title and help on purpose: the
+# review's plainer wording said "a provider that refuses without saying how long",
+# but the experiment applies to ONE payload only - the bare RESOURCE_EXHAUSTED -
+# and the old text, pinned by tests/test_v1_8_1_0_backoff.py, says so.)
+for _key, (_new_title, _new_help) in _PLAIN.items():
+    _old = META.get(_key)
+    META[_key] = (
+        _new_title or (_old[0] if _old else _key),
+        _new_help,
+    ) + ((_old[2],) if _old and len(_old) > 2 else ())
+
+#: The settings a first-time reader can skip: each is already tuned, or only one
+#: unusual setup needs it. Hidden behind "Show advanced settings" until changed
+#: (a row whose value is not the default is never hidden).
+_ADVANCED = frozenset({
+    NO_MODEL_FALLBACK,
+    MAX_TOTAL_WAIT,  # 1.8.2.8 (owner): a chat never gives up; few want an error instead
+    KEY_QUOTA_GROUPS,
+    PROBE_BURST,
+    HEDGE_MAX_LEGS, HEDGE_BUDGET_PCT, HEDGE_BURST, HEDGE_QUANTILE, HEDGE_COLD_S,
+    HEDGE_COLD_REASONING_S, HEDGE_MAX_PROMPT_TOKENS, PACING_INTERVAL, SHARE_POOL_HEALTH,
+    PACING_RPM_OVERRIDES, KEY_REGION_OVERRIDES, DAILY_COOLDOWN, MAX_HOLD,
+    UNSIZED_THROTTLE_BACKOFF, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX, STREAM_RESUME_LIMIT,
+})
 
 
 def env_name(key: str) -> str:
     """The environment variable that outranks this setting, or ``""``."""
-    return _ENV_FOR.get(key) or _NUMBER_ENV_FOR.get(key, "")
+    return _ENV_FOR.get(key) or _NUMBER_ENV_FOR.get(key) or _STRING_ENV_FOR.get(key, "")
 
 
 def title(key: str) -> str:
@@ -1077,6 +1575,12 @@ def explain(key: str) -> str:
     """One sentence about what turning this on does, or ``""``."""
     entry = META.get(key)
     return entry[1] if entry else ""
+
+
+def recommendation(key: str) -> str:
+    """Recommended value for a setting as plain text, or ``""`` if none stated."""
+    entry = META.get(key)
+    return entry[2] if entry and len(entry) > 2 else ""
 
 
 def bounds(key: str) -> Optional[Tuple[float, float]]:
@@ -1100,6 +1604,13 @@ def parse(key: str, raw: object) -> Tuple[Optional[str], str]:
     if not known(key):
         return None, f"{key} is not a KAME setting"
     text = str(raw).strip() if raw is not None else ""
+    if key in ALL_STRINGS:
+        lowered = text.lower()
+        valid = _STRING_VALID.get(key, frozenset())
+        if valid and lowered not in valid:
+            valid_str = ", ".join(sorted(v for v in valid if v))
+            return None, f"{key} accepts {valid_str}; {text!r} is not one of them"
+        return lowered, ""
     if key in ALL_NUMBERS:
         try:
             number = float(text)
@@ -1135,14 +1646,16 @@ def parse(key: str, raw: object) -> Tuple[Optional[str], str]:
 def describe(key: str) -> Dict[str, object]:
     """Everything a UI needs to render one setting as an editable control."""
     is_number = key in ALL_NUMBERS
+    is_string = key in ALL_STRINGS
     low, high = _NUMBER_RANGE.get(key, (0.0, 0.0))
     return {
         "key": key,
-        "kind": "number" if is_number else "flag",
+        "kind": "number" if is_number else ("string" if is_string else "flag"),
         "title": title(key),
         "help": explain(key),
+        "recommendation": recommendation(key),
         "value": effective(key),
-        "default": ALL_NUMBERS[key] if is_number else (key in DEFAULTS_ON),
+        "default": ALL_NUMBERS[key] if is_number else (ALL_STRINGS[key] if is_string else (key in DEFAULTS_ON)),
         "source": provenance(key),
         "env": env_name(key),
         "group": group_of(key),
@@ -1152,7 +1665,114 @@ def describe(key: str) -> Dict[str, object]:
         "step": 1 if (is_number and key in _NUMBER_INTEGRAL) else None,
         "off_or_at_least": _NUMBER_FLOOR_ABOVE_ZERO.get(key),
         "consequential": key in CONSEQUENTIAL,
+        "choices": sorted(_STRING_VALID[key]) if (is_string and key in _STRING_VALID) else None,
+        "choice_order": [value for value, _label in CHOICE_LABELS[key]] if key in CHOICE_LABELS else None,
+        # 1.8.2.8: the words each choice is shown with, and the choice a number
+        # belongs to (the panel shows the number only under that answer).
+        "choice_labels": dict(CHOICE_LABELS.get(key, ())),
+        "depends_on": ({"key": DEPENDS_ON[key][0], "value": DEPENDS_ON[key][1],
+                        "now": effective_mode(DEPENDS_ON[key][0])} if key in DEPENDS_ON else None),
+        # 1.8.2.7: how much this one setting changes, and when a person should
+        # touch it — so the page can lead with the few that matter.
+        "impact": impact(key),
+        "when": when_to_change(key),
+        # 1.8.2.7: the long text (tooltip) and whether a beginner may skip it.
+        "detail": _DETAIL.get(key, ""),
+        "advanced": key in _ADVANCED,
     }
+
+
+#: 1.8.2.7. How much each setting changes what a person experiences.
+#:
+#: The page used to give thirty-three settings the same weight, and the owner
+#: asked for the opposite: which ones matter, and what each one *does*, at a
+#: glance. ``high`` settings are shown first, together, as the "Most
+#: important" card; the rest keep their shelves, sorted by this weight.
+#:
+#: * ``high`` — changes behaviour you will notice on every conversation.
+#: * ``medium`` — changes one specific situation (several profiles, a daily
+#:   quota, a key that shares a project).
+#: * ``low`` — fine-tuning of a mechanism that already adapts on its own.
+#: * ``retired`` — kept so an old config still loads; does nothing now.
+#: * ``escape`` — takes a job away from KAME, for diagnosis only.
+IMPACT: Dict[str, str] = {
+    HEDGE_MODE: "high",
+    MODEL_SWITCH: "high",
+    FIRST_TOKEN_WAIT: "medium",
+    REPLY_NOTICE: "medium",
+    NO_MODEL_FALLBACK: "low",
+    MAX_TOTAL_WAIT: "high",
+    FAILOVER_AFTER: "medium",
+    SHARE_POOL_HEALTH: "medium",
+    STREAM_SILENCE_TIMEOUT: "low",
+    UNSIZED_THROTTLE_BACKOFF: "medium",
+    HEDGE_BUDGET_PCT: "medium",
+    HEDGE_MAX_LEGS: "medium",
+    PROBE_BURST: "low",
+    DAILY_COOLDOWN: "medium",
+    MAX_HOLD: "medium",
+    KEY_QUOTA_GROUPS: "low",
+    HEDGE_BURST: "low",
+    HEDGE_QUANTILE: "low",
+    HEDGE_COLD_S: "low",
+    HEDGE_COLD_REASONING_S: "low",
+    HEDGE_MAX_PROMPT_TOKENS: "low",
+    PACING_RPM_OVERRIDES: "low",
+    STREAM_RESUME_LIMIT: "low",
+    UNSIZED_THROTTLE_REST: "low",
+    UNSIZED_BACKOFF_MAX: "low",
+    KEY_REGION_OVERRIDES: "low",
+    PACING_INTERVAL: "retired",
+}
+
+#: 1.8.2.7. One plain sentence per setting: *when* to change it. The help text
+#: says what a setting does; this says whether you are the person who needs it.
+_WHEN: Dict[str, str] = {
+    HEDGE_MODE: "Leave on Balanced. Saver if every extra request costs you money; Fastest when speed matters more than quota.",
+    MODEL_SWITCH: "Leave on Automatic. Never if you would rather always wait for the model you picked.",
+    FIRST_TOKEN_WAIT: "Leave on Automatic. Set time only if a provider hangs in silence and Automatic is too patient for you.",
+    REPLY_NOTICE: "Only another model, if a notice after every reply is too much.",
+    NO_MODEL_FALLBACK: "Only if you keep a fallback list in Hermes but want KAME to wait for your keys anyway.",
+    MAX_TOTAL_WAIT: "Change only if you would rather get an error than wait for your keys to come back.",
+    FAILOVER_AFTER: "Only with 'Set time'. Lower to fall back sooner, raise to stay on your best model longer.",
+    ROTATION_DISABLED: "Only to check whether KAME is behind a problem. Everything goes back to plain Hermes.",
+    SHARE_POOL_HEALTH: "Keep on when several Hermes profiles use the same keys.",
+    STREAM_SILENCE_TIMEOUT: "Only with 'Set time'. 60 is a safe number for most providers.",
+    UNSIZED_THROTTLE_BACKOFF: "Keep on. It retries a bare 'rate limit' after 1, 2, 4… seconds instead of a fixed wait.",
+    HEDGE_BUDGET_PCT: "Lower it to spend fewer extra requests on backups; raise it for faster worst cases.",
+    HEDGE_MAX_LEGS: "Lower to 2 to cap a slow call at one backup.",
+    PROBE_BURST: "Rarely. Lower it if every request costs you money; 0 asks keys one by one.",
+    DAILY_COOLDOWN: "Only if your provider's daily quota resets at a known time KAME cannot read.",
+    MAX_HOLD: "The longest any key is ever benched. Lower it to retry spent keys sooner.",
+    KEY_QUOTA_GROUPS: "Rarely. Each key is normally its own account; only if two keys share one account's quota.",
+    HEDGE_BURST: "Rarely. How many backups may go out back to back.",
+    HEDGE_QUANTILE: "Rarely. Lower = backups sooner.",
+    HEDGE_COLD_S: "Rarely. Used only until KAME has learned a model's normal speed.",
+    HEDGE_COLD_REASONING_S: "Rarely. Same as above, for thinking models.",
+    HEDGE_MAX_PROMPT_TOKENS: "Rarely. Very long prompts are not duplicated, to save quota.",
+    PACING_RPM_OVERRIDES: "Only if you know a model's per-minute limit and KAME keeps hitting it.",
+    STREAM_RESUME_LIMIT: "Rarely. Caps how often one cut answer is continued.",
+    UNSIZED_THROTTLE_REST: "Rarely. The wait for a rate limit that states no time, when the ladder is off.",
+    UNSIZED_BACKOFF_MAX: "Rarely. Where the 1, 2, 4… ladder stops.",
+    KEY_REGION_OVERRIDES: "Only if one key must be treated as a different region (Vertex, Bedrock).",
+    PACING_INTERVAL: "Never — no longer used. Kept so an older config still loads.",
+}
+
+
+def impact(key: str) -> str:
+    """How much one setting changes (see :data:`IMPACT`)."""
+    if key in IMPACT:
+        return IMPACT[key]
+    return "escape" if key in DISABLE_FLAGS else "low"
+
+
+def when_to_change(key: str) -> str:
+    """When a person should touch this setting, in one sentence."""
+    if key in _WHEN:
+        return _WHEN[key]
+    if key in DISABLE_FLAGS:
+        return "Only to check whether this part of KAME is behind a problem."
+    return ""
 
 
 #: The three shelves a settings screen puts these on, in the order they are
@@ -1180,25 +1800,40 @@ def describe(key: str) -> Dict[str, object]:
 GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
     (
         "extra",
-        "Optional",
-        "Extras, each for one specific problem. Rotation works without any "
-        "of them; the ones that ship on say so on their own line.",
-        (STREAM_SILENCE_TIMEOUT, NO_MODEL_FALLBACK, SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF),
+        "If your model cannot answer",
+        "When your provider is busy, every key of your model is resting, or a reply "
+        "takes too long.",
+        (MODEL_SWITCH, FAILOVER_AFTER, REPLY_NOTICE, MAX_TOTAL_WAIT, NO_MODEL_FALLBACK),
+    ),
+    (
+        "speed",
+        "Speed",
+        "How KAME keeps answers fast. Already tuned; the first two are the ones "
+        "worth knowing.",
+        (HEDGE_MODE, FIRST_TOKEN_WAIT, STREAM_SILENCE_TIMEOUT, HEDGE_MAX_LEGS, PROBE_BURST, HEDGE_BUDGET_PCT, HEDGE_BURST,
+         HEDGE_QUANTILE, HEDGE_COLD_S, HEDGE_COLD_REASONING_S, HEDGE_MAX_PROMPT_TOKENS),
+    ),
+    (
+        "keyring",
+        "Your API keys",
+        "One key per account (for Gemini, one per Google project): every key "
+        "brings its own quota, and KAME rotates between them.",
+        (SHARE_POOL_HEALTH, PACING_RPM_OVERRIDES, KEY_REGION_OVERRIDES),
     ),
     (
         "tuning",
-        "Tuning",
-        "Already set to what this plugin was built against. Safe to change, "
-        "rarely worth changing.",
-        (DAILY_COOLDOWN, STREAM_RESUME_LIMIT, MAX_HOLD, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX,
-         MAX_TOTAL_WAIT),
+        "Rest times (advanced)",
+        "How long a refused key sits out. The provider's own numbers always win; "
+        "these are the fallbacks and ceilings.",
+        (DAILY_COOLDOWN, MAX_HOLD, UNSIZED_THROTTLE_BACKOFF, UNSIZED_THROTTLE_REST,
+         UNSIZED_BACKOFF_MAX, STREAM_RESUME_LIMIT),
     ),
     (
         "off",
-        "Turn parts of KAME off",
-        "Escape hatches. Each one gives a job back to Hermes and is meant for "
-        "proving whether KAME is behind a problem — not for tuning. Leave "
-        "them alone unless something is wrong.",
+        "Troubleshooting: turn parts of KAME off",
+        "Each switch turns one part of KAME off and gives that job back to "
+        "Hermes. For finding out whether KAME is behind a problem. Leave them "
+        "alone unless something is wrong.",
         DISABLE_FLAGS,
     ),
 )
@@ -1229,9 +1864,24 @@ def groups() -> Tuple[Dict[str, object], ...]:
     and grouped by the other.
     """
     return tuple(
-        {"id": group, "title": title_, "note": note, "keys": list(keys)}
+        # 1.8.2.7: ``folded`` — the panel shows this shelf closed until asked.
+        # Decided here, with the shelves, so the JavaScript never has to know
+        # a shelf by name.
+        {"id": group, "title": title_, "note": note, "keys": list(keys), "folded": group == "off",
+         # 1.8.2.7: the shelf that holds the fallback settings also shows the
+         # fallback chain, decided here so the JavaScript names no shelf.
+         "shows_fallback": group == "extra",
+         # 1.8.2.7: the shelf that tells a new user how to add keys.
+         "shows_keys": group == "keyring"}
         for group, title_, note, keys in GROUPS
     )
+
+
+#: 1.8.2.7. Settings that still load from an old configuration but are never
+#: shown: one does nothing since 1.8.2.3 (``PACING_INTERVAL``), one asks a
+#: question the plugin's own design answers (``KEY_QUOTA_GROUPS``, see its comment).
+#: ``/kame get`` still reads them.
+HIDDEN = frozenset({KEY_QUOTA_GROUPS, PACING_INTERVAL})
 
 
 def describe_all() -> Tuple[Dict[str, object], ...]:
@@ -1242,10 +1892,25 @@ def describe_all() -> Tuple[Dict[str, object], ...]:
     A setting missing from a hand-kept list has to show up in the wrong place
     rather than not at all.
     """
-    everything = list(ALL_FLAGS) + list(ALL_NUMBERS)
+    everything = [key for key in list(ALL_FLAGS) + list(ALL_NUMBERS) + list(ALL_STRINGS) if key not in HIDDEN]
     ordered = [key for _g, _t, _n, keys in GROUPS for key in keys if key in everything]
     ordered += [key for key in everything if key not in ordered]
     return tuple(describe(key) for key in ordered)
+
+
+DEPENDS_ON.update({
+    FAILOVER_AFTER: (MODEL_SWITCH, "timed"),
+    STREAM_SILENCE_TIMEOUT: (FIRST_TOKEN_WAIT, "timed"),
+})
+
+
+def effective_mode(key: str) -> str:
+    """The choice in force for a 1.8.2.8 choice, legacy numbers included."""
+    if key == MODEL_SWITCH:
+        return model_switch_mode()
+    if key == FIRST_TOKEN_WAIT:
+        return first_token_mode()
+    return str(effective(key))
 
 
 def provenance(key: str) -> str:
@@ -1260,15 +1925,19 @@ def provenance(key: str) -> str:
     for variable in _env_names(key):
         if os.environ.get(variable) is not None:
             return "environment"
-    if key in _FROM_CONFIG or key in _NUMBERS_FROM_CONFIG:
+    if key in _FROM_CONFIG or key in _NUMBERS_FROM_CONFIG or key in _STRINGS_FROM_CONFIG:
         return "config"
     return "default"
 
 
 def effective(key: str) -> object:
-    """The value in force for one setting, flag or number."""
+    """The value in force for one setting, flag or number or string."""
     if key in ALL_NUMBERS:
         return number(key, ALL_NUMBERS[key])
+    if key in (MODEL_SWITCH, FIRST_TOKEN_WAIT):
+        return effective_mode(key)
+    if key in ALL_STRINGS:
+        return text_value(key)
     return is_on(key)
 
 
@@ -1285,4 +1954,4 @@ def canonical(key: str) -> str:
 
 
 def known(key: str) -> bool:
-    return key in ALL_FLAGS or key in ALL_NUMBERS
+    return key in ALL_FLAGS or key in ALL_NUMBERS or key in ALL_STRINGS

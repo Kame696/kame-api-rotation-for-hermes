@@ -79,6 +79,29 @@ def _hermes_home_stays_redirected():
         os.environ["HERMES_HOME"] = str(SANDBOX_HOME)
 
 
+@pytest.fixture(autouse=True)
+def _speed_singletons_start_empty():
+    """1.8.2.4: the pacer, hedge tracker and latency tracker start every test empty.
+
+    They are process-wide singletons (1.8.2.3) and the suite loads the plugin
+    under several package names, so a test that taught one of them — a key
+    paced after a per-minute refusal — left that lesson to every later test
+    that reused the key name. ``test_v1_7_0_7_dispatch_recovery_loop`` was
+    green alone and red after its own earlier parameters. In a real process
+    that memory is the point; between tests it is leakage.
+    """
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        for attr in ("PACER", "HEDGE_TRACKER", "LATENCY"):
+            if name.rsplit(".", 1)[-1] in ("pacing", "hedging", "latency"):
+                singleton = getattr(module, attr, None)
+                clear = getattr(singleton, "clear", None)
+                if callable(clear):
+                    clear()
+    yield
+
+
 # 1.8.1.9: 1.8.1.8 tests whose subject was removed are skipped with the reason
 # and the test that now keeps the same promise (tests/legacy_1818_retired.py).
 import legacy_1818_retired as _retired  # noqa: E402

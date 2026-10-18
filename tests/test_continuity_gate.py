@@ -323,6 +323,9 @@ class TestFullGateEndToEnd:
         started = time.time()
 
         env = dict(os.environ)
+        # Other suites clear every KAME_* variable; the CLI must still write where
+        # this test reads, never into the real research/ tree.
+        env["KAME_GATE_OUT_DIR"] = str(OUT_DIR.parent)
         env.pop("HERMES_HOME", None)  # prove the tool never inherits a real HERMES_HOME by accident
         result = subprocess.run(
             [sys.executable, "-B", str(TOOL_PATH)],

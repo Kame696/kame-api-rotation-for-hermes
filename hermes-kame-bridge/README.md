@@ -1,6 +1,6 @@
 # hermes-kame-bridge
 
-An optional companion to **hermes-kame-api-rotation 1.8.2.0**. It is not part
+An optional companion to **hermes-kame-api-rotation 1.8.2.0 and later** (current: 1.8.2.7). It is not part
 of the Hermes plugin catalog entry.
 
 KAME reaches Hermes only through documented seams. Two of those seams are

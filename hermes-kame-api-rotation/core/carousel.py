@@ -782,6 +782,10 @@ CONTENT_POLICY_INDICATORS = (
 )
 
 _SERVER_STATUS = frozenset({498, 500, 502, 503, 504, 529})
+#: Statuses that mean "no answer inside the deadline": request timeout, client
+#: closed request, gateway timeout, edge timeout (Cloudflare). Checked before
+#: ``_SERVER_STATUS``, which still lists 504 for every other reader of it.
+_TIMEOUT_STATUS = frozenset({408, 499, 504, 524})
 
 #: Only these, and only after auth and throttling have been ruled out. A 400
 #: from Google is far more often an invalid key than a malformed request, which
@@ -794,7 +798,7 @@ _SERVER_STATUS = frozenset({498, 500, 502, 503, 504, 529})
 #: What the six have in common is that they describe the *request*: the method,
 #: the resource, the size, the media type, the legality, the feature. Rotating a
 #: credential changes none of those.
-_TERMINAL_STATUS = frozenset({400, 404, 405, 410, 413, 415, 422, 451, 501})
+_TERMINAL_STATUS = frozenset({400, 404, 405, 410, 413, 415, 416, 422, 451, 501})
 
 #: Hermes' own cross-turn circuit breaker, raised by
 #: ``chat_completion_helpers._check_stale_giveup`` once a session has seen
@@ -1129,8 +1133,14 @@ def classify(
     _klass = type(error).__name__ if error is not None else ""
     _reading = catalog.read_exception_class(_klass)
     if (
-        _reading is not None and _reading.family == catalog.TIMEOUT
-    ) or _matches(text, TIMEOUT_INDICATORS):
+        (_reading is not None and _reading.family == catalog.TIMEOUT)
+        or _matches(text, TIMEOUT_INDICATORS)
+        # 1.8.2.7: the provider's own timeout statuses are the same fact as a
+        # client-side one -- no answer inside the deadline, the key not
+        # implicated. 408/499/524 used to fall to the 20 s "unrecognised" rest
+        # (a healthy key benched for nothing) and 504 to the flat 5xx second.
+        or status in _TIMEOUT_STATUS
+    ):
         return TIMEOUT_S, "timeout", status
 
     if status in _SERVER_STATUS or _matches(
@@ -1442,13 +1452,19 @@ class Carousel:
     # -- identity --------------------------------------------------------
 
     @staticmethod
-    def identity(provider: Any, model: Any) -> str:
+    def identity(provider: Any, model: Any, region: str = "") -> str:
         """The health bucket a call belongs to.
 
         ``provider:model`` and not ``provider``: several providers meter a key
         per model, so a key spent on one model is still whole on another.
+
+        1.8.2.3: optional ``region`` for Vertex AI, where each region has
+        independent quota under the same billing account.
         """
-        return f"{str(provider or '?').strip().lower()}:{str(model or '?').strip().lower()}"
+        base = f"{str(provider or '?').strip().lower()}:{str(model or '?').strip().lower()}"
+        if region:
+            return f"{base}:{str(region).strip().lower()}"
+        return base
 
     @staticmethod
     def _provider_of(identity: str) -> str:
@@ -1747,14 +1763,34 @@ class Carousel:
             # pool where every key was refused means "immediately", because
             # then they are all equal and there is nothing to lose.
             order = {k: i for i, k in enumerate(usable)}
+            # 1.8.2.3: pacing + latency integration.  Import here to avoid
+            # circular imports at module level (latency and pacing import
+            # nothing from carousel).
+            try:
+                from .pacing import PACER, rpm_from_overrides
+                from .latency import LATENCY
+                # 1.8.2.3: the RPM override setting and quota groups are
+                # resolved per identity on a short clock, so a panel edit
+                # applies without a restart and costs the hot path one
+                # dictionary read when nothing changed.
+                PACER.sync_identity_settings(identity)
+                _pacing_ready = lambda k: 0 if PACER.is_ready(identity, k, now=now) else 1  # noqa: E731
+                _latency_score = lambda k: LATENCY.get(identity, k, now=now)  # noqa: E731
+            except Exception:
+                _pacing_ready = lambda k: 0  # noqa: E731
+                _latency_score = lambda k: 0.0  # noqa: E731
+
             chosen = min(
                 healthy,
                 key=(lambda k: (
                     1 if pool[k].get("kind") in REJECTED_KINDS else 0,
+                    _pacing_ready(k),
                     len(pool[k]["request_log"]),
                     pool[k]["last_used"],
+                    _latency_score(k),
                 )) if spread else (lambda k: (
                     1 if pool[k].get("kind") in REJECTED_KINDS else 0,
+                    _pacing_ready(k),
                     order[k],
                 )),
             )

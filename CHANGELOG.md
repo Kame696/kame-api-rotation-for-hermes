@@ -7,6 +7,432 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.2.8] — 2026-10-17 — your next model when the provider is busy, everything automatic, the model of each reply on screen
+
+**The case that drove it.** Four fallback models with 14 Gemini keys each, "Switch to the
+next model after" set to 10 s, and the first model answering "the model is overloaded"
+(503) for well over a minute: Hermes never moved to the next model. KAME's switch clock
+only counted the time every key was resting, and a 503 rests a key one second — so the
+clock stayed near zero while the user waited (`decisions/0028`).
+
+- **A busy provider moves to your next model at once.** Two keys in a row that get
+  "overloaded" or time out means the model is busy, not the keys: Hermes answers with the
+  next model of your fallback list. The busy model is left alone for 30 s (doubling while
+  it stays busy, at most 5 minutes; an answer on it ends that at once).
+- **One big pool, best model first, every reply.** A fallback lasts one reply: Hermes is
+  told the primary is back in a moment, so its own turn-start restore puts your best model
+  first on the next reply, and KAME passes it down again — without spending a request —
+  while it knows that model is still busy or resting. All of a model's keys are used before
+  the next model is; nothing switches after part of an answer is on screen. (Owner's live
+  test: the reply moved to the fallback model and the selector stayed there.)
+- **Speed first: the next model races a late reply.** A reply still silent at about 3 × its
+  model's usual first word (8 s at least; 12 s before anything is learned) — after a backup
+  key of the same model has had its chance at 2 × — gets a second request on the next model
+  of your list — and if that one is silent too, the model after it joins a few seconds later
+  — and whichever starts answering first is shown; the others are cut. No waiting
+  for a slow model to fail, no starting over. A model that loses this race sits out only
+  30 s, so your best model is tried first again almost at once. Not in Saver mode; Hermes
+  races a next model of the same provider (same keys, only the model name changes).
+- **A slow model is passed on too.** Live on the owner's keys, gemini-3.8-flash took about
+  two minutes to a one-word answer — on every key, with no error — while gemini-3.7-flash
+  answered in three seconds. Nothing failed, so nothing switched. Now a reply with no sign
+  of work (no word, no tool call, no reasoning) by the model's slow bound falls back to the
+  next model of your list, and the slow model is left alone for 2 minutes (doubling while
+  it stays slow, at most 10), so the next replies go straight to a model that is fast now
+  and only one reply now and then pays to check the slow one again.
+  *Automatic* learns the bound from that model's own first words on your computer
+  (3 × median, 20–45 s; thinking models 25–60 s; 30 / 45 s before
+  anything is learned); *Set time* uses your number. Only when a later model can take it
+  (not resting, not itself known slow or busy); never for background work; the last model
+  of the list is always waited for.
+- **No scary line in the chat for a planned switch.** Hermes' "⚠️ Model fallback … Primary
+  retry eligible in ~3488 s; recovery is not guaranteed." and its "✅ Primary model
+  restored" stay out of the chat when the switch was KAME's own hand-over
+  (`hermes-kame-bridge`); any other switch, and a failed turn's whole trace, is shown as
+  Hermes writes it. The reply notice and the Events tab say what happened.
+- **The switch counts your wait** — the time with nothing on screen, every failed attempt
+  included — and is weighed after every failure, not only when every key rests.
+- **Three choices instead of numbers to guess:**
+  - *Fallback*: **Automatic** (the busy rule; at once when every key rests; otherwise
+    about three times your model's usual first-word time, 6–20 s, learned) / Set time /
+    Never.
+  - *Wait for the first token*: **Automatic** (learned per model, far past its usual first
+    word: 20–120 s, 60–300 s for thinking models; streams only; never for a model on this
+    computer) / Set time / Off.
+  - *Show which model answered*: **Every reply** / Only another model / Never.
+  A number you set before 1.8.2.8 keeps working as "Set time" (0 = never / off). Each
+  number is shown on the Settings tab only under "Set time".
+- **Backups keep working through an overload.** The speed boost stood down whenever half
+  the keys were resting — and keys resting one second for a 503 counted, so it switched
+  itself off in exactly the storm where it helps. Only keys resting for quota (per-minute,
+  daily, credit) count now.
+- **Which model answered.** After each reply on the Desktop, a short notice: the model,
+  its first word and its total time, and "answered for gemini-3.8-flash" when a model from
+  your fallback list stood in (through `hermes-kame-bridge`'s new notice seam; never on a
+  messaging gateway, where it would become a chat message). The Events tab opens with
+  *Last replies*. Nothing of it enters the conversation the model reads.
+- **Clearer words:** *Speed* is Saver / Balanced / Fastest (stored values `off` /
+  `adaptive` / `max` unchanged); "Switch to the next model after" is *Fallback after*,
+  under *Fallback*; "Stop waiting and show an error after" is *Give up after*, now an
+  advanced setting (a chat never gives up by default); the Events tab says *Fallback*.
+
+**Not done, on purpose:** asking several keys at once when the provider is busy — tried
+and removed the same day: an overloaded model is overloaded for every key, and parallel
+requests during recovery break the 1.7.0.7 rule pinned in
+`tests/test_v1_7_0_7_dispatch_recovery_loop.py`. Racing two models at once — the fallback
+chain is Hermes'; KAME hands the call over within two failures instead.
+
+**Evidence:** plugin suite 3285 passing, 0 failing (the clock and continuity gates are load-sensitive and pass alone); host corpus and host prose gates unchanged; host assumptions 28 / 29 (the runtime-contract row needs Hermes' own dependencies in the test interpreter); an adversarial review of the whole change, eleven findings, all fixed with a test each (`decisions/0028`); `live_daily` on the installed copy of four profiles; live on the author's own keys — healthy first model: every reply on it, first word 2–4 s; first model out of quota: handed over in 0.2–0.3 s, reply in 6–7 s, and the next reply after it is back is its own again; first model slow (gemini-3.8-flash 1 m 46 s – 2 m 18 s for one word on every key, the next one 14–47 s): median reply **2.6 s** over 8 messages (7 of 8 at 2.2–2.8 s), was 46–120 s; a 503 "overloaded" storm: handed over in 6.3 s, answered at 8.3 s (1.8.2.7 never moved); no "⚠️ Model fallback" line in any reply.
+
+**Upgrading from 1.8.2.7:** install both `hermes-kame-api-rotation` and
+`hermes-kame-bridge` 1.8.2.8 and restart Hermes. If you had set "Switch to the next model
+after" or "Wait for the first token" yourself, those numbers keep working; choose
+*Automatic* to let KAME size them.
+
+---
+
+## [1.8.2.7] — 2026-10-17 — every provider learned, automatic fallback list, fast when quota runs dry, settings anyone can read
+
+**All 82 providers in the registry are now understood, from their own documentation.**
+For each one an independent reviewer who never read this plugin wrote the answer key —
+every error the provider can return (774 documented shapes) — and the plugin is
+graded against it on the real failure path (`tools/provider_doc_gate.py`, with a
+regression floor in the test suite). Agreement on what kind of failure it is: 96 → 120
+of 132 in the first 16 providers and 80–131 of 95–149 in each of the other batches
+(`research/1.8.2.7/expected/`). What the plugin learned, reading only the response (rule
+R01: no decision looks at the provider's name):
+
+- **A 403 that does not say the key is bad is a refused model, plan or policy, not a
+  dead key** (401 is the credential, 403 is the permission). Three in a row used to
+  retire a healthy key. Plan/role/tier refusals on a 401 or 403 are the same.
+- **Money said in words or in a code is billing** whatever the status: "not enough
+  balance", "account overdue", "credit limit exceeded", "kudos upfront", "used all
+  available credits", "free trial quota exhausted", "token quota reached", a card missing.
+- **A "quota" error that names a per-minute or concurrency counter is a throttle**,
+  not an empty balance (it used to bench the key for an hour).
+- **Capacity and saturation 429s** ("queue full", "service tier capacity exceeded",
+  "maximum capacity", "model is being loaded", "high demand") rest the key one second,
+  not thirty: the key is fine, the provider is busy.
+- **Closed doors go back to Hermes at once** instead of asking every key: a 503 with no
+  instance or endpoint, "maintenance", a router with no provider or channel available,
+  a worker pool with no worker, a local server with no model loaded or not enough memory
+  to load it, a model still loading.
+- **Request faults dressed as other things** are raised, not rotated: a prompt that does
+  not fit the context ("context size has been exceeded"), a safety or content refusal on a
+  400/403, a 5xx carrying an `invalid_request` code, a 416.
+- AWS Bedrock error names (throttling, service quota, model not ready, model error,
+  invalid token, access denied) are read even when Bedrock files them under 400.
+- NVIDIA's 429 (no body, or `{"status":429,"title":"Too Many Requests"}`) was already
+  read correctly and is now proven on every run; "Function … not found for account" is a
+  refusal for that account, not for the request. NVIDIA publishes nothing that tells
+  "exhausted" from a plain rate limit, so none can be told apart.
+- What only a provider's name could tell apart is listed, not guessed:
+  `04_plugins/kame/providers/UNTEACHABLE.md`.
+
+**Timeouts.** A provider timeout (408, 499, 504, 524 or a client-side one) rests the key
+0 s — it says nothing about the key. The first one rotates to the next key at once; the
+**second in a row goes back to Hermes** instead of walking the whole pool (the 13/10 Google
+overload: 57 minutes, 294 attempts). 408/499/524 used to bench a healthy key for 20 s.
+(decisions/0024)
+
+**Your fallback list works by itself.** KAME still never picks a model. If you have set
+fallback models in Hermes (`hermes fallback add`), then when every key of your model is
+resting for more than "Switch to the next model after" (default 60 s) KAME hands the call
+to Hermes at once and Hermes answers with the next model on your list — one instant hop
+per spent model, not a wait — and Hermes comes back to your model by itself as soon as its
+keys return, so the smartest model answers whenever it can. With no list nothing ever
+switches. Short rests (a minute of rate limit) are waited out on your model. Hermes
+switches at most `agent.api_max_retries` times in one message (default 3): the page warns
+when your list is longer and names the value to set. Proven live on the owner's gateway:
+3.8 to 3.5 spent, four hops in 0.2 s and 3-flash-preview answered; keys back, 3.8 again. Never
+mid-answer, never when no later model is usable, never for background jobs. "Ignore my
+fallback list" (advanced) turns it off. (decisions/0025, 0027)
+
+**Running dry is fast.** When two keys in a row are refused for a long rest (a spent
+daily quota), the next attempts ask 4, then 8, then 16 keys at once and the first that
+answers wins; keys the provider itself said are still spent are asked all together.
+Measured on the owner's chain (Gemini 3.8 -> 3.7 -> 3.6 -> 3.5 -> 3, 14 keys each, only
+the last with quota, latencies drawn from 308 real refusals): first turn 58 s -> 27 s,
+every next turn one request (0.6 s), the hourly re-check 59 s -> 13 s. Off when backup
+requests are off. (decisions/0027)
+
+**The panel no longer goes blank.** On Windows `state.json` refuses to open for a few
+milliseconds while Hermes replaces it; the panel's backend answered that moment with
+"503 snapshot unreadable" (up to 427 times a day in the owner's log) and a panel opened
+then showed an error. It now retries and otherwise serves the last good reading; writers
+wait out a reader instead of skipping a snapshot. Together with the `StringSetting`
+crash fix, this is the 1.8.2.6 "menu stops rendering" report.
+
+**Settings a new user can read.** Four settings are visible (when to switch model, when to
+stop waiting, the speed boost, wait for the first token); the already-tuned ones sit behind
+"Show advanced settings"; the eleven off switches stay in a folded Troubleshooting card.
+"Your API keys" shows how to add keys (`/kame-keys add gemini K1,K2,...`); "keys that
+share one quota" is gone from the page (every key is its own account). One plain sentence
+per setting (the long text is the tooltip), one power scale (●●● High / ●●○ Medium /
+●○○ Low), the fallback list and each model's keys inside "If your keys run out". Events:
+a hand-over is a planned "Switched model", not an error; the Overview counts switches and
+keys asked together; "Error passed on" says what happened; background jobs are named in
+words ("Naming this chat"); the tab is "Background jobs". The Settings tab no longer fails
+at the first text setting; credit is to KAME only, with a link to the repository.
+
+**Packages.** The optional `hermes-kame-bridge` (the two Hermes seams still under review
+upstream, #133474 and #133461) ships in every release beside the two plugins, at the same
+version.
+
+**Measured, not changed.** The plugin's own cost is 3–8 ms of CPU per call, with 32 callers
+at once still ~170 calls/s through it (`tools/perf_probe.py`). Re-using a key does not
+raise time-to-first-word (`notes/2026-10-16-ttft-reuse-measurement.md`). Verified live on
+the real Gemini and NVIDIA keys (`tools/live_1827_smoke.py`): plain and streamed answers,
+the hand-over with zero requests sent, and the fallback model answering.
+
+---
+
+## [1.8.2.6] — 2026-10-13 — the Events tab shows your conversation
+
+From the owner's first day on 1.8.2.5: Hermes' background jobs (titles,
+compression, vision, session search) were mixed into the Events tab with the
+chat's own rotations, and a long Google overload on a background model buried
+everything else. Nothing about rotation changes in this release — only what
+the panel shows.
+
+- **Events = the chat; Background = Hermes' side jobs.** The Background tab
+  existed since 1.8.2.3 but stayed empty on a real Hermes: nothing ever marked
+  a call as auxiliary (the planned hook runs in a separate worker thread, and
+  the model-name fallback needs a model Hermes never passes). KAME now reads
+  the marker Hermes itself sets for every auxiliary call, which reaches the
+  call even when Hermes runs it on its protected thread. A background job on
+  the chat's own model still goes to Background — and still shares the chat's
+  pool, as before.
+- **Each Background row names its job**, and the tab filters by it (click
+  "title generation", "compression", …).
+- **The lists scroll inside themselves** instead of stretching the page; the
+  counters stay on top.
+- **"Still waiting" line**: a call running for more than a minute says so in
+  one sentence — which job, which model, how long, how many refusals, the
+  last reason. KAME keeps waiting exactly as configured; the panel just says
+  it is.
+- **Clearer words**: a 400 that nothing else explains now reads "the provider
+  rejected the request itself — another key would get the same answer"; a
+  bare 429 with no quota number reads "usually the provider is busy, not your
+  quota".
+- The host seam check watches the new marker, so a Hermes update that removes
+  it is named on the panel (cosmetic: rows would fall back to the Events tab).
+
+## [1.8.2.5] — 2026-10-12 — backups for the chat: the first word wins
+
+Everything 1.8.2.4 does, and the one thing it could not: the chat itself.
+Hermes' chat streams, and until now backups only raced calls that do not
+stream (titles, compression, vision). On the owner's own traffic (3,275
+answered attempts) almost every answer is a stream, keys are never what the
+user waits for (median pool wait 0.00 s), and the time goes to slow first
+words — Gemini 3.8 Flash: median 5.5 s, worst tenth 21 s and more.
+
+### Stream backups, raced to the first word
+- A chat reply still **silent** after **twice that model's usual time to
+  its first sign of work** gets a backup on another healthy key (each key is
+  its own project, so the backup is real capacity); still silent after twice
+  that, a third. The first key to show work — text, a tool call, or streamed
+  reasoning (OpenAI-compatible `reasoning_content`, Anthropic `thinking`,
+  Responses reasoning events) — wins; the others are cut at once: their HTTP
+  response is closed, so they stop costing time. A reply that is thinking is
+  working, not stuck, and never gets a backup.
+- **Nothing changes until a backup is needed:** a lone stream's chunks pass
+  straight through exactly as before, and a refusal before any backup rotates
+  as it always did, with no waiting.
+- **Every leg is judged on its own key**: a refused backup rests that key and
+  cools backups for a minute; a cut leg's request still counts with the pacer
+  and teaches the latency trackers (as a lower bound, so slow keys cannot make
+  the trigger fire ever earlier).
+- **Learned from the first call.** The trigger is twice the median of the
+  last 200 first-sign times per model — seeded at the first race from
+  `calls.jsonl`, which has been recording them since 1.6, so a restart does
+  not start cold — and keeps learning from every race it decides.
+- **Held to a budget** (about 10% extra requests; a new budget starts with
+  its burst of 3), off under 429 pressure, never for very large prompts,
+  never into a resting key; Max mode starts a backup on every reply at once.
+  The user only switches hedging on or off.
+- Continuations and tool-call replays are not raced; a winner cut mid-answer
+  is continued on another key exactly as before.
+
+### Measured
+- Replaying the final policy over the owner's real first-sign times (budget
+  10%, against 1.8.2.2 / 1.8.1.8, which have no stream backups):
+  gemini-flash-latest mean 15.6 → 8.3 s and worst tenth 45 → 17 s;
+  gemini-3.8-flash (global) 14.3 → 9.4 s and 38 → 20 s; gemini-3.7-flash worst
+  tenth 20 → 14 s; glm-5.3 (global) worst hundredth 69 → 41 s; +9–15% requests.
+  Anthropic models (already ~2 s to first sign) and Kimi K3 (uniformly slow, no
+  stragglers) are left almost untouched, at +3–6%.
+- Live on the owner's pools, alternating raced and unraced calls: Gemini 3.8
+  Flash with forced 2 s / 4 s triggers, worst first word **7.4 s vs 33.0 s**;
+  with learned triggers over 30 pairs, mean 7.2 vs 7.1 s and worst **16.5 vs
+  27.1 s** (7 backups, 4 spoke first). NVIDIA GLM-5.3 with the final rules:
+  one backup in 12 replies (it won), total time unchanged — the earlier
+  text-only rule had raced replies that were already thinking, which is how
+  the "silent, not slow" rule was found.
+- Concurrency stress (12 threads, slow / empty / 429 / 503 / mid-answer cuts):
+  0 internal errors, no hung threads, no race thread left behind.
+- What it is: a cut of the worst waits. It does not make an ordinary reply
+  faster — the provider's usual time to first word is the provider's.
+
+### Settings and panel
+- Hedging help texts now describe the chat race; `hedge_max_legs` 3 lets a
+  still-silent chat reply try a third key.
+
+---
+
+## [1.8.2.4] — 2026-10-12 — the speed pass, made to do what it said
+
+Everything 1.8.2.3 does, with every one of its ten integrations kept. This
+release fixes what an audit of 1.8.2.3 (2026-10-12) found in the seams
+between those pieces — places where each piece passed its own test and the
+whole did something else — and corrects five things 1.8.2.3's notes and
+panel promised that the code did not do.
+
+### The backup request now actually saves time
+- **The answer comes back when the first leg answers.** 1.8.2.3 joined every
+  leg before returning, so a call whose backup answered in 0.25 s still
+  reached the agent after the slow leg's full time (measured on the 1.8.2.3
+  transport: 3.14 s). The slow leg now finishes on its own thread.
+- **Every leg is judged on its own key.** A backup refused per minute rests
+  the backup key and cools backups for that model for a minute (that cooldown
+  existed in 1.8.2.3 but nothing called it). A primary that fails after
+  losing the race rests the primary. A request that answers after losing is
+  counted by the pacer and teaches the latency trackers.
+- **The first useful answer wins.** Live on the Gemini pool a thinking model
+  answered one leg with nothing while the other was still working, and the
+  race handed the empty answer on, costing another attempt. An empty leg now
+  waits for the other; it is used only if no leg brings anything better, and
+  then the usual empty-answer rule rests the right key.
+- **The large-prompt guard sees the prompt.** It measured the number of
+  keyword arguments instead of the prompt's length, so a huge compression
+  prompt could be sent twice. It now counts the prompt's text.
+- **No backup to a key of the same quota group** — two keys of one project
+  share one quota, and a backup there spends it twice for nothing.
+- **Max mode fires from the start**, as its description always said; in
+  1.8.2.3 it still waited for the threshold.
+- **Thinking models are recognised by what they are.** Gemini 2.5 and later
+  (except `-lite`) and any request that turns thinking on get the slower
+  thinking threshold; 1.8.2.3 gave the Gemini pool the 6 s one.
+
+### Latency means what each user of it means
+- A **stream** is timed to its first sign of an answer; 1.8.2.3 recorded the
+  whole stream, so a key that served a long answer looked slow in the
+  tiebreak. A non-stream call is timed whole, as before.
+
+### Pacing
+- **Quota groups match the key as the Events tab shows it** (`key:a1b2c3`,
+  or the six characters alone). In 1.8.2.3 no typed entry could ever match.
+  Deleting an entry now ungroups the keys.
+- **A learned per-minute limit can recover.** A refusal caused by other keys
+  of the same project used to teach a key a near-zero limit until restart.
+  Requests the provider answered inside one window now raise it — never above
+  a limit set by hand.
+
+### Settings and panel
+- The 13 settings 1.8.2.3 added are declared in `plugin.yaml`, so they can be
+  set in Hermes' `config.yaml` too (before, only the panel and environment
+  variables reached them).
+- The panel's build line reads the version instead of a hand-written
+  "1.8.2.3".
+- Corrected help texts: hedging (the other request is not cancelled; it only
+  applies to non-streaming calls), "most parallel requests" (one backup at
+  most), the per-model RPM limit (a ceiling, not a replacement), region and
+  quota-group examples (the label format the panel shows), "%" shown as "%%".
+- `pacing_interval_seconds` was never read by anything in 1.8.2.3. It stays
+  so an older config still loads, and says so on the panel.
+- The bare-429 ladder's title names RESOURCE_EXHAUSTED again (a 1.8.1.0
+  promise the 1.8.2.3 rewording dropped).
+
+### Tests
+- New: the speed features driven through the real transport path
+  (`tests/test_1_8_2_4_speed_paths.py`), and a registry-wide check that every
+  setting has a real reader (`tests/test_1_8_2_4_every_setting_is_read.py`).
+  Both fail on 1.8.2.3 and pass here.
+- The full suite runs green again: 1.8.2.3 was checked with its own 166 tests
+  only, and 16 older tests had gone red — settings lists that predated the
+  text kind and the Speed shelf, two event-privacy checks that had stopped
+  seeing any call site, a title, and a pacer state that leaked between tests.
+
+### Known, unchanged from 1.8.2.3
+- Backup requests for **streaming** calls stay off until a loopback harness
+  proves the race can be cancelled cleanly. The chat streams, so the chat
+  itself is not made faster by backups; auxiliary calls (title, compression,
+  vision) are.
+- Spinner and Messages-wire rotation still depend on upstream #133474 /
+  #133461 or the optional `hermes-kame-bridge`.
+
+---
+
+## [1.8.2.3] — 2026-10-11 — the speed pass: pacing that learns, backups that fire, dead settings resurrected
+
+Everything 1.8.2.2 does, plus ten integrations designed and built in this tree,
+finished, wired to real runtime consumers and test-gated (165 own tests green, plus a live 5/5 smoke against a real 14-key
+pool run by the developer before the merge).
+
+### Speed
+- **Adaptive hedging (automatic).** When one call is slower than the learned
+  p90 time-to-first-answer of *this* pool:model, a backup leg is sent to a
+  second healthy key and the first answer wins. Budgeted (~10% of calls),
+  capped (2-3 legs), never fires on prompts above a size ceiling, never fires
+  while the pool is under 429 pressure, and reasoning models get their own
+  slower threshold so long thinking never burns quota on backups. The Events
+  tab shows every leg and the winner.
+- **Pacing that learns.** A sliding-window admission check per key, seeded
+  from the provider's known per-minute limits and *learned* from real 429s.
+  Zero added delay while a key is inside its window; the minimum wait when
+  every key is inside one. Replaces the burst-unsafe GCRA of the prototype
+  with the shape providers actually enforce. Per-model RPM overrides stay.
+- **Latency tiebreak, working this time.** The prototype wrote samples under
+  one key id and read them under another (the bug that made the whole feature
+  dead code). The tracker is now fingerprint-idempotent — the bug class cannot
+  exist — and it only breaks ties between *equally free* keys, so fairness of
+  load stays first.
+
+### The tab, the walls, the hints
+- **Secondary Events tab.** Title, vision, compression and every other
+  auxiliary call now lands on its own tab with a task column, instead of
+  burying the chat's rotations under background noise. The Main tab is
+  chat-only.
+- **Host seam check with signature binding.** The boot check now *binds* the
+  plugin's real call shape against each host symbol's signature and names the
+  drift on the panel when a Hermes update changes something (it caught its
+  first real drift on its first run). Registration never fails because of it.
+- **Retry hints in three families.** Temporary → "retry, next key free in
+  Xs". Daily-quota wall → "do not try now" (the old hint said "retry" on a
+  spent daily quota and the agent looped forever — that is gone). Permanent →
+  "do not retry". The exception type is preserved, no more rebuilt errors.
+
+### The rest
+- **Region in the pool identity.** Vertex path/subdomain, Bedrock and Azure
+  patterns parsed from the endpoint URL; per-key overrides from the panel
+  apply without a restart. A 429 in one region does not bench another.
+- **Settings rewritten for humans.** Every new setting carries title, plain
+  description, provenance (env/config/default) and a recommendation line; a
+  25-assertion meta-test fails the suite if any setting is ever shipped
+  invisible, ungrouped or unconsumed — the "dead setting" class of bug is
+  now a build failure, not a discovery.
+- **`reset_all` clears string settings too**, and the panel shows the live
+  build line in its header so what you run is never a guess.
+
+### Known, documented
+- Streaming hedge race cancellation needs a dedicated loopback harness before
+  it goes on; the decision layer is complete and tested, and the transport
+  degrades to the single-key path there.
+- The two upstream seams (`notify_turn_status` #133474,
+  `create_messages_client` #133461) stay optional as in 1.8.2.2 — the
+  `hermes-kame-bridge` companion provides both meanwhile.
+
+---
+
+- **Fixed within the day: a mid-stream failure path crashed the agent.** A
+  mechanical edit had left ``bool(seen, call=call)`` on the streaming error
+  path — Python's ``bool()`` takes no keyword arguments, so the first provider
+  error *during* a stream on a real pool raised ``TypeError`` instead of
+  rotating. Now ``bool(seen)`` with the call handed to ``_on_failure`` where
+  it belongs, and a new AST gate (``test_1_8_2_3_no_bad_bool.py``) fails the
+  suite if any ``bool()`` call ever grows kwargs again. Found by the owner on
+  his live 14-key pool within an hour of the merge.
+
 ## [1.8.2.2] — 2026-10-07 — what the owner's own test found against 1.8.1.8
 
 - **The Settings form is back on the panel's Settings tab.** 1.8.2.0 had moved

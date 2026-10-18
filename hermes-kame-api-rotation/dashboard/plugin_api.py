@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -41,17 +42,37 @@ def _data_dir() -> Path:
     return Path(get_hermes_home()) / "plugin-data" / PLUGIN_ID
 
 
+#: 1.8.2.7. The last snapshot this door served, per file. On Windows a file that
+#: is being replaced (``os.replace`` in ``state.py``, every heartbeat of every
+#: Hermes process sharing the home) or scanned by an antivirus refuses to open for
+#: a few milliseconds. 1.8.2.6 answered that moment with a 503 - 427 of them in one
+#: day of the owner's desktop log - and a panel opened during one showed an error
+#: instead of the pool. A short retry, then the last good copy, closes it.
+_LAST_GOOD: Dict[str, Any] = {}
+_STALE_LIMIT_S = 30.0
+_READ_TRIES = 6
+_READ_PAUSE_S = 0.025
+
+
 @router.get("/state")
 def state() -> Response:
     """The snapshot, byte for byte, as the Python half last published it."""
     path = _data_dir() / "state.json"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="no snapshot yet")
-    except OSError:
-        raise HTTPException(status_code=503, detail="snapshot unreadable")
-    return Response(content=text, media_type="application/json")
+    for attempt in range(_READ_TRIES):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="no snapshot yet")
+        except OSError:
+            if attempt + 1 < _READ_TRIES:
+                time.sleep(_READ_PAUSE_S)
+            continue
+        _LAST_GOOD[str(path)] = (text, time.monotonic())
+        return Response(content=text, media_type="application/json")
+    cached = _LAST_GOOD.get(str(path))
+    if cached is not None and time.monotonic() - cached[1] < _STALE_LIMIT_S:
+        return Response(content=cached[0], media_type="application/json", headers={"X-Kame-Stale": "1"})
+    raise HTTPException(status_code=503, detail="snapshot unreadable")
 
 
 def _valid(request: Any) -> Dict[str, Any]:

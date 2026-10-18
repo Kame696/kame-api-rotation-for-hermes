@@ -591,12 +591,12 @@ class TestTheChipNamesThePoolAndFitsTheStatusBar:
 class TestEverySettingIsEditableFromThePanel:
     def test_every_flag_and_number_is_described(self):
         described = {row["key"] for row in settings.describe_all()}
-        assert described == set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS)
+        assert described == (set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS) | set(settings.ALL_STRINGS)) - settings.HIDDEN
 
     def test_each_description_carries_what_a_control_needs(self):
         for row in settings.describe_all():
             assert row["title"] and row["help"], row["key"]
-            assert row["kind"] in {"flag", "number"}
+            assert row["kind"] in {"flag", "number", "string"}
             assert row["source"] in {"default", "environment", "config"}
             if row["kind"] == "number":
                 assert row["min"] is not None and row["max"] is not None

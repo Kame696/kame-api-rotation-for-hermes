@@ -81,8 +81,8 @@ class TestEveryCallIsOnTheEventsTab:
             assert f"\n  {kind}: [" in source and f"\n  {kind}: '" in source
         good = {k for k in events_mod.GOOD_KINDS}
         assert "const GOOD_KINDS = new Set([" + ", ".join(
-            f"'{k}'" for k in ["switch", "recovery", "stitch", "wait", "setting", "sent", "answered"]) + "])" in source
-        assert good == {"switch", "recovery", "stitch", "wait", "setting", "sent", "answered"}
+            f"'{k}'" for k in ["switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover"]) + "])" in source
+        assert good == {"switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover"}
 
 
 class TestRefusalRecords:
@@ -112,6 +112,14 @@ class TestRefusalRecords:
 def _load_plugin_api():
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
+    if "hermes_constants" not in sys.modules:  # 1.8.2.7: outside a Hermes checkout
+        try:
+            importlib.import_module("hermes_constants")
+        except ImportError:
+            import types
+            stub = types.ModuleType("hermes_constants")
+            stub.get_hermes_home = lambda: Path(os.environ.get("HERMES_HOME", "."))
+            sys.modules["hermes_constants"] = stub
     spec = importlib.util.spec_from_file_location("kame_plugin_api_under_test", PLUGIN_DIR / "dashboard" / "plugin_api.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

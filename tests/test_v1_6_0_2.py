@@ -668,7 +668,7 @@ def test_the_stream_silence_help_recommends_a_value():
     help_text = str(described.get("help", ""))
     assert "60" in help_text
     # And it still says zero is the default, which is the more important half.
-    assert "Zero, the default" in help_text
+    assert "0 (default)" in help_text
 
 
 if __name__ == "__main__":

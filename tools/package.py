@@ -31,6 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 #: 1.8.1.9 ships two plugins: the rotation plugin and its provider half.
 SOURCES = (ROOT / "hermes-kame-api-rotation", ROOT / "hermes-kame-provider")
+#: 1.8.2.7: the optional bridge ships beside them in every release (not in the
+#: catalog entry); built here so its ZIP always carries the same version.
+OPTIONAL = (ROOT / "hermes-kame-bridge",)
 SOURCE = SOURCES[0]  # the name earlier releases (and their tests) read
 DIST = ROOT / "dist"
 
@@ -103,11 +106,12 @@ def build(source: Path) -> int:
 
 
 def main() -> int:
-    versions = {manifest_version(source / "plugin.yaml") for source in SOURCES}
+    everything = SOURCES + tuple(o for o in OPTIONAL if (o / "plugin.yaml").exists())
+    versions = {manifest_version(source / "plugin.yaml") for source in everything}
     if len(versions) != 1:
-        print(f"FAIL: the two plugins carry different versions: {sorted(versions)}")
+        print(f"FAIL: the plugins carry different versions: {sorted(versions)}")
         return 1
-    for source in SOURCES:
+    for source in everything:
         code = build(source)
         if code:
             return code

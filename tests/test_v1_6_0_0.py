@@ -495,17 +495,16 @@ def _hint(verdict):
     return plugin._to_hook_result(verdict)
 
 
-def test_fallback_is_refused_by_default():
-    # This asserted True until the owner reversed it, and the reason is the
-    # pool's whole purpose: it rotates, waits, and calls again at the right
-    # moment, so a quota that comes back continues on the model that was asked
-    # for. Switching model mid-conversation is not a recovery — it is a
-    # different answer from a different model, discovered afterwards.
+def test_fallback_follows_the_classifier_by_default():
+    # 1.8.0.0 to the 1.8.2.7 drafts refused it by default (R02). The owner
+    # reversed that on 2026-10-16 (decisions/0027): a fallback list he wrote in
+    # Hermes is his consent, and with no list Hermes has nothing to switch to.
+    plugin_settings.forget()
     verdict = verdict_for(gemini(
         429, code="gemini_rate_limited", error_status="RESOURCE_EXHAUSTED",
         reason="RATE_LIMIT_EXCEEDED", message=FREE_TIER_SENTENCE,
     ))
-    assert _hint(verdict)["should_fallback"] is False
+    assert _hint(verdict)["should_fallback"] is bool(verdict.should_fallback)
 
 
 def test_the_switch_takes_the_permission_away(_no_fallback):
@@ -536,15 +535,16 @@ def test_a_dead_credential_still_does_not_ask_for_a_fallback(_no_fallback):
     assert _hint(verdict)["should_fallback"] is False
 
 
-def test_the_switch_is_on_unless_it_is_turned_off():
+def test_the_switch_is_off_unless_it_is_turned_on():
     # It shipped off, on the reasoning that falling back is Hermes' own
     # behaviour and the plugin does not get to decide nobody wants it. True for
     # an install without a pool; wrong for one with fifteen keys, which is what
     # this plugin is for. It is the one switch in DEFAULTS_ON, and turning it
     # off restores the host's behaviour exactly.
+    # 1.8.2.7 (decisions/0027): off by default now; the user's fallback list is the consent.
     plugin_settings.forget()
-    assert plugin_settings.is_on(plugin_settings.NO_MODEL_FALLBACK) is True
-    assert plugin_settings.NO_MODEL_FALLBACK in plugin_settings.DEFAULTS_ON
+    assert plugin_settings.is_on(plugin_settings.NO_MODEL_FALLBACK) is False
+    assert plugin_settings.NO_MODEL_FALLBACK not in plugin_settings.DEFAULTS_ON
     assert plugin_settings.NO_MODEL_FALLBACK in plugin_settings.ALL_FLAGS
     # Not an escape hatch: it adds a behaviour rather than taking one away,
     # so it does not belong on the shelf that warns about taking things away.
@@ -556,7 +556,8 @@ def test_the_help_text_admits_the_lane_it_cannot_reach():
     # The auxiliary lane fires no classification hook, so no verdict of
     # KAME's reaches it and this switch cannot govern it. Saying so in the
     # panel is the difference between a documented limit and a bug report.
-    explanation = plugin_settings.explain(plugin_settings.NO_MODEL_FALLBACK).lower()
+    # 1.8.2.7: the page shows one plain sentence; the long text is the tooltip ("detail").
+    explanation = plugin_settings.describe(plugin_settings.NO_MODEL_FALLBACK)["detail"].lower()
     assert "titling" in explanation or "summaris" in explanation
 
 

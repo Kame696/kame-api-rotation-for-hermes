@@ -32,10 +32,43 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import settings, wires
 from .core import multikey
-from .core.carousel import Carousel
+from .core.carousel import Carousel, fingerprint
+from .core.region import parse_region, region_from_overrides
+from . import settings
 from .transport import Call, KameTransport, attempt_read_timeout
 
 logger = logging.getLogger(__name__)
+
+
+#: Aux task pins Hermes gives its auxiliary models (``auxiliary_client.py``
+#: and the provider profiles). Naming the task from the model puts a real
+#: label on the Secondary tab's task column instead of "other" — and a
+#: model that matches none of them is still auxiliary, just labelled by
+#: what it is.
+_AUX_MODEL_TASKS: Tuple[Tuple[str, str], ...] = (
+    ("vision", "vision"),
+    ("vl", "vision"),
+    ("-v-", "vision"),
+    ("flash", "title"),
+    ("turbo", "title"),
+    ("nano", "title"),
+    ("mini", "compression"),
+    ("haiku", "compression"),
+)
+
+
+def _guess_aux_task(model: str) -> str:
+    """A readable task label for an auxiliary model, or ``"other"``.
+
+    Heuristic and honest about it: the label feeds a display column, never
+    a decision, so a wrong guess costs a wrong word on one row rather
+    than a wrong route for a call.
+    """
+    text = str(model or "").strip().lower()
+    for needle, task in _AUX_MODEL_TASKS:
+        if needle in text:
+            return task
+    return "other"
 
 #: One transport per plugin namespace — and so per Hermes profile home. The
 #: carousel engine inside it is process-wide on purpose (``core.carousel.
@@ -185,9 +218,66 @@ class _FacadeCall(Call):
     def __init__(self, client: "_KameMixin", kwargs: Dict[str, Any], wire: Any = wires.CHAT) -> None:
         self._client = client
         self.kwargs = dict(kwargs)
-        self.kwargs.pop("stream", None)
+        # 1.8.2.8: the automatic first-token wait is for streams only - a call
+        # that does not stream sends nothing until it is done.
+        self.streaming = bool(self.kwargs.pop("stream", None))
         self.provider = client._kame_provider
-        self.identity = Carousel.identity(self.provider, str(self.kwargs.get("model") or ""))
+        # 1.8.2.3: the region is part of the identity (PC-01). Read from
+        # the endpoint URL this client actually calls, with the per-key
+        # override setting consulted at call time so a panel edit applies
+        # without a restart. ``global`` keeps the two-part identity every
+        # earlier version wrote, so nothing churns for flat providers.
+        base_url = str(getattr(client._kame_keys, "base_url", "") or "")
+        model = str(self.kwargs.get("model") or "")
+        # 1.8.2.3: per-key region overrides are consulted where the key
+        # is known (the transport's key loop), not here — the override entry
+        # is written against the key label the panel shows.
+        self.region, self.region_source = parse_region(base_url, model)
+        # 1.8.2.3: per-key region overrides, consulted at call time so a
+        # panel edit applies without a restart. The entry is written
+        # against the key label the panel shows (the key fingerprint).
+        overrides = settings.text_value(settings.KEY_REGION_OVERRIDES)
+        if overrides:
+            for label in (fingerprint(k) for k in self._client._kame_keys.keys()):
+                override = region_from_overrides(overrides, label)
+                if override:
+                    self.region, self.region_source = override, "override"
+                    break
+        self.identity = Carousel.identity(self.provider, model, self.region)
+        # 1.8.2.3: channel + task for the Secondary Events tab. Priority:
+        # an explicit client tag (the strongest signal — set by anything
+        # that *knows* this client is auxiliary), then the ContextVar the
+        # host or a wrapper may have set, then the model heuristic (an aux
+        # call usually carries a model other than the session's chat
+        # model; the fast/flash/vision pins Hermes gives aux tasks are
+        # nameable, so the task column gets a real label, not "other").
+        client_aux = bool(getattr(client, "_kame_is_aux_client", False))
+        client_task = str(getattr(client, "_kame_aux_task", "") or "")
+        slot = ""
+        host_task = ""
+        try:
+            from .core.events import get_aux_slot, host_aux_task
+            slot = get_aux_slot()
+            # 1.8.2.6: Hermes' own per-call marker — the signal that actually
+            # reaches here (see ``core.events.host_aux_task``). Before it,
+            # nothing ever tagged a call and every aux row landed on Main.
+            host_task = host_aux_task()
+        except Exception:
+            slot = host_task = ""
+        if client_aux:
+            self.channel = "secondary"
+            self.task = client_task or slot or host_task or _guess_aux_task(model)
+        elif slot or host_task:
+            self.channel = "secondary"
+            self.task = slot or host_task
+        else:
+            main_model = str(getattr(client, "_kame_main_model", "") or "")
+            if main_model and model and model.strip().lower() != main_model.strip().lower():
+                self.channel = "secondary"
+                self.task = _guess_aux_task(model)
+            else:
+                self.channel = "main"
+                self.task = "chat"
         self.wire = wire
         self.response: Any = None
 
@@ -205,7 +295,7 @@ class _FacadeCall(Call):
         return self._client._kame_keys.entry(key)
 
     def client_for(self, key: str, attempt: int) -> Any:
-        return self._client._kame_inner(key, attempt)
+        return self._client._kame_inner(key, attempt, self.identity, self.kwargs, self.streaming)
 
     def cancelled(self) -> bool:
         return self._client._kame_cancelled.is_set()
@@ -224,6 +314,28 @@ class _KameMixin:
         self._kame_cancelled = threading.Event()
         self._kame_inners: Dict[str, Any] = {}
         self._kame_lock = threading.Lock()
+        # 1.8.2.3: channel hint for the Secondary Events tab. The main
+        # agent's chat client carries the session's chat model, so an aux
+        # call arriving on a client whose chat model differs from the
+        # request's model is recognisable as auxiliary work. Set by
+        # ``_kame_note_aux`` when a caller knows better (the provider
+        # plugin or a host wrapper), read per request in ``_FacadeCall``.
+        self._kame_main_model = str(client_kwargs.get("model") or "")
+        self._kame_is_aux_client = False
+
+    def _kame_note_aux(self, task: str = "") -> None:
+        """Mark this client as auxiliary (its calls go to the Secondary tab).
+
+        Callable by anything that *knows* a client is auxiliary — the
+        provider plugin wrapping a profile's aux entry point, or a host
+        shim. Not knowing is fine: the model heuristic in ``_FacadeCall``
+        catches most of the rest, and an untagged aux call degrades to
+        Main, which is the pre-1.8.2.3 behaviour rather than a wrong
+        split.
+        """
+        self._kame_is_aux_client = True
+        if task:
+            self._kame_aux_task = task
 
     def _kame_create(self, **kwargs: Any) -> Any:
         call = _FacadeCall(self, kwargs)
@@ -237,13 +349,15 @@ class _KameMixin:
             return _EventStream(TRANSPORT.stream(call), call)
         return TRANSPORT.complete(call)
 
-    def _kame_inner(self, key: str, attempt: int) -> Any:
+    def _kame_inner(self, key: str, attempt: int, identity: str = "", kwargs: Any = None,
+                    streaming: bool = False) -> Any:
         key = key or self._kame_keys.api_key
         with self._kame_lock:
             inner = self._kame_inners.get(key)
             if inner is None:
                 inner = self._kame_inners[key] = self._kame_build(key)
-        timeout = attempt_read_timeout(getattr(self, "base_url", ""), attempt)
+        timeout = attempt_read_timeout(getattr(self, "base_url", ""), attempt, identity=identity,
+                                       kwargs=kwargs, streaming=streaming)
         if timeout is None:
             return inner
         return _WithTimeout(inner, timeout)

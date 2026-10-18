@@ -102,12 +102,10 @@ def _to_hook_result(verdict: Verdict) -> Dict[str, Any]:
     """
     # 1.6.0.0. The one place a user can say "do not switch models on me".
     #
-    # Hermes reads ``should_fallback`` as permission to answer a spent
-    # credential with a different model, and then a different provider. That
-    # is a sensible default and a wrong one for a pool whose whole purpose is
-    # to wait out a quota and come back on the model that was asked for. The
-    # switch is off unless the user turns it on, because the behaviour it
-    # overrides is the host's own.
+    # Hermes reads ``should_fallback`` as permission to answer with a
+    # different model. Since 1.8.2.7 (decisions/0027) the switch is off by
+    # default: a fallback list the user wrote in Hermes is the consent, and
+    # with no list Hermes has nothing to switch to.
     fallback = verdict.should_fallback
     if fallback and settings.is_on(settings.NO_MODEL_FALLBACK):
         fallback = False
@@ -282,6 +280,31 @@ def _on_api_error_classification(
     if _is_disabled():
         return None
 
+    # 1.8.2.7. KAME's own hand-over (transport.KamePoolResting) is not a
+    # provider payload: it is KAME telling Hermes "every key of this model is
+    # resting for long, you have another model". It is answered BEFORE anything
+    # is recorded (the corpus holds provider payloads only) and bypasses
+    # `_to_hook_result`, so `never_fall_back_to_another_model` cannot flip it
+    # (the transport raises it only when that flag is off).
+    # `upstream_rate_limit` is the one reason the host switches at once without
+    # rotating its own pool (notes/2026-10-16-fallback-design-review.md, Q2).
+    _body = getattr(error, "body", None)
+    _env = _body.get("error") if isinstance(_body, dict) else None
+    if type(error).__name__ == "KamePoolResting" or (
+            isinstance(_env, dict) and _env.get("code") == "kame_pool_resting"):
+        envelope = _env if isinstance(_env, dict) else {}
+        result: Dict[str, Any] = {
+            "reason": "upstream_rate_limit",
+            "retryable": True,
+            "should_rotate_credential": False,
+            "should_fallback": True,
+        }
+        context: Dict[str, Any] = {"upstream_provider": "KAME pool (every key resting)"}
+        if envelope.get("reset_at") is not None:
+            context["reset_at"] = float(envelope["reset_at"])
+        result["error_context"] = context
+        return result
+
     # Write down what the provider actually sent, before anything reads it.
     #
     # The corpus this plugin is measured against holds thirteen thousand real
@@ -435,6 +458,19 @@ def register(ctx) -> None:
             logger.info("%s: %s", PLUGIN_NAME, integrity.describe(_INTEGRITY))
     except Exception:  # pragma: no cover — verify() swallows its own failures
         logger.debug("%s: could not verify the install", PLUGIN_NAME, exc_info=True)
+
+    # 1.8.2.3: check that the Hermes APIs this plugin depends on still exist.
+    # A Hermes update can rename or remove a hook; this tells the owner before
+    # the first rotation fails.
+    try:
+        seams = integrity.check_host_seams()
+        _INTEGRITY["seams"] = seams
+        if seams.get("ok"):
+            logger.info("%s: host seams — %s", PLUGIN_NAME, seams.get("summary", ""))
+        else:
+            logger.warning("%s: host seams — %s", PLUGIN_NAME, seams.get("summary", ""))
+    except Exception:
+        logger.debug("%s: could not check host seams", PLUGIN_NAME, exc_info=True)
 
     # First, because everything below asks whether it is switched off, and a
     # switch read after the thing it switches has already run is not a switch.

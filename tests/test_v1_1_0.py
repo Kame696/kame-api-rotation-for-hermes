@@ -293,7 +293,7 @@ class TestTheSnapshotIsTheDoorToARealPanel:
 
     def test_every_setting_is_in_the_document(self, home):
         keys = {row["key"] for row in state.snapshot(None)["settings"]}
-        assert keys == set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS)
+        assert keys == (set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS) | set(settings.ALL_STRINGS)) - settings.HIDDEN
 
     def test_a_setting_carries_its_provenance(self, home, monkeypatch):
         monkeypatch.setenv("KAME_LIVE_STATUS_DISABLED", "1")

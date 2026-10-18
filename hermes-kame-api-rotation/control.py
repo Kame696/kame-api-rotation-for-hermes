@@ -279,7 +279,10 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
 
     if action == "reset_all":
         failures = []
-        for name in list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS):
+        # 1.8.2.3: string settings are reset too — a "reset everything"
+        # that quietly kept a hand-typed proxy or RPM override is not a
+        # reset (the gap the design review called out).
+        for name in list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS) + list(settings.ALL_STRINGS):
             ok, detail = _forget_one(name)
             if not ok:
                 failures.append(f"{name}: {detail}")

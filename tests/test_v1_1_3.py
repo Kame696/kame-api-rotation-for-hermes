@@ -457,11 +457,12 @@ class TestTheCounterIsReadable:
 class TestThePanelOrder:
     def test_the_silence_timeout_comes_first(self):
         rows = settings.describe_all()
-        assert rows[0]["key"] == settings.STREAM_SILENCE_TIMEOUT
+        # 1.8.2.7: the first shelf is "If your keys run out"; the safety choice leads.
+        assert rows[0]["key"] == settings.MODEL_SWITCH  # 1.8.2.8 (decisions/0028): the choice leads
 
     def test_the_numbers_come_before_the_switches(self):
         rows = [row["key"] for row in settings.describe_all()]
-        last_number = max(rows.index(key) for key in settings.ALL_NUMBERS)
+        last_number = max(rows.index(key) for key in settings.ALL_NUMBERS if key not in settings.HIDDEN)
         # The escape hatches, which is what this order was about: the numbers
         # somebody might reasonably change come before the switches that take
         # a behaviour away. A switch that *adds* one is not in that set and
@@ -473,7 +474,7 @@ class TestThePanelOrder:
         # The failure mode of a hand-kept order list: a setting added later
         # falls out of the panel entirely. It has to be late, never missing.
         rows = [row["key"] for row in settings.describe_all()]
-        assert sorted(rows) == sorted(list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS))
+        assert sorted(rows) == sorted(k for k in list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS) + list(settings.ALL_STRINGS) if k not in settings.HIDDEN)
         assert len(rows) == len(set(rows))
 
     def test_every_row_still_describes_itself(self):

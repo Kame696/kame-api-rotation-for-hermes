@@ -208,3 +208,53 @@ def forget() -> None:
     """Re-enable writing. Tests, and a fresh start after the ceiling."""
     global _silenced
     _silenced = False
+
+
+#: 1.8.2.5. How far back the recorded first-word times may seed the stream
+#: backup trigger: older than this, a provider's load may have changed.
+HISTORY_MAX_AGE_S = 7 * 24 * 3600.0
+
+#: 1.8.2.5. The most samples kept per model when seeding.
+HISTORY_PER_IDENTITY = 200
+
+
+def first_word_history(now: Optional[float] = None) -> "dict":
+    """``{identity: [seconds to first word, oldest first]}`` from this file.
+
+    1.8.2.5: the stream backup trigger is learned from these, so a restart
+    does not start the race cold — this file has been recording the owner's
+    real first-word times since 1.6. Answered attempts only, the last
+    ``HISTORY_PER_IDENTITY`` per model, none older than ``HISTORY_MAX_AGE_S``.
+    Reads only; any failure returns what was read so far (usually nothing).
+    """
+    import json
+    import time as _time
+    from collections import deque
+
+    now = _time.time() if now is None else now
+    out: "dict" = {}
+    path = _destination()
+    if not path or not os.path.isfile(path):
+        return out
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("outcome") != "answered":
+                    continue
+                # The first sign of work (text, tool call or reasoning) is what
+                # decides a race; the first word stands in where it was not kept.
+                ms = row.get("ms_to_first_sign") or row.get("ms_to_first_text")
+                at = row.get("at")
+                identity = row.get("identity")
+                if not identity or not isinstance(ms, (int, float)) or ms <= 0:
+                    continue
+                if isinstance(at, (int, float)) and now - at > HISTORY_MAX_AGE_S:
+                    continue
+                out.setdefault(identity, deque(maxlen=HISTORY_PER_IDENTITY)).append(ms / 1000.0)
+    except OSError:
+        logger.debug("kame: could not read call timings for the backup trigger", exc_info=True)
+    return {identity: list(samples) for identity, samples in out.items()}

@@ -47,8 +47,11 @@ def test_i2_no_deleted_watchdog_construct_has_come_back():
 
 def test_i7_every_events_add_call_site_fingerprints_the_key_first():
     # test_v1_8_0_0_invariants::TestI7NoKeyMaterialAnywhere
-    calls = re.findall(r"EVENTS\.add\(.*?\n(?:.*?\n)*?\s*\)", TRANSPORT)
-    assert calls, "no EVENTS.add( call sites found to check"
+    # 1.8.2.4: since 1.8.2.3 events go through ``_emit(call, ...)`` (which
+    # adds the Secondary-tab channel and then calls EVENTS.add); the direct
+    # ``EVENTS.add(`` sites are gone, and this check had stopped seeing any.
+    calls = re.findall(r"(?:EVENTS\.add|_emit)\(.*?\n(?:.*?\n)*?\s*\)", TRANSPORT)
+    assert calls, "no EVENTS.add( / _emit( call sites found to check"
     key_lines = [line for block in calls for line in block.splitlines() if "key=" in line]
     assert key_lines, "no key= arguments found to check"
     for line in key_lines:
@@ -71,7 +74,7 @@ def test_i8_the_journal_is_fed_only_short_canonical_reasons():
 def test_the_kinds_that_were_never_written_now_are():
     # test_v1_6_0_1::TestEveryRotationIsOnTheScreen
     for kind in ('"switch"', '"recovery"', '"wait"'):
-        assert re.search(r"EVENTS\.add\(\s*\n\s*" + re.escape(kind), TRANSPORT), kind
+        assert re.search(r"(?:EVENTS\.add\(|_emit\(call,)\s*\n?\s*" + re.escape(kind), TRANSPORT), kind
 
 
 def test_the_screen_can_tell_resting_from_out_for_good():

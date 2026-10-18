@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.8.2.2"
+version: "1.8.2.8"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -87,6 +87,10 @@ config_schema:
     type: int
     default: 0
     description: "Unset, a chat waits for as long as every key is resting - each key's own rest is already capped by max_hold_seconds and the call retries the moment one comes back, so a spent quota ends with an answer on the same model - and a cron job stops after 300 s, below Hermes' own cron timeout, handing Hermes the provider's original refusal. Any value you set wins everywhere: 0 means never stop waiting, chats and cron alike; a number bounds both. Clamped to 0-604800. Same as KAME_MAX_TOTAL_WAIT."
+  failover_after_seconds:
+    type: int
+    default: 60
+    description: "Works only when you have set fallback models in Hermes (hermes fallback add); with no list nothing ever switches. When every key of the model you picked is resting and the soonest one is more than this many seconds away, KAME stops waiting and lets Hermes answer with the next model in your list; Hermes returns to the model you picked once its keys are back. Short rests are waited out on the model you picked. 0 means never hand over. KAME itself never chooses a model. Clamped to 0-3600. Same as KAME_FAILOVER_AFTER."
   stream_silence_timeout_seconds:
     type: int
     default: 0
@@ -133,12 +137,84 @@ config_schema:
     description: "Stop reading the quota window. Google's per-minute and per-day quotas report the same metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before plugins see the error. KAME reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it. Same as KAME_QUOTA_ID_DISABLED."
   never_fall_back_to_another_model:
     type: bool
-    default: true
-    description: "Stay on the model you asked for. Hermes answers a spent credential by rotating keys and, failing that, by switching to a different model and then a different provider; KAME tells it not to, so the pool waits the quota out and comes back on the same model however long that takes. On by default: a pool exists so the wait ends on the model you asked for, and a silent switch mid-conversation is a different answer from a different model that you find out about afterwards. Turn it off to get Hermes' own behaviour back. Summarisation and titling run on a lane that fires no classification hook, so those may still fall back. Same as KAME_NO_MODEL_FALLBACK."
+    default: false
+    description: "Ignore my fallback list. Off by default: the fallback models you set in Hermes (hermes fallback add) are used automatically when every key of your model is resting for longer than failover_after_seconds, and Hermes comes back to your model once its keys return; with no list nothing ever switches. On: the list is ignored, KAME waits for your keys however long that takes and tells Hermes not to fall back on the errors it classifies. KAME itself never chooses a model. Summarisation and titling run on a lane that fires no classification hook, so those may still fall back. Same as KAME_NO_MODEL_FALLBACK."
   share_pool_health:
     type: bool
     default: true
     description: "For several Hermes profiles on one machine using the same API keys. On, every profile reads and writes one shared health file, so a key benched in one profile is benched in all of them and a hold survives a restart. Off, each profile learns every refusal on its own. Only a hash of a key is ever written, never the key. Does nothing with a single profile. Same as KAME_SHARE_POOL_HEALTH."
+  hedging_disabled:
+    type: bool
+    default: false
+    description: "When hedging is active and a reply is slower than usual, KAME asks a second key (and, if that is slow too, a third) and uses whichever answers first. In the chat the race is decided by the first word: the moment one key starts answering, the others are cut. Each backup is one extra request on a key of another project, held to a budget (about 10% of calls) and stopped by itself when rate limits appear. Turn this on to stop hedging everywhere. Same as KAME_HEDGING_DISABLED."
+  pacing_interval_seconds:
+    type: float
+    default: 1.0
+    description: "Not read by anything since 1.8.2.3: pacing now learns each key's real per-minute limit from the provider's own refusals, and a per-model limit can be set in 'Per-model requests-per-minute limits'. This entry stays only so an older configuration that sets it still loads. Same as KAME_PACING_INTERVAL."
+  hedge_max_legs:
+    type: int
+    default: 3
+    description: "1 turns backup requests off. 2 allows one backup per call. 3 lets a chat reply that is still silent after the first backup try a third key (calls that do not stream use one backup at most). Same as KAME_HEDGE_MAX_LEGS."
+  probe_burst_max_legs:
+    type: int
+    default: 16
+    description: "When two keys in a row are refused because their quota is spent, asking the rest one at a time costs almost a second each. KAME then asks 4 keys at once, then 8, then 16, and the first that answers wins; in a chat the others are cut (a call that does not stream asks at most 4 at once, and those finish on their own). Keys the provider itself said are still spent are asked all at once, and only they. A key that still had quota and lost the race may have spent one request. 0 or 1 asks one key at a time. Off when hedge_mode is off; never for background jobs. Clamped to 0-32. Same as KAME_PROBE_BURST."
+  hedge_budget_pct:
+    type: float
+    default: 10.0
+    description: "Roughly what share of calls may carry a backup request. The budget refills as normal calls succeed, so a slow afternoon hedges a few times and then pauses until it is earned back. Same as KAME_HEDGE_BUDGET_PCT."
+  hedge_burst:
+    type: int
+    default: 3
+    description: "How many backups can fire back-to-back after an idle period, before the budget above has been earned back. Same as KAME_HEDGE_BURST."
+  hedge_quantile:
+    type: float
+    default: 90.0
+    description: "For calls that do not stream: the percentile of learned response times a call must exceed before a backup is sent. 90 means 'slower than 9 calls in 10'. The chat uses its own trigger: twice the model's usual time to the first word. Same as KAME_HEDGE_QUANTILE."
+  hedge_cold_s:
+    type: float
+    default: 6.0
+    description: "Before KAME has learned how fast this model usually answers, a call slower than this still gets a backup. Keep it well above the slowest honest first token so a merely normal call is never doubled. Same as KAME_HEDGE_COLD_S."
+  hedge_cold_reasoning_s:
+    type: float
+    default: 30.0
+    description: "The same threshold, separate for models that think before they answer — a long thinking phase is normal there and must not trigger a backup. Same as KAME_HEDGE_COLD_REASONING_S."
+  hedge_max_prompt_tokens:
+    type: int
+    default: 32000
+    description: "A backup of a huge prompt spends your token quota twice and never hits a warm cache, so above this size backups are skipped. Same as KAME_HEDGE_MAX_PROMPT_TOKENS."
+  model_switch:
+    type: str
+    default: "auto"
+    choices: ["auto", "timed", "never"]
+    description: "1.8.2.8. With fallback models set in Hermes: auto moves to the next model at once when your provider is busy and otherwise after about three times your model's usual first-word time (6-20 s); timed uses failover_after_seconds; never always waits for your keys. Same as KAME_MODEL_SWITCH."
+  first_token_wait:
+    type: str
+    default: "auto"
+    choices: ["auto", "timed", "off"]
+    description: "1.8.2.8. How long a key may stay silent before KAME asks the next one: auto learns each model's usual first-word time and drops a key only far past it (never for a local model); timed uses stream_silence_timeout_seconds; off leaves Hermes' own 120 s. Same as KAME_FIRST_TOKEN_WAIT."
+  reply_notice:
+    type: str
+    default: "always"
+    choices: ["always", "switches", "never"]
+    description: "1.8.2.8. A short notice on the Desktop after a reply: the model that wrote it and how long it took (always), only when a model from your fallback list answered (switches), or never. Same as KAME_REPLY_NOTICE."
+  hedge_mode:
+    type: str
+    default: "adaptive"
+    choices: ["adaptive", "max", "off"]
+    description: "When a reply is slower than usual, send a backup request on another key and use whichever answers first. Adaptive learns each model's usual wait and only races the slow calls; Max starts a backup on every call at once, for latency-critical work, and steps down by itself when rate limits appear. Same as KAME_HEDGE_MODE."
+  pacing_rpm_overrides:
+    type: str
+    default: ""
+    description: "Tell the pacer what a provider really allows, e.g. 'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most KAME will assume; a real per-minute refusal can still lower it, and nothing learned can raise it above this. Leave empty to let it learn from real answers and refusals. Same as KAME_PACING_RPM_OVERRIDES."
+  key_region_overrides:
+    type: str
+    default: ""
+    description: "For regional providers (Vertex, Bedrock), name a key's region, e.g. 'key:a1b2c3=us-central1' — the key as the Events tab shows it (the six characters alone also work). It sets the region of the whole model on that endpoint, so refusals there do not rest the same model elsewhere. Auto-detected from the endpoint URL when left empty. Same as KAME_KEY_REGION_OVERRIDES."
+  key_quota_groups:
+    type: str
+    default: ""
+    description: "When several keys belong to one provider project they share one quota. Name the group for each key, e.g. 'key:a1b2c3=proj1, key:d4e5f6=proj1' — the keys as the Events tab shows them (the six characters alone also work). KAME then counts them together, and never sends a backup request to a key of the same group. Same as KAME_KEY_QUOTA_GROUPS."
 hooks:
   - transform_api_error_classification
   - post_api_request

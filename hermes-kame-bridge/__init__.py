@@ -22,6 +22,17 @@ This plugin installs both, copied from the PRs, on a Hermes that lacks them:
   provider is read from the caller's own frame (its ``agent``, ``self``, or a
   ``provider`` name it holds).
 
+1.8.2.8 adds a third, KAME's own (no upstream PR): ``notify_turn_notice``, a
+short-lived notice on the Desktop / TUI naming the model that answered and how
+long it took. Only where the turn's notices are drawn on screen (the Desktop's
+``tui_gateway``); a messaging gateway would deliver each one as a chat message,
+so there it says no.
+
+1.8.2.8 also keeps Hermes' "⚠️ Model fallback … recovery is not guaranteed" and
+"✅ Primary model restored" lines out of the chat when the switch was KAME's
+own planned hand-over (a busy or resting model passed down the list for one
+reply). Every other switch line, and a failed turn's whole trace, is unchanged.
+
 It rebinds Hermes code, which is why it is a separate plugin and never part of
 the catalog entry. Each seam is installed only where Hermes does not already
 have the real one, so leaving the bridge installed after updating Hermes is
@@ -36,6 +47,7 @@ import functools
 import inspect
 import logging
 import sys
+import time
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -145,6 +157,187 @@ def install_status_seam() -> str:
     except Exception:
         logger.debug("kame bridge: conversation_loop not patched", exc_info=True)
     return "status line: installed (notify_turn_status bound around perform_api_call)"
+
+
+# --- 1.8.2.8: notify_turn_notice (KAME's own) -------------------------------------
+
+_NOTICE_MARK = "_kame_bridge_notice"
+TURN_NOTICE_MAX_CHARS = 200
+
+
+def _draws_notices(agent: Any) -> bool:
+    """True when this agent's notices become an on-screen notice, not a chat message."""
+    callback = getattr(agent, "notice_callback", None)
+    module = str(getattr(callback, "__module__", "") or "")
+    return callable(callback) and module.startswith("tui_gateway")
+
+
+def install_notice_seam() -> str:
+    try:
+        import agent.status_output as status_output
+        import agent.turn_api_call as turn_api_call
+        from agent.credits_tracker import AgentNotice
+    except Exception:
+        return "reply notice: skipped (agent.status_output / turn_api_call / AgentNotice not importable)"
+    if getattr(status_output, "notify_turn_notice", None) is not None:
+        return "reply notice: already installed"
+    current = getattr(turn_api_call, "perform_api_call", None)
+    if not callable(current):
+        return "reply notice: skipped (perform_api_call not found)"
+    agent_var: contextvars.ContextVar = contextvars.ContextVar("kame_turn_agent", default=None)
+
+    @functools.wraps(current)
+    def perform_api_call(agent: Any, *args: Any, **kwargs: Any) -> Any:
+        token = agent_var.set(agent)
+        try:
+            return current(agent, *args, **kwargs)
+        finally:
+            agent_var.reset(token)
+
+    setattr(perform_api_call, _NOTICE_MARK, True)
+
+    def notify_turn_notice(message: str, *, key: str = "kame.reply", ttl_ms: int = 7000,
+                           level: str = "info") -> bool:
+        """A short-lived on-screen notice for the turn in flight (hermes-kame-bridge)."""
+        agent = agent_var.get()
+        if agent is None or not isinstance(message, str) or not _draws_notices(agent):
+            return False
+        text = " ".join(message.split())
+        if not text:
+            return False
+        if len(text) > TURN_NOTICE_MAX_CHARS:
+            text = text[: TURN_NOTICE_MAX_CHARS - 1] + "…"
+        emit = getattr(agent, "_emit_notice", None)
+        if not callable(emit):
+            return False
+        try:
+            emit(AgentNotice(text=text, level=level if level in ("info", "success") else "info",
+                             kind="ttl", ttl_ms=int(ttl_ms), key=key))
+            return True
+        except Exception:
+            logger.debug("kame bridge: reply notice failed", exc_info=True)
+            return False
+
+    setattr(notify_turn_notice, _NOTICE_MARK, True)
+    turn_api_call.perform_api_call = perform_api_call
+    try:
+        import agent.conversation_loop as conversation_loop
+
+        if getattr(conversation_loop, "perform_api_call", None) is current:
+            conversation_loop.perform_api_call = perform_api_call
+    except Exception:
+        logger.debug("kame bridge: conversation_loop not patched for notices", exc_info=True)
+    status_output.notify_turn_notice = notify_turn_notice
+    return "reply notice: installed (Desktop / TUI only)"
+
+
+# --- 1.8.2.8: Hermes' switch line, quiet for KAME's own hand-over -----------------
+
+_QUIET_MARK = "_kame_bridge_quiet"
+_QUIET_CALL_MARK = "_kame_bridge_quiet_call"
+#: a planned hand-over stays quiet this long; a later switch from the same model
+#: is Hermes' own and is shown (review R11)
+_QUIET_FOR_S = 600.0
+_HANDOVER_CODE = "kame_pool_resting"
+_FALLBACK_LINE = "⚠️ Model fallback: "
+_RESTORED_LINE = "✅ Primary model restored: "
+
+
+def _is_kame_handover(exc: BaseException) -> bool:
+    """The exception KAME raises to hand a call to Hermes' fallback chain on purpose."""
+    try:
+        return getattr(exc, "body")["error"]["code"] == _HANDOVER_CODE
+    except Exception:
+        return False
+
+
+def _note_handover(agent: Any, exc: BaseException) -> None:
+    """Remember which model KAME handed over, so Hermes' own line about it stays quiet."""
+    if not _is_kame_handover(exc):
+        return
+    try:
+        handed = getattr(agent, "_kame_handed_models", None)
+        if not isinstance(handed, dict):
+            handed = {}
+            agent._kame_handed_models = handed
+        handed[str(getattr(agent, "model", "") or "")] = time.monotonic()
+    except Exception:
+        logger.debug("kame bridge: could not note a hand-over", exc_info=True)
+
+
+def _quiet(agent: Any, message: Any) -> bool:
+    """True for Hermes' line about a switch KAME made on purpose (and its undo).
+
+    The switch is planned, not a failure: KAME's own reply notice names the
+    model that answered, and its Events tab says why. Any other switch line,
+    and every line of a turn that fails, is shown as Hermes wrote it."""
+    handed = getattr(agent, "_kame_handed_models", None)
+    if not handed or not isinstance(handed, dict) or not isinstance(message, str):
+        return False
+    now = time.monotonic()
+    for model in [m for m, at in handed.items() if now - at > _QUIET_FOR_S]:
+        handed.pop(model, None)
+    if message.startswith(_FALLBACK_LINE):
+        return message[len(_FALLBACK_LINE):].split(" via ", 1)[0] in handed
+    if message.startswith(_RESTORED_LINE) and handed:
+        handed.clear()
+        return True
+    return False
+
+
+def install_quiet_fallback_seam() -> str:
+    try:
+        from agent.status_output import StatusOutputMixin
+    except Exception:
+        return "quiet switch line: skipped (agent.status_output.StatusOutputMixin not importable)"
+    original = StatusOutputMixin.__dict__.get("_emit_diagnostic_status")
+    if not callable(original):
+        return "quiet switch line: skipped (_emit_diagnostic_status not found)"
+    if getattr(original, _QUIET_MARK, False):
+        return "quiet switch line: already installed"
+
+    @functools.wraps(original)
+    def _emit_diagnostic_status(self: Any, message: Any) -> Any:
+        try:
+            if _quiet(self, message):
+                logger.info("kame bridge: Hermes' switch line kept off the chat (KAME's own hand-over)")
+                return None
+        except Exception:
+            logger.debug("kame bridge: quiet check failed", exc_info=True)
+        return original(self, message)
+
+    setattr(_emit_diagnostic_status, _QUIET_MARK, True)
+    StatusOutputMixin._emit_diagnostic_status = _emit_diagnostic_status
+    # The hand-over is noticed where the provider call returns, by its own wrapper
+    # (review R11: not inside the notice seam, which a newer Hermes may not need).
+    try:
+        import agent.turn_api_call as turn_api_call
+
+        current = getattr(turn_api_call, "perform_api_call", None)
+        if callable(current) and not getattr(current, _QUIET_CALL_MARK, False):
+            @functools.wraps(current)
+            def perform_api_call(agent: Any, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    return current(agent, *args, **kwargs)
+                except BaseException as exc:
+                    _note_handover(agent, exc)
+                    raise
+
+            setattr(perform_api_call, _QUIET_CALL_MARK, True)
+            for name in (_MARK, _NOTICE_MARK):
+                if getattr(current, name, False):
+                    setattr(perform_api_call, name, True)
+            turn_api_call.perform_api_call = perform_api_call
+            try:
+                import agent.conversation_loop as conversation_loop
+
+                if getattr(conversation_loop, "perform_api_call", None) is current:
+                    conversation_loop.perform_api_call = perform_api_call
+            except Exception:
+                logger.debug("kame bridge: conversation_loop not patched for the quiet line", exc_info=True)
+    except Exception:
+        logger.debug("kame bridge: hand-overs not noticed", exc_info=True)
+    return "quiet switch line: installed (KAME's planned hand-overs only)"
 
 
 # --- #133461: ProviderProfile.create_messages_client ----------------------------
@@ -261,7 +454,8 @@ def install_messages_seam() -> str:
 
 def install() -> List[str]:
     """Install whichever seams this Hermes lacks. Returns what happened, for the log."""
-    return [install_status_seam(), install_messages_seam()]
+    return [install_status_seam(), install_notice_seam(), install_quiet_fallback_seam(),
+            install_messages_seam()]
 
 
 def register(ctx: Any) -> None:

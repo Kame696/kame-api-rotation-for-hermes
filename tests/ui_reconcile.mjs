@@ -396,7 +396,7 @@ await check('every variadic child list is keyed, on every tab', () => {
   const surfaces = [chip.render(), page.render(), settingsPage.render()]
 
   assert.ok(
-    JSON.stringify(render(settingsPage.render())).includes('KAME works with none of these'),
+    JSON.stringify(render(settingsPage.render())).includes('Everything works without changing anything here'),
     'the Settings ▸ Plugins page did not render the form — this check would then prove nothing about it'
   )
 
@@ -410,7 +410,7 @@ await check('every variadic child list is keyed, on every tab', () => {
   const landmark = {
     Events: 'Reading this list',
     Overview: 'Pool health',
-    Settings: 'KAME works with none of these'
+    Settings: 'Everything works without changing anything here'
   }
 
   for (const label of ['Settings', 'Events', 'Overview']) {
