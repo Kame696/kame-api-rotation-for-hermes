@@ -1,24 +1,178 @@
 <div align="center">
 
-<img src="assets/kame-cover.png" alt="KAME — Key-Aware Management Engine" width="420" />
+<img src="assets/kame-cover.png" alt="KAME — Key-Aware Management Engine" width="340" />
 
-# 🐢⚡ KAME — the best free API key rotation for Hermes Agent
+# 🐢⚡ KAME — free API key rotation for Hermes Agent
 
-**Paste several API keys — from many projects and accounts — and use their quota as one. KAME picks the healthiest key for every call, reads every refusal, races a slow reply with your next model, and never lets a rate limit end your turn.**
-
-Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
+### What API key rotation should have been: all your keys and models, one agent that never waits.
 
 [![Version](https://img.shields.io/badge/version-1.8.2.8-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-3285_passing-brightgreen.svg)](#verified)
-[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/133362)
+[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)_·_1.8.2.8_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/133362)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
 
-**[Install](#install) · [Why not round-robin](#vs) · [How it reads errors](#errors) · [Screenshots](#screens) · [Settings](#settings) · [FAQ](#faq) · [Version history](#history) · [Changelog](CHANGELOG.md) · [Agent Zero version](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
+**[⚡ Install in 1 minute](#install-fast) · [🆚 vs round-robin](#vs) · [🔬 How it works](#how) · [🖥️ Screenshots](#screens) · [❓ FAQ](#faq) · [Agent Zero version →](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**
 
 </div>
+
+---
+
+<a id="install-fast"></a>
+## ⚡ Install in 1 minute
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 1️⃣ Install
+
+Download **`KAME-for-Hermes-1.8.2.8-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+
+Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
+
+</td>
+<td width="33%" valign="top">
+
+### 2️⃣ Enable + restart
+
+```bash
+hermes plugins enable hermes-kame-api-rotation
+hermes plugins enable hermes-kame-bridge
+```
+
+Then restart Hermes once.
+
+</td>
+<td width="33%" valign="top">
+
+### 3️⃣ Add your keys
+
+In the chat:
+
+`/kame-keys add gemini KEY1,KEY2,KEY3`
+
+Everything else is **automatic**. Optional: turn on the panel in Desktop **Settings → Plugins**.
+
+</td>
+</tr>
+</table>
+
+<sub>Prefer the command line? <code>hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation</code>, then the same for <code>hermes-kame-provider</code> and <code>hermes-kame-bridge</code>. Details in [Install](#install).</sub>
+
+## 🎯 Why people switch to KAME
+
+Round-robin tools cycle your keys blindly and keep hitting the one that just failed. **KAME decides from the error itself** — and it never makes your agent wait for a slow model.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### ➕ Your quotas add up
+Many free-tier keys, from many projects and accounts, become **one big pool**. 14 Gemini projects = 14× the free quota.
+
+</td>
+<td width="50%" valign="top">
+
+### 🛡️ Never stuck on a 429
+A `429`, `RESOURCE_EXHAUSTED`, a `503` or a dead key moves the call to the **next healthy key at once**. A resting key comes back by itself.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### ⚡ Speed first
+A late reply is **raced** by a backup key, then by your **next model**. Whichever answers first is shown, the rest is cut.
+
+</td>
+<td width="50%" valign="top">
+
+### 🔀 Smart model fallback
+Your best model **leads every reply**. A busy, spent or slow one hands over in seconds, and is tried first again soon after.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🧠 Reads every error
+The provider's **own retry time**, per-minute vs daily vs out of credit. **82 providers** learned from their own docs, no allowlist.
+
+</td>
+<td width="50%" valign="top">
+
+### 👀 You see everything
+Which **model answered** each reply and how long it took. A live panel with every key, rest and switch.
+
+</td>
+</tr>
+</table>
+
+## 🏎️ How fast? Measured live
+
+On the author's own Gemini free-tier keys (4 fallback models × 14 keys), on a bad day for the newest model:
+
+| Situation | Before 1.8.2.8 | **KAME 1.8.2.8** |
+|---|---|---|
+| Main model is **slow** (about 2 minutes for one word) | 46–120 s per reply | **2.6 s median** |
+| Main model is **overloaded** (503) | stuck on it | next model answering in **8.3 s**, then at once |
+| Main model is **out of quota** | next model, then stuck there up to 1 hour | switched in **0.3 s**, back on your best model next reply |
+| Everything **healthy** | — | your main model, first word in **2–4 s** |
+
+<sub>Measured on the Hermes build, which shares these rules; 8 messages in one session. See <a href="VALIDATION.md">validation and limits</a>.</sub>
+
+<a id="vs"></a>
+## 🆚 KAME vs round-robin
+
+Most key rotators cycle keys in order and retry on a timer. KAME decides from the refusal itself.
+
+| | Round-robin rotator | **KAME** |
+|---|---|---|
+| Which key is next | the next one in the list | **the least-loaded healthy key** (60-second window) |
+| After a 429 | retry on a fixed backoff | **the provider's own `retryDelay` / `Retry-After`, to the second** |
+| Per-minute vs daily quota | same treatment | **told apart** (`quotaId`, reset headers, the pool's own behaviour) |
+| Gemini bare `RESOURCE_EXHAUSTED` | fixed backoff or hammering | **1 → 2 → 4 → 8s … ladder, reset the moment the key answers** |
+| Outage (5xx) | punishes every key | **1s, never escalates** — the key was never at fault |
+| A key spent on one model | benched everywhere | **still used on your other models** |
+| All keys resting | error, turn over | **waits for the first one back, and says so** |
+| Longest a healthy key can be lost | whatever the provider claimed | **1 hour** (`max_hold_seconds`) |
+
+<a id="how"></a>
+## 🔬 How it works
+
+```mermaid
+flowchart TD
+    A([🤖 Your agent asks for a reply]) --> B[🔑 Pick the healthiest key<br/>least loaded, not resting]
+    B --> C{{📡 What happens?}}
+    C -->|✅ first word in time| OK([✨ Reply shown<br/>with the model and the time])
+    C -->|⏱ late| E[🏁 Race a backup key,<br/>then your next model]
+    E --> OK
+    C -->|❌ 429| G[💤 Rest that key as long<br/>as the provider says]
+    G -.->|next key| B
+    C -->|❌ 503 or far too slow| I[🔀 Next model of your list]
+    I --> J([🎯 The next reply starts on<br/>your best model again])
+
+    style B fill:#10b981,color:#fff
+    style OK fill:#10b981,color:#fff
+    style E fill:#3b82f6,color:#fff
+    style G fill:#f59e0b,color:#fff
+    style I fill:#8b5cf6,color:#fff
+    style J fill:#8b5cf6,color:#fff
+```
+
+<table>
+<tr><th>Step</th><th>What KAME does</th></tr>
+<tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
+<tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. First to answer wins.</td></tr>
+<tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
+<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, and every new reply starts on your best one.</td></tr>
+</table>
+
+<details>
+<summary><b>📣 What's new in 1.8.2.8 and the versions before it</b></summary>
 
 **1.8.2.8 — speed first: median reply 2.6 s live on a day the newest Gemini took 2 minutes per word.**
 
@@ -99,32 +253,7 @@ not part of the Hermes catalog entry, because it patches Hermes.
 
 See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
----
-
-<a id="tldr"></a>
-## ⚡ In 30 seconds
-
-- **One field, many keys.** Put `key1,key2,key3` in the provider field you already use. KAME reads it as three keys.
-- **The healthiest key, every call** — not only after a failure. Fewest requests in the last 60 seconds wins, least recently used breaks the tie, so fifteen keys share the load fifteen ways.
-- **It reads the error instead of guessing.** A per-minute throttle, a daily quota, an outage and a dead key are four different problems, and each gets its own wait — the provider's own number whenever it states one.
-- **No key sits out longer than an hour**, and KAME only ever switches to models on your own fallback list — and says which model answered.
-- **When every key is resting, it waits** for the first one back and tells you how long, instead of failing the turn.
-
-<a id="vs"></a>
-## 🆚 KAME vs round-robin
-
-Most key rotators cycle keys in order and retry on a timer. KAME decides from the refusal itself.
-
-| | Round-robin rotator | **KAME** |
-|---|---|---|
-| Which key is next | the next one in the list | **the least-loaded healthy key** (60-second window) |
-| After a 429 | retry on a fixed backoff | **the provider's own `retryDelay` / `Retry-After`, to the second** |
-| Per-minute vs daily quota | same treatment | **told apart** (`quotaId`, reset headers, the pool's own behaviour) |
-| Gemini bare `RESOURCE_EXHAUSTED` | fixed backoff or hammering | **1 → 2 → 4 → 8s … ladder, reset the moment the key answers** |
-| Outage (5xx) | punishes every key | **1s, never escalates** — the key was never at fault |
-| A key spent on one model | benched everywhere | **still used on your other models** |
-| All keys resting | error, turn over | **waits for the first one back, and says so** |
-| Longest a healthy key can be lost | whatever the provider claimed | **1 hour** (`max_hold_seconds`) |
+</details>
 
 <a id="install"></a>
 ## 🚀 Install
