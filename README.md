@@ -2,16 +2,16 @@
 
 <img src="assets/kame-cover.png" alt="KAME — Key-Aware Management Engine" width="420" />
 
-# 🐢⚡ KAME — API Key Rotation for Hermes
+# 🐢⚡ KAME — the best free API key rotation for Hermes Agent
 
-**Paste several API keys. KAME picks the healthiest one for every call, reads every refusal, and keeps recoverable rate limits from prematurely ending your turn.**
+**Paste several API keys — from many projects and accounts — and use their quota as one. KAME picks the healthiest key for every call, reads every refusal, races a slow reply with your next model, and never lets a rate limit end your turn.**
 
 Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failover for the [Hermes agent](https://github.com/NousResearch/hermes-agent) — Gemini, OpenAI, OpenRouter, Anthropic, or any provider.
 
-[![Version](https://img.shields.io/badge/version-1.8.1.8-blue.svg)](CHANGELOG.md)
-[![Hermes](https://img.shields.io/badge/Hermes-0.21.1_–_0.21.5-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/local_tests-3157_passing-brightgreen.svg)](#verified)
-[![Catalog admission](https://img.shields.io/badge/catalog-1.8.1.8_review_pending-orange.svg)](#verified)
+[![Version](https://img.shields.io/badge/version-1.8.2.8-blue.svg)](CHANGELOG.md)
+[![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
+[![Tests](https://img.shields.io/badge/local_tests-3285_passing-brightgreen.svg)](#verified)
+[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/133362)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -20,23 +20,84 @@ Smart API key rotation, 429 / `RESOURCE_EXHAUSTED` recovery and rate-limit failo
 
 </div>
 
-**1.8.1.8 is the serial reliability release.** It retains KAME's rotation and
-classification engine, adds independent profile ownership, improves productive
-stream/tool recovery and reduces redundant local status-file reads. Optional
-provider-request racing is not included.
+**1.8.2.8 — speed first: median reply 2.6 s live on a day the newest Gemini took 2 minutes per word.**
 
-**GitHub release and catalog approval are separate.** The catalog currently pins
-1.8.1.0; updating that pin requires a new maintainer-reviewed PR. The guarded
-core integration was explicitly reviewed in
-[#117966](https://github.com/NousResearch/hermes-agent/pull/117966#issuecomment-5762488795)
-and landed through [#118402](https://github.com/NousResearch/hermes-agent/pull/118402).
-Current rule 9 is stricter: this release still discloses those bindings and requests
-renewed review, not an automatic exception or a claim that wrappers disappeared.
+- **A busy provider no longer holds your agent.** Two keys in a row answering "the model is
+  overloaded" (or timing out) mean the model is busy, not your keys: the reply falls back to
+  the next model of your list at once. Before, a 503 rested each key one second, the "every
+  key resting" clock never moved, and the agent waited.
+- **Your fallback list is one big pool, best model first.** Every reply starts on your best
+  model and uses all of its keys; it goes down the list only when that model is busy, every
+  key is resting, or nothing comes back in time — and the next reply starts at the top again.
+  A model KAME knows is still busy or resting is passed down without spending a request, and
+  Hermes' "⚠️ Model fallback … recovery is not guaranteed" line stays out of the chat for
+  these planned switches (with `hermes-kame-bridge`).
+- **Speed first: the next model races a late reply.** Silent past ~3 × its usual first word
+  (8 s at least), a reply also asks the next model of your list; the first to answer is
+  shown. Your best model sits out only 30 s after losing, so it leads again almost at once.
+- **A slow model is passed on too.** A reply with no sign of work by the model's own slow
+  bound (learned: 20–45 s, thinking models 25–60 s) falls back to the next model — live, the
+  owner's gemini-3.8-flash took two minutes for one word while gemini-3.7-flash took three
+  seconds. The last model of your list is always waited for.
+- **Automatic by default.** *Fallback*, *Wait for the first token* and *Speed* are choices
+  now, not numbers to guess — KAME learns each model's usual first-word time and sizes both
+  waits from it. "Set time" is still there for anyone who wants a fixed number.
+- **You see who answered.** After each reply the Desktop shows the model that wrote it and
+  how long it took — "gemini-3.7-flash answered for gemini-3.8-flash" when a fallback
+  model stood in — and the Events tab opens with your last replies.
+- **Backups keep racing through an overload** — only keys resting for quota count as
+  pressure now, not keys resting a second for a 503.
 
-Measured local snapshot/router cost decreased by about 28 ms per tested call
-(63–65%). This is **not** 65% faster complete agent answers. Representative
-provider-quality and p95 improvements remain unproven. See
-[validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
+**1.8.2.7 — every provider learned, your fallback list used by itself, fast when quota runs dry.**
+
+- **82 providers learned from their own documentation**, graded against answer keys written
+  by reviewers who never saw the code (774 error shapes). Every provider native to Hermes
+  (42) and to Agent Zero (29) is covered, plus the free and free-after-top-up ones
+  (OpenRouter, AIHubMix, Groq, Cerebras, NVIDIA, Mistral, Cloudflare, SambaNova, …).
+  Decisions read the response, never the provider's name.
+- **Your Hermes fallback list works by itself.** Set fallback models with
+  `hermes fallback add`; when every key of your model is resting for more than a minute,
+  KAME hands the call over at once and Hermes answers with the next model — then comes
+  back to your model as soon as its keys return. No list, no switching. Proven live:
+  four spent models skipped in 0.2 s, the fifth answered.
+- **Fast when quota runs dry.** When keys start refusing for a spent daily quota, KAME asks
+  4, then 8, then 16 keys at once instead of one by one: the hourly re-check of a spent
+  14-key pool went from ~59 s to ~13 s on real refusal timings.
+- **Honest timeouts.** A timeout says nothing about the key: no punishment, one quick
+  rotation, then Hermes decides.
+- **A panel anyone can read**, and one that no longer goes blank: four settings on show,
+  the rest tuned automatically; your fallback list with each model's keys; how to add keys.
+
+**Since 1.8.2.2 (the catalog version)** — 1.8.2.3 to 1.8.2.6, all included:
+backup requests raced to the first word on the chat itself (worst first word 33 s → 7.4 s
+on Gemini), pacing learned from real 429s, latency-aware key choice, a Background-jobs tab
+so titles and compression no longer bury your conversation, and clear words for every
+event.
+
+**1.8.2.2 — the same carousel, with no runtime overrides of Hermes, and
+nothing given up for it.** Hermes asks a provider profile for its model client
+(`ProviderProfile.create_client`, the documented way to bring a transport), and
+the companion package `hermes-kame-provider` answers with a client that rotates
+your keys. No Hermes module, class or dict is rebound. The Desktop panel uses
+only `@hermes/plugin-sdk`, through its own backend route.
+
+Every rotation, wait, refusal-sizing and continuation decision is 1.8.1.8's.
+The Events tab now shows every call and every answer, not only failures.
+Multi-key variables sync on the newest Hermes, whose profile-scoped secrets
+broke the sync in 1.8.1.9.
+
+**Two Hermes seams that are not merged yet.** KAME uses each one as soon as
+your Hermes has it:
+
+| Seam | Hermes PR | Without it |
+|---|---|---|
+| `notify_turn_status` | [#133474](https://github.com/NousResearch/hermes-agent/pull/133474) | The live status line (`⏳ waiting on … — KAME 13/15 keys healthy`) appears only above the Desktop composer, not on the spinner. |
+| `create_messages_client` | [#133461](https://github.com/NousResearch/hermes-agent/pull/133461) | On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding), KAME sizes each refusal but does not pick the key per call. |
+
+Until both are merged, `hermes-kame-bridge` adds them (install it — see below). It is
+not part of the Hermes catalog entry, because it patches Hermes.
+
+See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
 ---
 
@@ -46,7 +107,7 @@ provider-quality and p95 improvements remain unproven. See
 - **One field, many keys.** Put `key1,key2,key3` in the provider field you already use. KAME reads it as three keys.
 - **The healthiest key, every call** — not only after a failure. Fewest requests in the last 60 seconds wins, least recently used breaks the tie, so fifteen keys share the load fifteen ways.
 - **It reads the error instead of guessing.** A per-minute throttle, a daily quota, an outage and a dead key are four different problems, and each gets its own wait — the provider's own number whenever it states one.
-- **No key sits out longer than an hour**, and KAME never silently switches you to another model.
+- **No key sits out longer than an hour**, and KAME only ever switches to models on your own fallback list — and says which model answered.
 - **When every key is resting, it waits** for the first one back and tells you how long, instead of failing the turn.
 
 <a id="vs"></a>
@@ -70,14 +131,19 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 ```bash
 hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation
+hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-provider
+hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-bridge
 hermes plugins enable hermes-kame-api-rotation
+hermes plugins enable hermes-kame-bridge
 ```
+
+`hermes-kame-api-rotation` is the carousel, the commands and the panel; `hermes-kame-provider` (a `model-provider` plugin, loaded by Hermes on its own) is how Hermes asks it for a client — both are needed, either one alone changes nothing. **`hermes-kame-bridge` gives you everything today**: the live status line on the spinner, the "which model answered" notice, no "⚠️ Model fallback" line for KAME's planned switches, and key rotation on the Anthropic Messages wire — without waiting for Hermes to merge its two seams. It installs each piece only where your Hermes lacks it, so it stays harmless after Hermes catches up. The same three ZIPs are on every [release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest).
 
 Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so — [step by step, with a screenshot](#panel)).
 
 | | |
 |---|---|
-| **Needs** | Hermes, and nothing else — no third-party package |
+| **Needs** | Hermes 0.21.4 or newer, and nothing else — no third-party package |
 | **Works without the Desktop** | yes; rotation is CLI- and gateway-safe, the panel is extra |
 | **Turn it off without uninstalling** | `KAME_ROTATION_DISABLED=1`, or the first switch in the panel |
 
@@ -92,6 +158,8 @@ GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc
 
 That is all KAME needs. One key works too; there is just nothing to rotate to.
 
+KAME keeps such a list as one pool entry per key on its own, at every start, and follows the variable when you edit it (turn off with `resolver_disabled`). It writes through Hermes' own pool API, suppresses the comma source, backs up `auth.json` first, and never rewrites `.env`. `/kame-keys split` does the same once by hand.
+
 <details>
 <summary><b>Bulk import from any chat, including the Android app</b></summary>
 
@@ -105,7 +173,7 @@ That is all KAME needs. One key works too; there is just nothing to rotate to.
 
 Commas, spaces, newlines, semicolons and pipes all separate keys. Keys already pooled are skipped. A key is never echoed back — every message shows it as `AIzaSy…q7R8`. Pasting keys into a chat puts them in that chat's transcript; `import <file>` avoids that.
 
-`add` and `import` write the new keys to `~/.hermes/auth.json` (Hermes' own credential store). Before each write KAME saves a plaintext copy of the previous file beside it as `auth.json.kame-<timestamp>.bak`, keeping the last 5 — those backups hold your keys in plain text, like `auth.json` itself.
+`add`, `import` and `split` write the new keys to `~/.hermes/auth.json` (Hermes' own credential store). Before each write KAME saves a plaintext copy of the previous file beside it as `auth.json.kame-<timestamp>.bak`, keeping the last 5 — those backups hold your keys in plain text, like `auth.json` itself.
 </details>
 
 <a id="panel"></a>
@@ -149,6 +217,8 @@ Every refusal is sized from what the provider actually sent. Decisions are made 
 ●  KAME  gemini:gemini-3.8-flash 11/14 4s   openrouter:deepseek/deepseek-v4 3/3
 ```
 
+**The in-chat line** above the Desktop message box while a call waits or is being continued — `⏳ waiting on gemini:gemini-3.8-flash — KAME 13/15 keys healthy`. (CLI, TUI and gateway clients have no plugin channel for it; the chip, `/kame` and `/kame-quota` show the same state.)
+
 **The panel** (`/kame`, or *KAME API Rotation* in the sidebar) — **POOL HEALTH** per provider and model, what each key is doing, every decision and where its number came from:
 
 <p align="center"><img src="assets/panel-overview.png" alt="KAME panel — overview with pool health" width="90%" /></p>
@@ -170,7 +240,7 @@ Every refusal is sized from what the provider actually sent. Decisions are made 
 <a id="settings"></a>
 ## ⚙️ Settings
 
-Nothing needs changing. Every setting is in the panel, in `/kame set`, and as an environment variable (the environment wins).
+Nothing needs changing. Every setting is in Desktop **Settings ▸ Plugins ▸ KAME API Rotation**, in `/kame set`, and as an environment variable. When the same setting is set in more than one place, the environment variable wins.
 
 <details>
 <summary><b>The ones worth knowing</b></summary>
@@ -178,14 +248,24 @@ Nothing needs changing. Every setting is in the panel, in `/kame set`, and as an
 | Setting | Default | What it does |
 |---|---|---|
 | `max_hold_seconds` | `3600` | No key sits out longer than this, whatever caused the hold |
+| `max_total_wait_seconds` | unset | *Give up after* (advanced). Unset: a chat waits for as long as it takes, and a cron run stops after 300 s with the provider's refusal. Set it to `0` for no bound anywhere, or to a number to bound both |
 | `unsized_throttle_backoff` | on | The 1-2-4-8s ladder for Gemini's bare `RESOURCE_EXHAUSTED` |
 | `unsized_backoff_max_seconds` | `64` | Where that ladder stops growing |
 | `unsized_throttle_rest_seconds` | `30` | Rest after any other throttle that names no wait |
 | `daily_quota_cooldown_seconds` | `3600` | Rest once a daily quota is confirmed by a silent pool |
-| `never_fall_back_to_another_model` | on | Wait out a quota on your model instead of silently switching |
+| `model_switch` | `auto` | *Fallback*. With a fallback list in Hermes, one pool with your best model first: a reply falls back to the next model at once when your provider is busy, at once when every key is resting, otherwise after about three times your model's usual first-word time (6–20 s, learned); every reply starts on your best model again. `timed` ("Set time") uses the number below; `never` waits for your keys |
+| `failover_after_seconds` | `60` | *Fallback after*. With `model_switch: timed`: seconds a reply waits with nothing on screen before it falls back to the next model |
+| `reply_notice` | `always` | After each reply, a Desktop notice naming the model and its time; `switches` only when a fallback model answered; `never` |
+| `never_fall_back_to_another_model` | off | On: ignore your Hermes fallback list and always wait for your keys |
 | `share_pool_health` | on | Several Hermes profiles with the same keys share one health file |
 | `stream_resume_limit` | `-1` (automatic) | Continue while new answer content arrives; `0` disables recovery, `1`–`10` set an explicit ceiling |
-| `stream_silence_timeout_seconds` | `0` (off) | Drop a key that accepts a request and then sends nothing |
+| `first_token_wait` | `auto` | Wait for the first token: `auto` drops a key that stays silent far past its model's usual first word (20–120 s, 60–300 s for thinking models; streams only; never a local model); `timed` uses the number below; `off` |
+| `stream_silence_timeout_seconds` | `0` | With `first_token_wait: timed`: seconds a key may stay silent |
+| `hedging_disabled` | off | Stop backup requests everywhere (chat and background calls) |
+| `hedge_mode` | `adaptive` | Speed — Balanced (`adaptive`) races only replies slower than usual; Fastest (`max`) races every reply at once; Saver (`off`) one key at a time |
+| `hedge_budget_pct` | `10` | Long-run ceiling on extra requests, as a share of calls |
+| `hedge_max_legs` | `3` | 1 = no backups, 2 = one backup, 3 = a chat reply still silent may try a third key |
+| `probe_burst_max_legs` | `16` | When quota runs dry, at most this many keys asked at once (`0` = one by one) |
 | `disabled` | off | Turn KAME off without uninstalling (`KAME_ROTATION_DISABLED=1`) |
 
 The panel explains every one of them in full, with its environment variable.
@@ -201,7 +281,7 @@ The panel explains every one of them in full, with its environment variable.
 | `/kame get` · `/kame set <key> <value>` · `/kame reset <key>` | Read and change settings, live |
 | `/kame events` | The latest rotations, rests and cut streams |
 | `/kame-quota` | The quota picture per key and per model |
-| `/kame-keys` | Add and inspect pooled keys in bulk |
+| `/kame-keys` | Add and inspect pooled keys in bulk; `split` gives each key of a comma list its own pool entry |
 
 <a id="privacy"></a>
 ## 🔒 Privacy
@@ -214,17 +294,51 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
+**1.8.2.8** (2026-10-17), see the [changelog](CHANGELOG.md):
+
 | Check | Result |
 |---|---|
-| Full development regression | **3,157 passing**, six platform/isolation skips, four documented expected failures; no unexpected failures |
-| Public-checkout regression | Reproducible offline suite with shipped tests; exact publication result in [VALIDATION.md](VALIDATION.md) |
-| Unchanged admission at Hermes `476268f16732e09b93bc7202ee38f773b913707e` | **15/15**, with positive/negative controls; technical scan, not maintainer approval |
-| Current-host runtime / native Gemini contracts | **12 + 12** mutation controls / **4 + 4** mutation controls |
-| Actual SDK/native TCP stream recovery | **15/15**, including productive continuations, incomplete tools and truthful terminal stops |
-| Real three-profile manager / unload / reload | **11/11**, independent settings/counters and stopped heartbeat workers |
-| Host pool and classifier comparisons | Active-home pool controls retain intended hold-ceiling behavior; 200-case classifier corpus has only five documented intentional differences |
-| Engine preservation | All 24 non-stitch core ASTs match published 1.8.1.6 except version metadata; recovery code changes are explicitly reviewed |
-| Live speed / quality | Limited successful and failed observations retained; no universal improvement or perfect-uptime guarantee |
+| Plugin suite | **3285 passing**, 0 failing (the two load-sensitive gate tests pass alone) |
+| The owner's case, end to end | a model answering 503 "overloaded" on two keys hands the call to the next model of the list after those two requests, not after the whole pool; without a list the keys keep rotating one at a time |
+| Host assumptions | Hermes still reads the hand-over's `reset_at` as the cooldown and its retry backoff never does (4/4) |
+| Expected-decision gate (real recorded traffic) | family agreement 99.76 %, unchanged |
+| Live on the author's base profile, real Gemini free-tier keys, 4 fallback models × 14 keys (2026-10-18) | healthy first model: every reply on it, first word 2–4 s; first model out of quota: handed over in 0.2–0.3 s, reply in 6–7 s, and the next reply after it is back is its own again; first model slow (gemini-3.8-flash 1 m 46 s – 2 m 18 s for one word on every key, the next one 14–47 s): median reply **2.6 s** over 8 messages (7 of 8 at 2.2–2.8 s), was 46–120 s; a 503 "overloaded" storm: handed over in 6.3 s, answered at 8.3 s (1.8.2.7 never moved); no "⚠️ Model fallback" line in any reply |
+
+**1.8.2.7** (2026-10-17):
+
+| Check | Result |
+|---|---|
+| Plugin suite | **3,196 passing**, 0 failing |
+| Provider answer keys | 82 providers, 774 documented error shapes; regression floors in the suite |
+| Fallback list, live (Gemini 3.8 → 3.7 → 3.6 → 3.5 → 3, 14 keys each, real keys) | one spent model: switched in 0.2 s; four spent: all skipped in 0.2 s, the fifth answered; keys back: the first model answered again |
+| Dry pool, real refusal timings | first turn 58 → 27 s, hourly re-check 59 → 13 s, every next turn one request |
+| Two independent adversarial reviews | every finding fixed and pinned by a test |
+| Installed copies | four Hermes profiles, same build fingerprint, `live_daily` 13/13 on each |
+
+**1.8.2.5** (2026-10-12), see [BUILD-1.8.2.5-CONTRACT.md](BUILD-1.8.2.5-CONTRACT.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite | **3,067 passing** (the two load-sensitive gate tests pass alone) |
+| Stream race tests | 27, real threads, incl. the Anthropic Messages wire; stable over repeated runs |
+| Concurrency stress | 1,080 streamed calls on 12 threads with slow, empty, 429, 503 and cut replies: no internal error, no thread left behind |
+| Real keys, Gemini (14 keys) | alternating raced / unraced replies: worst first word 7.4 s vs 33.0 s (forced triggers), 16.5 s vs 27.1 s (learned) |
+| Real keys, NVIDIA (2 keys) | thinking replies are not raced; no slowdown |
+| Installed copies | three Hermes profiles, same build fingerprint, `live_daily` 13/13 on each |
+
+The section below is the 1.8.2.2 certification on a Hermes copy.
+
+1.8.2.2, on a copy of Hermes `56f7986` (main of 2026-10-05). Local fake
+providers, except the real-key row. Details in [VALIDATION.md](VALIDATION.md).
+
+| Check | Result |
+|---|---|
+| `hermes plugins validate` (the two catalog packages) | **pass**, `no core override` and `desktop surface` included |
+| Real Hermes turns vs 1.8.1.8, six scenarios × four wires | **every turn answered** on native Gemini, OpenAI chat and Responses, with faster steady turns. On the Anthropic Messages wire this needs `create_messages_client` (#133461 or the optional bridge); with it, every turn is answered |
+| Status line on the spinner | present with #133474 or the optional bridge. Otherwise it appears above the Desktop composer |
+| Real keys (NVIDIA, 2 keys) | 3 of 3 turns answered. One empty answer was rotated to the next key, and the live line showed on the spinner |
+| Plugin suite | **2,851 passing** on Hermes `56f7986`, and on Hermes with each upstream seam applied |
+| Host gates (classifier corpus, prose) | **pass**, with the corpus keeping its five documented intentional differences |
 
 ### Historical validation (not a new-build certification)
 
@@ -247,6 +361,8 @@ evidence above still describes what runs.
 <summary><b>Does it work with OpenAI, Anthropic, OpenRouter — not just Gemini?</b></summary>
 
 Yes. KAME decides from the refusal — retry timing, rate-limit headers, the shape of the error body — never from who the provider is.
+
+The whole carousel runs inside the call on every API-key wire: chat completions (Gemini, OpenRouter, NVIDIA, DeepSeek, custom OpenAI-compatible endpoints and the rest), the Responses API (`api.openai.com`, xAI) and Anthropic Messages (Anthropic, MiniMax, Kimi coding). Least-loaded key first, waits, continuation of a cut answer (except on the Responses API, as in 1.8.1.8). Anthropic Messages needs a Hermes that offers `create_messages_client`; an older one builds its own Messages client, and KAME still sizes every refusal there.
 </details>
 
 <details>
@@ -259,6 +375,12 @@ Gemini's quotas are per Google Cloud project, and a bare `429 RESOURCE_EXHAUSTED
 <summary><b>A key was rested for an hour. Is that a bug?</b></summary>
 
 Only a confirmed daily quota or an empty balance rests a key that long. A daily label alone buys a 5-minute re-probe; the hour applies once the whole pool has gone 20 minutes without a single answer. Nothing is ever held longer than `max_hold_seconds`.
+</details>
+
+<details>
+<summary><b>Does KAME send extra requests to make replies faster?</b></summary>
+
+Only when a reply is stuck. A reply silent for twice its model's usual wait gets one backup on another key (a third if it is still silent), the first key that starts working wins, and the others are cut. Extra requests stay within about 10% of calls, stop by themselves when rate limits appear, and never happen with a single key — so a subscription login with one credential (Anthropic, ChatGPT) is never raced. Turn it off with `hedging_disabled`.
 </details>
 
 <details>
@@ -296,6 +418,16 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.2.8** | Busy providers, automatic waits, who answered | Two keys "overloaded" or timing out move the reply to your next model at once, and the busy model is left alone for a while; the switch counts your wait, not only the resting time; *Fallback* and *Wait for the first token* are Automatic (learned per model) / Set time / Never-Off; every reply starts on the best model again; a Desktop notice and a *Last replies* list name the model of each reply; backups keep racing through a 503 storm. |
+| **1.8.2.7** | Providers, fallback list, dry pools | 82 providers learned from their own docs (774 error shapes, graded by independent answer keys); your Hermes fallback list used by itself after a minute of every key resting, back to your model when its keys return; a dry pool asked 4/8/16 keys at once; honest timeouts; four visible settings, the rest automatic; the panel no longer goes blank. Live-proven on a 5-model Gemini chain. |
+| **1.8.2.6** | Events = your conversation | Background jobs (titles, compression, vision) on their own tab, each named; lists scroll in place; a "still waiting" line; plainer words. |
+| **1.8.2.5** | Backups for the chat | A streamed reply still silent after twice its model's usual time to first sign of work races a second key (a third after twice that); first to show text, a tool call or reasoning wins, the rest are cut. Triggers learned from `calls.jsonl`, budgeted, off under 429 pressure; a thinking reply is never raced. |
+| **1.8.2.4** | 1.8.2.3, working | Backups return at the first useful answer (1.8.2.3 waited for the slow leg); every leg judged on its own key; quota groups match the panel's labels; learned limits can recover; streams timed to first sign; 13 settings declared in the manifest; full suite green again. |
+| **1.8.2.3** | The owner's speed pass | Ten integrations: learned pacing, backup requests, latency tiebreak, Secondary Events tab, signature-bound seam check, three-family retry hints, region in pool identity, human-readable settings with a meta-test, string-aware reset, live build line. |
+| **1.8.2.2** | Fixes from real use | The Settings form is back on the panel's Settings tab. A setting saved in the panel is in force in every Hermes process. The panel no longer refreshes by itself: one read runs at a time, and a brief backend hiccup keeps the last reading. |
+| **1.8.2.1** | Cron bound | Unset, `max_total_wait_seconds` bounds a cron run at 300 s, below Hermes' own cron timeout. Chats keep the unbounded wait, and any value you set wins everywhere, so 0 keeps cron unbounded too. The catalog README marks the optional bridge as unsupported. |
+| **1.8.2.0** | Catalog review, full Events | The panel uses only `@hermes/plugin-sdk`, through its own `plugin_api.py` route, and reads the profile you are looking at. Settings moved to Desktop Settings ▸ Plugins. New `max_total_wait_seconds` (off by default) for unattended runs. Every call and every answer is on the Events tab. Refusal records are capped and owner-only, and the quota fields are kept. Multi-key sync works on Hermes' scoped secrets. Optional `hermes-kame-bridge` adds the two unmerged Hermes seams (spinner line #133474, Anthropic Messages rotation #133461). |
+| **1.8.1.9** | No runtime overrides | Every rebind of Hermes core removed for catalog rule 9; the carousel now runs inside the client Hermes asks a provider profile for (companion package `hermes-kame-provider`). Same decisions as 1.8.1.8 on real Hermes turns, on every wire (Anthropic Messages and Responses through new provider-profile clients); status line through `notify_turn_status`; comma-joined key variables kept as one pool row per key automatically; two settings retired because Hermes now does their job. |
 | **1.8.1.8** | Serial reliability | Independent profile leases and stoppable heartbeats; progress-based continuation, exact stream boundaries and original-request incomplete-tool replay; writer-owned snapshot cache and defensive Desktop formatting. Engine retained, no request racing; catalog update needs renewed review. |
 | **1.8.1.7** | Reproducible verification *(local candidate)* | Deterministic Windows clock regressions, paired 1/2/14-key overhead measurement, live-key and isolated Hermes acceptance, byte-exact ZIP verification, and explicit current catalog admission dependency. Existing runtime features retained. |
 | **1.8.1.6** | One hour means one hour | `max_hold_seconds` now bounds every hold, the provider's own included: a 24h `Retry-After`, a "try again in 6h" in the message or Codex's reset used to keep a key out that long; it comes back at the ceiling (one hour unless you change it) and is simply held again if the provider still refuses. Lowering the ceiling also applies to holds already running. |
@@ -361,13 +493,11 @@ for the full notes on the current public releases.
 
 The same engine, ported to [Agent Zero](https://github.com/agent0ai/agent-zero): **[kame-api-rotation-for-agent-zero](https://github.com/Kame696/kame-api-rotation-for-agent-zero)**.
 
-## ❤️ Support
+## 🐢 Author
 
-KAME is free, MIT, and built by one person against real quotas. No company, no telemetry, nothing to upsell. If it saved you a run, a tip keeps it going:
+KAME API Rotation is designed and built by **KAME** — [github.com/Kame696](https://github.com/Kame696). Free, MIT, built against real quotas: no company, no telemetry, nothing to upsell.
 
-**Bitcoin** — `36BGYhMEVFgY8PLGMVux93pjGt92KVM6dJ`
-
-And a ⭐ costs nothing and helps other people find it.
+If it saved you a run, a ⭐ on [the repository](https://github.com/Kame696/kame-api-rotation-for-hermes) costs nothing and helps other people find it. The panel has the same button under **Settings ▸ Made by KAME**.
 
 ## 📜 License
 

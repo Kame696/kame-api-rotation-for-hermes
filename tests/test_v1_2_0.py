@@ -82,13 +82,17 @@ class TestTheShelves:
         # off because turning them on takes one away.
         extra = [group for group in settings.groups() if group["id"] == "extra"]
         assert len(extra) == 1
+        # 1.8.2.7: the shelf is now "If your keys run out" - the three settings
+        # that decide what happens when every key of a model is resting.
+        # decisions/0027: the switch time first, the advanced "ignore my list" last.
+        # 1.8.2.8 (decisions/0028): the choice first, its number under it, and
+        # the notice naming the model that answered.
         assert extra[0]["keys"] == [
-            settings.STREAM_SILENCE_TIMEOUT,
+            settings.MODEL_SWITCH,
+            settings.FAILOVER_AFTER,
+            settings.REPLY_NOTICE,
+            settings.MAX_TOTAL_WAIT,   # 1.8.2.8 (owner): advanced, with the other rarely-wanted one
             settings.NO_MODEL_FALLBACK,
-            settings.SHARE_POOL_HEALTH,
-            # 1.8.1.0: an experiment that adds a behaviour (the doubling
-            # unsized-throttle rest), not an escape hatch.
-            settings.UNSIZED_THROTTLE_BACKOFF,
         ]
         for key in extra[0]["keys"]:
             assert key not in settings.DISABLE_FLAGS, key
@@ -124,7 +128,13 @@ class TestTheShelves:
             if group["id"] == "tuning"
             for key in group["keys"]
         }
-        assert tuning == set(settings.ALL_NUMBERS) - {settings.STREAM_SILENCE_TIMEOUT}
+        # 1.8.2.4: the speed shelf (1.8.2.3) holds the hedging and pacing
+        # numbers; the tuning shelf holds every other number and text value.
+        # 1.8.2.7: "Rest times (advanced)" holds only how long a refused key sits out.
+        assert tuning == {
+            settings.DAILY_COOLDOWN, settings.MAX_HOLD, settings.UNSIZED_THROTTLE_BACKOFF,
+            settings.UNSIZED_THROTTLE_REST, settings.UNSIZED_BACKOFF_MAX, settings.STREAM_RESUME_LIMIT,
+        }
 
     def test_a_setting_belongs_to_exactly_one_shelf(self):
         seen = [key for group in settings.groups() for key in group["keys"]]
@@ -139,7 +149,7 @@ class TestTheShelves:
             assert len(str(group["note"])) > 40
 
     def test_the_shelves_come_out_in_the_order_they_are_shown(self):
-        assert [group["id"] for group in settings.groups()] == ["extra", "tuning", "off"]
+        assert [group["id"] for group in settings.groups()] == ["extra", "speed", "keyring", "tuning", "off"]
 
 
 # --- 2. nothing is lost -----------------------------------------------------
@@ -148,7 +158,7 @@ class TestTheShelves:
 class TestNothingIsLost:
     def test_every_setting_is_on_a_shelf(self):
         shelved = {key for group in settings.groups() for key in group["keys"]}
-        assert shelved == set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS)
+        assert shelved == (set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS) | set(settings.ALL_STRINGS)) - settings.HIDDEN
 
     def test_a_setting_the_table_never_heard_of_is_shown_last_not_dropped(self, monkeypatch):
         # Simulates the release that adds a knob and forgets the table. The
@@ -161,7 +171,7 @@ class TestNothingIsLost:
         monkeypatch.setattr(settings, "GROUPS", trimmed)
         rows = [row["key"] for row in settings.describe_all()]
         assert forgotten in rows
-        assert sorted(rows) == sorted(list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS))
+        assert sorted(rows) == sorted(k for k in list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS) + list(settings.ALL_STRINGS) if k not in settings.HIDDEN)
         assert rows[-1] == forgotten
 
     def test_a_setting_the_table_never_heard_of_lands_on_the_gentler_shelf(self):
@@ -208,7 +218,7 @@ class TestThePanelIsToldRatherThanTaught:
         assert "Not sorted into any of the groups above." in UI
 
     def test_the_panel_says_the_settings_are_optional_before_showing_any(self):
-        assert "KAME works with none of these touched." in UI
+        assert "Everything works without changing anything here." in UI
 
 
 # --- 4. the chat command says the same thing --------------------------------
@@ -227,7 +237,8 @@ class TestTheChatCommandAgrees:
     def test_the_optional_extra_is_printed_before_the_escape_hatches(self):
         text = menu.MenuCommand().handle("get")
         first_flag = min(text.index(key) for key in settings.ALL_FLAGS)
-        assert text.index(settings.STREAM_SILENCE_TIMEOUT) < first_flag
+        first_hatch = min(text.index(key) for key in settings.DISABLE_FLAGS)
+        assert text.index(settings.FAILOVER_AFTER) < first_hatch
 
     def test_it_prints_every_setting(self):
         text = menu.MenuCommand().handle("get")
@@ -269,8 +280,11 @@ class TestTheSilentKeyTimeoutExplainsItself:
     def test_it_is_titled_for_what_it_does_not_for_what_it_is_called(self):
         # Retitled in 1.2.2. The key name is the compatibility surface and it
         # has not moved; the title is free to say the plainer thing.
+        # 1.8.2.8: the name the owner knows is the choice's; the number under
+        # it is "First-token wait (seconds)" (owner: "Set time", not "my time").
+        assert settings.describe(settings.FIRST_TOKEN_WAIT)["title"] == "Wait for the first token"
         row = settings.describe(settings.STREAM_SILENCE_TIMEOUT)
-        assert row["title"] == "Wait for the first token"
+        assert row["title"] == "First-token wait (seconds)"
         assert row["key"] == "stream_silence_timeout_seconds"
 
     def test_the_help_says_what_zero_means(self):
@@ -279,7 +293,8 @@ class TestTheSilentKeyTimeoutExplainsItself:
         assert "120" in help_text
 
     def test_the_help_says_why_a_small_value_is_raised(self):
-        help_text = settings.explain(settings.STREAM_SILENCE_TIMEOUT).lower()
+        # 1.8.2.7: the page shows one plain sentence; the long text rides along as the tooltip.
+        help_text = settings.describe(settings.STREAM_SILENCE_TIMEOUT)["detail"].lower()
         assert "5" in help_text
 
     def test_a_value_under_the_floor_is_still_refused_with_a_reason(self):

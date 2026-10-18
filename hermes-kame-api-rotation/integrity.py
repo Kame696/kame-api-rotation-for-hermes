@@ -50,9 +50,9 @@ from typing import Dict, List, Tuple
 #: turn, and every one of them is reached by an import at register time, so a
 #: gap here is a gap that would have surfaced as a traceback nobody saw.
 REQUIRED_MODULES: Tuple[str, ...] = (
-    "scope.py",
-    "dispatch_binding.py",
-    "pool_binding.py",
+    "transport.py",
+    "facade.py",
+    "journal_keeper.py",
     "settings.py",
     "state.py",
     "host_text.py",
@@ -76,6 +76,9 @@ REQUIRED_MODULES: Tuple[str, ...] = (
     # nobody saw. Left out of the original 1.8.0.0 addition alongside
     # core/provider_rules.py above.
     "core/shared_health.py",
+    # 1.8.2.7: transport.py imports it at module level (provider-specific
+    # meanings of a status: 403 as denial, capacity 429s, maintenance 503).
+    "core/provider_quirks.py",
 )
 
 #: Reported but never fatal: the plugin works without them, less well.
@@ -84,11 +87,13 @@ OPTIONAL_MODULES: Tuple[str, ...] = (
     # lost the diagnostic still rotates, and the report a missing diagnostic
     # would produce is exactly the one nobody could read.
     "core/doctor.py",
+    # 1.8.2.7: read lazily and inside try/except; without it the hand-over to
+    # Hermes' fallback chain simply never happens (KAME waits, as before).
+    "core/fallback_chain.py",
     "commands.py",
     "menu.py",
     "control.py",
     "envfile.py",
-    "gemini_slots.py",
     "desktop/plugin.js",
 )
 
@@ -197,6 +202,122 @@ def verify(root: str = "") -> Dict[str, object]:
         "missing_optional": optional,
         "fingerprint": fingerprint(base),
         "root": base,
+    }
+
+
+def check_host_seams() -> Dict[str, object]:
+    """Check whether the Hermes APIs this plugin depends on still exist.
+
+    Never raises — a check that crashes is worse than no check.  Returns a
+    dict with ``ok``, ``required_present``, ``required_missing``,
+    ``optional_present``, and ``optional_absent`` lists, plus a one-line
+    ``summary`` the panel can show.
+
+    The seams checked are the hook names register() already guards, and the
+    companion provider package's entry points.  Checked by attempting a
+    shallow import or attribute lookup — never by calling anything.
+    """
+    required = {}
+    optional = {}
+    drift: Dict[str, str] = {}
+
+    # 1.8.2.3. Each seam names the exact host symbol this plugin depends on, and
+    # is checked in two steps: the import/attr must resolve (the 1.8.2.2
+    # check, which caught nothing when a method's *signature* changed), and
+    # - where the plugin calls the seam with a fixed shape - the signature
+    # must still bind that shape. A seam that resolves but no longer binds
+    # is DRIFT: reported, never fatal to registration, and the summary
+    # names it so a host update is diagnosed from the panel instead of from
+    # a rotated-pool mystery.
+    _seam_specs = [
+        # (label, module, attr, required, call_kwargs to bind)
+        ("transform_api_error_classification hook", "hermes_cli.plugins", "PluginManager", True, {}),
+        ("post_api_request hook", "hermes_cli.plugins", "PluginManager", False, {}),
+        ("on_session_reset hook", "hermes_cli.plugins", "PluginManager", False, {}),
+        # The pool this plugin reads keys from - dispatch_binding's patch
+        # target. Real module/class names, not the stub's invented ones.
+        ("agent.credential_pool.load_pool", "agent.credential_pool", "load_pool", True, {"provider": "x"}),
+        ("agent.credential_pool.CredentialPool", "agent.credential_pool", "CredentialPool", True, {}),
+        # The provider-profile seam the companion package wraps.
+        # Real host shape (verified 2026-10-11 against the installed Hermes):
+        # get_provider_profile(name) - one positional-or-keyword "name".
+        ("providers.get_provider_profile", "providers", "get_provider_profile", False, {"name": "x"}),
+        # 1.8.2.6: how a call knows it is auxiliary (Events vs Background tab).
+        # Missing means every background call shows on the main Events tab
+        # again — cosmetic, never a routing change.
+        ("agent.auxiliary_client._RELAY_AUX_CALL_CONTEXT", "agent.auxiliary_client",
+         "_RELAY_AUX_CALL_CONTEXT", False, {}),
+    ]
+    import inspect
+
+    _sentinel = object()
+    for label, mod_path, attr_path, is_required, call_kwargs in _seam_specs:
+        target_dict = required if is_required else optional
+        try:
+            import importlib
+            mod = importlib.import_module(mod_path)
+            obj = getattr(mod, attr_path, None)
+            if obj is None:
+                target_dict[label] = False
+                continue
+            if call_kwargs:
+                try:
+                    sig = inspect.signature(inspect.unwrap(obj))
+                    sig.bind(**{k: _sentinel for k in call_kwargs})
+                    target_dict[label] = True
+                except TypeError as te:
+                    target_dict[label] = False
+                    drift[label] = f"signature no longer binds: {te}"
+                except (ValueError, TypeError):
+                    target_dict[label] = True  # present; not introspectable
+            else:
+                target_dict[label] = True
+        except ImportError:
+            target_dict[label] = False
+        except Exception:
+            target_dict[label] = False
+
+    # Check whether hermes-kame-provider is importable (the companion that
+    # actually calls facade.make_client).
+    try:
+        import importlib
+        importlib.import_module("hermes_kame_provider")
+        optional["hermes-kame-provider package"] = True
+    except Exception:
+        optional["hermes-kame-provider package"] = False
+
+    req_present = [k for k, v in required.items() if v]
+    req_missing = [k for k, v in required.items() if not v]
+    opt_present = [k for k, v in optional.items() if v]
+    opt_absent = [k for k, v in optional.items() if not v]
+
+    ok = len(req_missing) == 0
+
+    if ok and not opt_absent:
+        summary = "all host seams present"
+    elif ok:
+        summary = (
+            "required seams present; optional absent: "
+            + ", ".join(opt_absent)
+        )
+    else:
+        summary = (
+            "REQUIRED HOST SEAMS MISSING: "
+            + ", ".join(req_missing)
+            + " — KAME may not rotate"
+        )
+
+    if drift:
+        summary += " - DRIFT: " + "; ".join(f"{k}: {v}" for k, v in drift.items())
+
+    return {
+        "ok": ok,
+        "required_present": req_present,
+        "required_missing": req_missing,
+        "optional_present": opt_present,
+        "optional_absent": opt_absent,
+        "drift": drift,
+        "summary": summary,
     }
 
 

@@ -125,8 +125,10 @@ classify_mod = importlib.import_module(f"{PACKAGE}.core.classify")
 quota = importlib.import_module(f"{PACKAGE}.core.quota")
 catalog = importlib.import_module(f"{PACKAGE}.core.catalog")
 runtime = importlib.import_module(f"{PACKAGE}.runtime")
-pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
-
+try:
+    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    pool_binding = None
 classify = classify_mod.classify
 strip_host_prose = classify_mod.strip_host_prose
 FLOOR = quota.DEFAULT_UNSIZED_THROTTLE_BENCH_SECONDS
@@ -666,7 +668,7 @@ def test_the_stream_silence_help_recommends_a_value():
     help_text = str(described.get("help", ""))
     assert "60" in help_text
     # And it still says zero is the default, which is the more important half.
-    assert "Zero, the default" in help_text
+    assert "0 (default)" in help_text
 
 
 if __name__ == "__main__":

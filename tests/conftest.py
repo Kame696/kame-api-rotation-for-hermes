@@ -50,7 +50,15 @@ os.environ.setdefault("KAME_CALL_TIMINGS_DISABLED", "1")
 os.environ.setdefault("KAME_GATE_OUT_DIR", str(SANDBOX_HOME / "gate-out"))
 
 
-import pytest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import legacy_dispatch  # noqa: E402  (tools/legacy_dispatch.py: the 1.8.1.8 suite against 1.8.1.9)
+
+legacy_dispatch.enable()
+
+import pytest  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -69,3 +77,52 @@ def _hermes_home_stays_redirected():
     yield
     if os.environ.get("HERMES_HOME") != str(SANDBOX_HOME):
         os.environ["HERMES_HOME"] = str(SANDBOX_HOME)
+
+
+@pytest.fixture(autouse=True)
+def _speed_singletons_start_empty():
+    """1.8.2.4: the pacer, hedge tracker and latency tracker start every test empty.
+
+    They are process-wide singletons (1.8.2.3) and the suite loads the plugin
+    under several package names, so a test that taught one of them — a key
+    paced after a per-minute refusal — left that lesson to every later test
+    that reused the key name. ``test_v1_7_0_7_dispatch_recovery_loop`` was
+    green alone and red after its own earlier parameters. In a real process
+    that memory is the point; between tests it is leakage.
+    """
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        for attr in ("PACER", "HEDGE_TRACKER", "LATENCY"):
+            if name.rsplit(".", 1)[-1] in ("pacing", "hedging", "latency"):
+                singleton = getattr(module, attr, None)
+                clear = getattr(singleton, "clear", None)
+                if callable(clear):
+                    clear()
+    yield
+
+
+# 1.8.1.9: 1.8.1.8 tests whose subject was removed are skipped with the reason
+# and the test that now keeps the same promise (tests/legacy_1818_retired.py).
+import legacy_1818_retired as _retired  # noqa: E402
+
+collect_ignore = sorted(_retired.COLLECT_IGNORE)
+_RETIRED_IDS = {
+    line.strip()
+    for line in (Path(__file__).resolve().parent / "legacy_1818_retired_ids.txt").read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.startswith("#")
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    # KAME_RUN_RETIRED=1 runs the retired tests too: how a retirement is checked
+    # to still be needed after its subject comes back.
+    if os.environ.get("KAME_RUN_RETIRED") == "1":
+        return
+    for item in items:
+        nodeid = item.nodeid.replace("\\", "/")
+        if not nodeid.startswith("tests/"):
+            nodeid = "tests/" + nodeid
+        if nodeid in _RETIRED_IDS or nodeid.split("[")[0] in _RETIRED_IDS:
+            reason = _retired.reason_for(nodeid) or "see tests/legacy_1818_retired.py"
+            item.add_marker(pytest.mark.skip(reason="retired in 1.8.1.9: " + reason))

@@ -324,6 +324,11 @@ _PREFILL_REFUSALS = (
     "must end with a user",
     "last message must be",
     "last content must be",
+    # Anthropic, for models that take no prefill at all and for a prefill under
+    # extended thinking (the last assistant turn must then open with a thinking
+    # block, which a continuation cannot honestly supply).
+    "does not support assistant message prefill",
+    "must start with a thinking block",
 )
 
 

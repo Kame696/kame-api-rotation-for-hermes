@@ -314,8 +314,9 @@ def test_the_snapshot_carries_the_list(clean_settings):
 
 
 def test_the_silent_stream_timeout_is_titled_for_the_decision():
-    row = settings_mod.describe(settings_mod.STREAM_SILENCE_TIMEOUT)
-    assert row["title"] == "Wait for the first token"
+    # 1.8.2.8: the decision is the choice "Wait for the first token".
+    row = settings_mod.describe(settings_mod.FIRST_TOKEN_WAIT)
+    assert row["title"] == "Wait for the first token"  # the 1.8.1.8 name, restored 2026-10-17
 
 
 def test_the_name_a_config_file_holds_did_not_move():

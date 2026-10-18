@@ -13,15 +13,16 @@
  * HOW THE DATA GETS HERE. The Python half writes a small JSON document to
  * `<hermes home>/plugin-data/hermes-kame-api-rotation/state.json` (see
  * `state.py`) — fingerprints and counts, never key material. This file reads
- * it through the desktop bridge (`window.hermesDesktop.readFileText`) on a
- * one-second tick. No backend route, nothing to enable, nothing to restart:
- * the alternative, `plugin_api.py` behind `dashboard/plugin.json` and an
- * `plugins.enabled` entry, is the door for a plugin built around a dashboard,
- * not for one the user already has running.
+ * it on a one-second tick through `ctx.rest('/state')`, the SDK's door to the
+ * plugin's own backend (`dashboard/plugin_api.py`). Until 1.8.2.0 it used the
+ * raw preload bridge (`window.hermesDesktop.readFileText`); the catalog asks
+ * plugins to stay on `@hermes/plugin-sdk`, and `ctx.rest` is also
+ * profile-scoped, so the panel now reads the profile it is looking at instead
+ * of the base home.
  *
- * HOW A SWITCH GETS BACK (1.1.1). The same way, mirrored. This page writes
- * `control.json` next to the snapshot (`hermesDesktop.writeTextFile`) and the
- * Python half applies it on its own heartbeat, then reports the outcome in the
+ * HOW A SWITCH GETS BACK (1.1.1). The same way, mirrored. This page posts
+ * `ctx.rest('/control')`, the route writes `control.json` next to the snapshot,
+ * and the Python half applies it on its own heartbeat, then reports the outcome in the
  * next snapshot — see `control.py`. The page never edits configuration itself:
  * it asks, and the process that owns the settings decides. That is why every
  * value here is validated twice, once for a readable message before the write
@@ -62,6 +63,10 @@ import {
   Tip,
   useValue
 } from '@hermes/plugin-sdk'
+// Read as a namespace, not named, on purpose: a Desktop older than the
+// composer slots must still load the rest of this file, and a named import of
+// an export the shim lacks fails the whole module at link time.
+import * as sdk from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -148,6 +153,10 @@ const $tab = atom('overview')
  *  event list lives in, and it survives the list re-rendering under it when a
  *  new snapshot lands mid-read. */
 const $inspect = atom(null)
+
+/** Whether the Settings page shows the settings a first-time reader can skip
+ *  (1.8.2.7). Module-level so it survives switching tabs. */
+const $advanced = atom(false)
 
 // -- helpers ----------------------------------------------------------------
 
@@ -348,32 +357,30 @@ function validateNumber(setting, raw) {
 // -- the reader -------------------------------------------------------------
 
 /**
- * Where the Python half writes, and where this page writes back.
+ * The plugin's own backend door, `ctx.rest`, captured at `register`.
  *
- * Derived from the bridge's own plugin roots rather than from `HERMES_HOME`,
- * because the renderer is Electron-local and the backend's idea of home can
- * be a different machine entirely. `desktop-plugins` and `plugins` are both
- * direct children of the Hermes home, so either one names the parent.
+ * Routes live in `dashboard/plugin_api.py` (`/state`, `/control`). They are
+ * mounted only when the plugin is in `plugins.enabled` and the backend has
+ * restarted since it was installed, so a missing route is reported as that,
+ * not as an error.
  */
-async function dataDir() {
-  const desktop = window.hermesDesktop
+let rest = null
 
-  if (!desktop) {
-    return null
+/** 1.8.2.7: Hermes' OS door (`ctx.os`), for opening the project's links in
+ *  the system browser. `null` on a Desktop that has none. */
+let os = null
+
+function restProblem(error) {
+  const text = error instanceof Error ? error.message : String(error ?? '')
+
+  if (/\b404\b/.test(text)) {
+    return /no snapshot/i.test(text)
+      ? 'No snapshot yet. KAME writes one as soon as the backend loads it.'
+      : "KAME's panel route is not mounted yet. Restart Hermes once after installing or updating KAME."
   }
 
-  const root = (await desktop.desktopPluginsRoot?.()) || (await desktop.agentPluginsRoot?.())
-
-  if (!root) {
-    return null
-  }
-
-  const home = String(root).replace(/[\\/]+(?:desktop-plugins|plugins)[\\/]*$/, '')
-
-  return `${home}/plugin-data/${PLUGIN_ID}`
+  return `The snapshot could not be read: ${text || 'unknown error'}`
 }
-
-let cachedDir = null
 
 /** The exact bytes behind the reading currently on screen.
  *
@@ -386,26 +393,15 @@ let cachedDir = null
  *  tab that is a form rebuilding itself under the cursor. */
 let lastText = ''
 
+/** When the backend last answered, and how long a run of failed reads may
+ *  last before the page admits it (1.8.2.2). */
+let lastGoodReadAt = 0
+const READ_GRACE_MS = 15000
+
 async function readSnapshot() {
-  const desktop = window.hermesDesktop
-
-  if (!desktop?.readFileText) {
+  if (!rest) {
     $snapshot.set(null)
-    $problem.set('This Hermes shell has no file bridge, so the pool cannot be read.')
-
-    // Settling here too: this branch can hold for as long as the
-    // condition does, and a Save in flight would otherwise stay "Saving..."
-    // for ever with every control disabled. settle() only ever clears a
-    // request already past CONTROL_TIMEOUT_MS, so it cannot cut one short.
-    settle($snapshot.get())
-
-    return
-  }
-
-  cachedDir ??= await dataDir()
-
-  if (!cachedDir) {
-    $problem.set('This Hermes shell reports no plugin root, so the snapshot cannot be located.')
+    $problem.set('This Hermes has no plugin backend door (ctx.rest), so the pool cannot be read.')
 
     // Settling here too: this branch can hold for as long as the
     // condition does, and a Save in flight would otherwise stay "Saving..."
@@ -419,12 +415,24 @@ async function readSnapshot() {
   let text
 
   try {
-    ;({ text } = await desktop.readFileText(`${cachedDir}/state.json`))
-  } catch {
-    // Absent is the ordinary case on a fresh install, and on any Hermes
-    // running a KAME older than 1.1.0 — say which, rather than "error".
+    const body = await rest('/state')
+
+    text = typeof body === 'string' ? body : JSON.stringify(body)
+    lastGoodReadAt = Date.now()
+  } catch (error) {
+    // A backend busy for a moment is not a missing pool (1.8.2.2): keep the
+    // last good reading on screen for READ_GRACE_MS of failures instead of
+    // blanking the page and rebuilding it — which remounted the settings form.
+    if ($snapshot.get() && Date.now() - lastGoodReadAt < READ_GRACE_MS) {
+      settle($snapshot.get())
+
+      return
+    }
+
+    // Absent is the ordinary case on a fresh install — say which, rather
+    // than "error".
     $snapshot.set(null)
-    $problem.set('No snapshot yet. KAME writes one as soon as the backend loads it.')
+    $problem.set(restProblem(error))
 
     // Settling here too: this branch can hold for as long as the
     // condition does, and a Save in flight would otherwise stay "Saving..."
@@ -665,18 +673,8 @@ function settle(snap) {
  * fingerprint, which is a hash and not a prefix.
  */
 async function request(action, key = '', value = null) {
-  const desktop = window.hermesDesktop
-
-  if (!desktop?.writeTextFile) {
-    $notice.set({ detail: 'This Hermes shell cannot write files, so settings are read-only here. Use /kame set instead.', ok: false })
-
-    return
-  }
-
-  cachedDir ??= await dataDir()
-
-  if (!cachedDir) {
-    $notice.set({ detail: 'This Hermes shell reports no plugin root, so the request cannot be delivered.', ok: false })
+  if (!rest) {
+    $notice.set({ detail: 'This Hermes has no plugin backend door, so settings are read-only here. Use /kame set instead.', ok: false })
 
     return
   }
@@ -687,15 +685,12 @@ async function request(action, key = '', value = null) {
   $pending.set({ action, at: Date.now(), id, key })
 
   try {
-    await desktop.writeTextFile(
-      `${cachedDir}/control.json`,
-      JSON.stringify({ action, id, key, schema: CONTROL_SCHEMA, value })
-    )
+    await rest('/control', { body: { action, id, key, schema: CONTROL_SCHEMA, value }, method: 'POST' })
   } catch (error) {
     $pending.set(null)
-    // The bridge refuses to create directories, and the only directory this
-    // writes into is the one the snapshot already lives in — so this really
-    // does mean the backend never started.
+    // The route writes only into the directory the snapshot already lives
+    // in, so a refusal here means the backend never started KAME in this
+    // profile, or the route is not mounted yet.
     $notice.set({
       detail: `The request could not be written: ${error instanceof Error ? error.message : 'unknown error'}`,
       ok: false
@@ -733,8 +728,23 @@ function startReading() {
       return
     }
 
-    void readSnapshot()
+    // One read at a time (1.8.2.2). Over `ctx.rest` a read can take longer
+    // than the tick; overlapping reads then resolve out of order and the
+    // panel flips between an older and a newer snapshot — the "refreshing by
+    // itself" a file read never produced.
+    if (reading) {
+      return
+    }
+
+    reading = true
+
+    // Returned so a caller that wants to wait for this read can.
+    return readSnapshot().finally(() => {
+      reading = false
+    })
   }
+
+  let reading = false
 
   tick()
 
@@ -880,6 +890,59 @@ function KameChip() {
   )
 }
 
+/*
+ * 1.8.1.9. The live line above the composer.
+ *
+ * Until 1.8.1.8 this sentence was written into Hermes' own spinner
+ * (`agent._emit_wait_notice`, the `thinking.delta` status line), from inside
+ * the wrapped dispatch functions. 1.8.1.9 wraps nothing of Hermes' (plugin
+ * catalog rule 9) and the carousel now runs inside the model client, where
+ * there is no agent to write to. The words are the same — the backend still
+ * publishes every state the spinner used to show — and they are drawn here,
+ * in a slot the Desktop SDK gives plugins for exactly this, above the box the
+ * user is looking at while the turn runs. Shown only while a call is in
+ * flight, gone the moment it answers.
+ */
+function KameComposerLine() {
+  const snap = useValue($snapshot)
+  const now = useValue($now)
+  const activity = snap?.activity
+
+  // Hermes draws the same line on its own spinner when it offers
+  // notify_turn_status (1.8.1.9); one line on screen, as in 1.8.1.8.
+  if (!snap?.installed || snap?.status_rail || !activity || ageSeconds(snap, now) > STALE_AFTER_S) {
+    return null
+  }
+
+  const health = `KAME ${activity.healthy ?? '?'}/${activity.keys ?? '?'} keys healthy`
+  let text = null
+
+  if (activity.kind === 'calling') {
+    const resting = (activity.attempt ?? 1) > 1 || (activity.healthy ?? 0) < (activity.keys ?? 0)
+    text = `${resting ? '↻' : '⏳'} waiting on ${activity.model} — ${health}${resting ? ', trying the next key' : ''}`
+  } else if (activity.kind === 'waiting') {
+    const eta = countdown(activity.eta_s, snap, now)
+    text = `⏳ waiting on a key to come back — ${health}${eta !== null ? `, next key in ${duration(eta)}` : ''}`
+  } else if (activity.kind === 'stitching') {
+    text = `↻ waiting on a cut answer — continuing the answer on the next key (${resumeProgress(activity)})`
+  } else if (activity.kind === 'recovered') {
+    text = `↻ model returned — back after ${duration(activity.waited_s ?? 0)}`
+  }
+
+  if (!text) {
+    return null
+  }
+
+  return h(
+    'div',
+    {
+      className: 'truncate px-3 pb-1 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)',
+      title: text
+    },
+    text
+  )
+}
+
 // -- small pieces of the page -----------------------------------------------
 
 function Card(props, ...children) {
@@ -1001,7 +1064,7 @@ function PoolRow({ pool, snap }) {
           `${pool.retired} key(s) are out of rotation — the provider refused ${
             pool.retired === 1 ? 'it' : 'them'
           } as ${pool.retired === 1 ? 'a credential' : 'credentials'}. ` +
-            `Replace ${pool.retired === 1 ? 'it' : 'them'} in Settings and ${
+            `Replace ${pool.retired === 1 ? 'it' : 'them'} in Hermes\u2019 own provider/key settings and ${
               pool.retired === 1 ? 'it comes' : 'they come'
             } back on its own: ${(pool.retired_keys ?? []).join(', ')}`
         )
@@ -1147,14 +1210,27 @@ function SettingShell({ setting, control, error }) {
     },
     h(
       'div',
-      { className: 'flex items-start justify-between gap-4' },
+      { className: 'flex items-start justify-between gap-4', key: 'row' },
       h(
         'div',
-        { className: 'min-w-0' },
+        { className: 'min-w-0', key: 'text' },
         h(
           'p',
-          { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)' },
+          { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)', key: 'title' },
           setting.title,
+          IMPACT_TAG[setting.impact]
+            ? h(
+                'span',
+                {
+                  className: cn('rounded border px-1.5 py-0.5 text-[0.625rem]', IMPACT_TAG[setting.impact][1]),
+                  key: 'impact',
+                  title:
+                    'Power: how much this changes what you notice. High = every conversation, ' +
+                    'Medium = one situation, Low = fine-tuning.'
+                },
+                IMPACT_TAG[setting.impact][0]
+              )
+            : null,
           changed
             ? h(
                 'span',
@@ -1169,22 +1245,32 @@ function SettingShell({ setting, control, error }) {
         h(
           'p',
           {
-            className: 'mt-0.5 line-clamp-2 text-xs leading-relaxed text-(--ui-text-tertiary)',
-            title: setting.help
+            className: 'mt-0.5 text-xs leading-relaxed text-(--ui-text-tertiary)',
+            key: 'help',
+            title: setting.detail || setting.help
           },
           setting.help
         ),
-        h(
-          'p',
-          { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)' },
-          h('span', null, setting.key),
-          setting.env ? h('span', null, setting.env) : null,
-          h(Source, { setting })
-        )
+        // 1.8.2.7: whether *you* need this one, in one sentence.
+        setting.when
+          ? h('p', { className: 'mt-0.5 text-xs text-(--ui-text-secondary)', key: 'when' }, `When to change it: ${setting.when}`)
+          : null,
+        // 1.8.2.7: the key and the environment name are for people who edit files;
+        // they show with "Show advanced settings", or when the value was changed
+        // (so the source of a change is never hidden).
+        $advanced.get() || changed
+          ? h(
+              'p',
+              { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)', key: 'names' },
+              $advanced.get() ? h('span', { key: 'name' }, setting.key) : null,
+              $advanced.get() && setting.env ? h('span', { key: 'env' }, setting.env) : null,
+              h(Source, { key: 'source', setting })
+            )
+          : null
       ),
-      h('div', { className: 'flex shrink-0 items-center gap-2' }, control)
+      h('div', { className: 'flex shrink-0 items-center gap-2', key: 'control' }, control)
     ),
-    error ? h('p', { className: 'mt-2 text-xs text-destructive' }, error) : null
+    error ? h('p', { className: 'mt-2 text-xs text-destructive', key: 'error' }, error) : null
   )
 }
 
@@ -1250,6 +1336,7 @@ function FlagSetting({ setting, busy }) {
     }),
     h(ConfirmDialog, {
       confirmLabel: 'Turn it on',
+      key: 'confirm',
       description:
         `${setting.help} This is the switch people reach for when they suspect KAME of breaking something — ` +
         'it is reversible, and nothing is uninstalled.',
@@ -1373,6 +1460,139 @@ function NumberSetting({ setting, busy }) {
   })
 }
 
+/**
+ * A text setting: a choice (`hedge_mode`: off / adaptive / max) as one button
+ * per value, or free text (`key_quota_groups`, `pacing_rpm_overrides`,
+ * `key_region_overrides`) as a wide field.
+ *
+ * 1.8.2.7. The 1.8.2.3 panel referenced this component and never defined it,
+ * so the Settings tab threw a ReferenceError the moment it reached the first
+ * text setting — "Backups when slow", the one the owner wanted to be a single
+ * click. Found by rendering the panel with the real settings list instead of
+ * a six-row fixture. Same hold-what-was-sent rule as `NumberSetting`.
+ */
+const CHOICE_ORDER = { off: 0, adaptive: 1, max: 2 }
+
+function StringSetting({ setting, busy }) {
+  const [draft, setDraft] = useState(String(setting.value ?? ''))
+  const [dirty, setDirty] = useState(false)
+  const [sent, setSent] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const arrived = String(setting.value ?? '')
+
+    if (sent !== null) {
+      if (arrived === sent.value || Date.now() - sent.at > SETTLE_GRACE_MS) {
+        setSent(null)
+        setDraft(arrived)
+      }
+
+      return
+    }
+
+    if (!dirty) {
+      setDraft(arrived)
+    }
+  }, [dirty, sent, setting.value])
+
+  const send = value => {
+    setError('')
+    setDirty(false)
+    setSent({ at: Date.now(), value })
+    setDraft(value)
+    void request(value === '' ? 'reset' : 'set', setting.key, value === '' ? undefined : value)
+  }
+
+  const reset =
+    setting.source === 'default'
+      ? null
+      : h(
+          Button,
+          {
+            disabled: busy,
+            key: 'reset',
+            onClick: () => {
+              setDirty(false)
+              setError('')
+              setSent({ at: Date.now(), value: String(setting.default ?? '') })
+              setDraft(String(setting.default ?? ''))
+              void request('reset', setting.key)
+            },
+            size: 'sm',
+            variant: 'ghost'
+          },
+          'Reset'
+        )
+
+  if (Array.isArray(setting.choices) && setting.choices.length) {
+    return h(SettingShell, {
+      control: [
+        h(
+          'div',
+          { className: 'flex overflow-hidden rounded-md border border-(--ui-stroke-secondary)', key: 'choices' },
+          // From the least to the most extra requests, not alphabetical.
+          (Array.isArray(setting.choice_order) && setting.choice_order.length
+            ? [...setting.choice_order]
+            : [...setting.choices].sort((a, b) => (CHOICE_ORDER[a] ?? 9) - (CHOICE_ORDER[b] ?? 9)))
+            .map(choice =>
+            h(
+              'button',
+              {
+                className: cn(
+                  'px-3 py-1 text-xs transition-colors',
+                  draft === choice
+                    ? 'bg-(--ui-bg-quinary) text-(--ui-text-primary)'
+                    : 'text-(--ui-text-tertiary) hover:text-(--ui-text-primary)'
+                ),
+                disabled: busy,
+                key: choice,
+                onClick: () => (draft === choice ? undefined : send(choice)),
+                type: 'button'
+              },
+              setting.choice_labels?.[choice] ?? choice
+            )
+          )
+        ),
+        reset
+      ],
+      error,
+      setting
+    })
+  }
+
+  return h(SettingShell, {
+    control: [
+      h(Input, {
+        className: 'h-8 w-64',
+        disabled: busy,
+        key: 'input',
+        onChange: event => {
+          setDirty(true)
+          setError('')
+          setDraft(event.target.value)
+        },
+        onKeyDown: event => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            send(String(draft).trim())
+          }
+        },
+        placeholder: 'empty = not used',
+        value: draft
+      }),
+      h(
+        Button,
+        { disabled: busy || !dirty, key: 'save', onClick: () => send(String(draft).trim()), size: 'sm', variant: 'default' },
+        'Save'
+      ),
+      reset
+    ],
+    error,
+    setting
+  })
+}
+
 /** One card per shelf, in the order the Python half listed them.
  *
  *  The titles and the sentence under each one arrive in the snapshot rather
@@ -1382,7 +1602,40 @@ function NumberSetting({ setting, busy }) {
  *  group nobody claims still gets rendered, in a card of its own at the end —
  *  wrong shelf beats missing.
  */
-function settingCards({ busy, groups, settings }) {
+/** 1.8.2.7: order and wording of the per-setting weight tag (`settings.IMPACT`). */
+const IMPACT_RANK = { high: 0, medium: 1, low: 2, escape: 3, retired: 4 }
+const IMPACT_TAG = {
+  high: ['●●● High', 'border-amber-500/50 text-amber-500'],
+  medium: ['●●○ Medium', 'border-(--ui-stroke-secondary) text-(--ui-text-secondary)'],
+  low: ['●○○ Low', 'border-(--ui-stroke-tertiary) text-(--ui-text-quaternary)'],
+  escape: ['Off switch', 'border-destructive/40 text-destructive']
+}
+
+/** The escape hatches, folded until asked for: thirteen "turn X off" switches
+ *  read as a warning sign to someone who only came to change one number. A
+ *  shelf with one of them already changed opens by itself. */
+function EscapeHatches({ control, note, rows, title }) {
+  const anyChanged = rows.some(setting => setting.source !== 'default')
+  const [open, setOpen] = useState(anyChanged)
+  const shown = open || anyChanged
+
+  return Card(
+    { note, title },
+    h(
+      'button',
+      {
+        className: 'self-start text-xs text-(--ui-text-tertiary) underline decoration-dotted underline-offset-2',
+        key: 'toggle',
+        onClick: () => setOpen(!shown),
+        type: 'button'
+      },
+      shown ? 'Hide these switches' : `Show the ${rows.length} switches`
+    ),
+    shown ? rows.map(control) : null
+  )
+}
+
+function settingCards({ busy, fallback, groups, settings, showAdvanced }) {
   if (!settings.length) {
     return [
       Card(
@@ -1395,22 +1648,41 @@ function settingCards({ busy, groups, settings }) {
   const control = setting =>
     setting.kind === 'flag'
       ? h(FlagSetting, { busy, key: setting.key, setting })
-      : h(NumberSetting, { busy, key: setting.key, setting })
+      : setting.kind === 'string'
+        ? h(StringSetting, { busy, key: setting.key, setting })
+        : h(NumberSetting, { busy, key: setting.key, setting })
 
+  // 1.8.2.7: the few settings that change what every conversation feels like
+  // come first, together, on one card — thirty-three equal rows was a page
+  // nobody could read. Turning KAME off is an escape hatch, not a first
+  // choice, so it carries that weight (settings.impact) and stays folded.
+  const byWeight = (a, b) => (IMPACT_RANK[a.impact] ?? 9) - (IMPACT_RANK[b.impact] ?? 9)
   const claimed = new Set()
   const cards = []
+  // 1.8.2.7: the visible set IS the important set. A setting marked advanced
+  // stays out of sight until "Show advanced settings" is on, and a changed one
+  // is never hidden (the same rule the off switches follow).
+  const hidden = setting =>
+    (Boolean(setting.advanced) && setting.source === 'default' && !showAdvanced) ||
+    // 1.8.2.8: a number that belongs to one answer of a choice ("Set time")
+    // is shown only under that answer.
+    (setting.depends_on != null && setting.depends_on.now !== setting.depends_on.value)
   for (const group of groups) {
-    const rows = settings.filter(setting => setting.group === group.id)
-    if (!rows.length) continue
-    rows.forEach(setting => claimed.add(setting.key))
+    const all = settings.filter(setting => setting.group === group.id && !claimed.has(setting.key)).sort(byWeight)
+    all.forEach(setting => claimed.add(setting.key))
+    const rows = all.filter(setting => !hidden(setting))
+    if (!rows.length && !group.shows_fallback && !group.shows_keys) continue
     const changed = rows.filter(setting => setting.source !== 'default').length
+    const title = changed ? `${group.title} · ${changed} changed` : group.title
+    if (group.folded) {
+      cards.push(h(EscapeHatches, { control, key: group.id, note: group.note, rows, title }))
+      continue
+    }
     cards.push(
       Card(
-        {
-          key: group.id,
-          note: group.note,
-          title: changed ? `${group.title} · ${changed} changed` : group.title
-        },
+        { key: group.id, note: group.note, title },
+        group.shows_fallback ? h(FallbackList, { fallback, key: 'fallback' }) : null,
+        group.shows_keys ? h(KeysHowTo, { key: 'keys-how' }) : null,
         rows.map(control)
       )
     )
@@ -1428,15 +1700,95 @@ function settingCards({ busy, groups, settings }) {
   return cards
 }
 
+/**
+ * How to add keys (1.8.2.7). The panel cannot take a key itself - keys belong in
+ * Hermes' own store - so it shows the one command that adds many at once.
+ */
+function KeysHowTo() {
+  const line = (text, key) => h('li', { className: 'text-sm text-(--ui-text-secondary)', key }, text)
+  const code = text => h('code', { className: 'rounded bg-(--ui-bg-quinary) px-1 font-mono text-xs', key: text }, text)
+
+  return h(
+    'div',
+    { className: 'mb-2 flex flex-col gap-1 rounded-md border border-(--ui-stroke-tertiary) p-3', key: 'keys-how' },
+    h('p', { className: 'text-sm text-(--ui-text-primary)', key: 'title' }, 'Add your keys in any Hermes chat:'),
+    h(
+      'ol',
+      { className: 'mt-1 flex list-decimal flex-col gap-0.5 pl-5', key: 'steps' },
+      line(['Type ', code('/kame-keys add gemini KEY1,KEY2,KEY3'), ' (any provider name instead of gemini).'], 'add'),
+      line(['Type ', code('/kame-keys'), ' to see every key and how it is doing.'], 'list'),
+      line(['Keys pasted into .env as one comma list? Type ', code('/kame-keys split gemini'), ' once.'], 'split')
+    ),
+    h(
+      'p',
+      { className: 'mt-1 text-xs text-(--ui-text-quaternary)', key: 'where' },
+      'Hermes keeps the keys (auth.json, backed up before every change). The Overview tab shows how each one is doing.'
+    )
+  )
+}
+
+/**
+ * Hermes' own fallback models, read-only (1.8.2.7), drawn inside the "If your
+ * keys run out" card. KAME never edits the list - `hermes fallback add` does -
+ * and never picks a model itself; this says what Hermes would try next, how each
+ * model's keys are doing, and whether KAME will hand a call over instead of waiting.
+ */
+function FallbackList({ fallback }) {
+  if (!fallback || fallback.state === 'unknown') return null
+  const entries = fallback.entries ?? []
+
+  return h(
+    'div',
+    { className: 'mb-2 flex flex-col gap-1 rounded-md border border-(--ui-stroke-tertiary) p-3', key: 'fallback' },
+    h('p', { className: 'text-sm text-(--ui-text-primary)', key: 'why' }, fallback.why),
+    fallback.warning
+      ? h('p', { className: 'text-sm text-amber-500', key: 'warning' }, fallback.warning)
+      : null,
+    entries.length
+      ? h(
+          'ol',
+          { className: 'mt-1 flex flex-col gap-0.5 text-sm', key: 'list' },
+          entries.map((entry, index) =>
+            h(
+              'li',
+              { className: 'flex flex-wrap items-baseline gap-2', key: `${entry.role}-${entry.identity}` },
+              h('span', { className: 'text-(--ui-text-quaternary)', key: 'n' }, `${index + 1}.`),
+              h('span', { className: 'font-mono', key: 'id' }, entry.identity),
+              entry.role === 'primary' ? h('span', { className: 'text-xs text-(--ui-text-tertiary)', key: 'role' }, '(your model)') : null,
+              !entry.kame_serves
+                ? h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'state' }, 'KAME has not served this model yet')
+                : h(
+                    'span',
+                    { className: 'text-xs text-(--ui-text-secondary)', key: 'state' },
+                    entry.healthy === entry.keys
+                      ? `${entry.keys} keys ready`
+                      : entry.healthy > 0
+                        ? `${entry.healthy} of ${entry.keys} keys ready`
+                        : `all ${entry.keys} keys resting${entry.soonest_s != null ? `, back in ${duration(entry.soonest_s)}` : ''}`
+                  )
+            )
+          )
+        )
+      : null,
+    h(
+      'p',
+      { className: 'mt-1 text-xs text-(--ui-text-quaternary)', key: 'how' },
+      'Change this list in Hermes: hermes fallback add / remove. Background jobs never switch model.'
+    )
+  )
+}
+
 function SettingsPage({ snap }) {
   const pending = useValue($pending)
   const notice = useValue($notice)
   const [confirming, setConfirming] = useState('')
 
+  const showAdvanced = useValue($advanced)
   const settings = snap.settings ?? []
   const changedCount = settings.filter(setting => setting.source !== 'default').length
+  const advancedCount = settings.filter(setting => setting.advanced && setting.source === 'default').length
   const busy = Boolean(pending)
-  const writable = Boolean(window.hermesDesktop?.writeTextFile)
+  const writable = Boolean(rest)
   const stale = snap.settings_pending_restart ?? []
 
   // Every child below carries a key, and that is the whole of the 1.2.3 fix
@@ -1505,13 +1857,9 @@ function SettingsPage({ snap }) {
       {
         key: 'toolbar',
         note:
-          'KAME works with none of these touched. A change takes effect on the next call, in every ' +
-          "conversation this Hermes is serving, and is written to Hermes' own .env so it survives a " +
-          'restart — only KAME_ lines, the rest of that file is left exactly as it is. Nothing on this ' +
-          'page can reach a key: KAME never reads, writes or deletes a credential.',
-        title: changedCount
-          ? `Settings · ${changedCount} of ${settings.length} changed from default`
-          : `Settings · all ${settings.length} at their defaults`
+          'Everything works without changing anything here. Changes apply on the next message and ' +
+          'survive restarts.',
+        title: changedCount ? `KAME settings · ${changedCount} changed` : 'KAME settings · all at their defaults'
       },
       h(
         'div',
@@ -1519,6 +1867,7 @@ function SettingsPage({ snap }) {
         h(
           Tip,
           {
+            key: 'refresh',
             label:
               "Reads Hermes' .env again and rebuilds this page on the spot. Use it after editing that " +
               'file by hand, or after adding a key somewhere else, instead of restarting.'
@@ -1531,23 +1880,36 @@ function SettingsPage({ snap }) {
         ),
         h(
           Tip,
-          { label: 'Removes every KAME_ line from the .env and forgets the environment value, so every setting falls back to its built-in default.' },
+          { key: 'reset', label: 'Removes every KAME_ line from the .env and forgets the environment value, so every setting falls back to its built-in default.' },
           h(Button, { disabled: busy || !writable, onClick: () => setConfirming('reset_all'), size: 'sm', variant: 'outline' }, 'Reset to defaults')
         ),
         h(
           Tip,
-          { label: 'Only clears rotation and quarantine; it does not delete any key.' },
+          { key: 'clear-pool', label: 'Only clears rotation and quarantine; it does not delete any key.' },
           h(Button, { disabled: busy || !writable, onClick: () => setConfirming('clear_pool'), size: 'sm', variant: 'outline' }, 'Clear pool')
         ),
         h(
           Tip,
-          { label: 'Empties the event list on the Events page. Nothing else changes.' },
+          { key: 'clear-events', label: 'Empties the event list on the Events page. Nothing else changes.' },
           h(Button, { disabled: busy || !writable, onClick: () => void request('clear_events'), size: 'sm', variant: 'ghost' }, 'Clear events')
-        )
+        ),
+        advancedCount || showAdvanced
+          ? h(
+              Tip,
+              { key: 'advanced', label: 'Settings that are already tuned or only one unusual setup needs. Hidden unless you changed them.' },
+              h(
+                Button,
+                { onClick: () => $advanced.set(!showAdvanced), size: 'sm', variant: 'ghost' },
+                showAdvanced ? 'Hide advanced settings' : `Show advanced settings (${advancedCount})`
+              )
+            )
+          : null
       )
     ),
 
-    ...settingCards({ busy, groups: snap.setting_groups ?? [], settings }),
+    ...settingCards({ busy, fallback: snap.fallback, groups: snap.setting_groups ?? [], settings, showAdvanced }),
+
+    h(MadeBy, { key: 'made-by' }),
 
     h(ConfirmDialog, {
       confirmLabel: 'Reset everything',
@@ -1580,18 +1942,22 @@ function SettingsPage({ snap }) {
 
 /** How each kind of event is said, and how loudly. */
 const EVENT_LABELS = {
-  denied_model: ['Not this model', 'warn'],
-  invalid_key: ['Invalid key', 'bad'],
-  quarantine: ['Quarantined', 'bad'],
-  recovery: ['Answered', 'good'],
-  rotation: ['Rested', 'plain'],
-  setting: ['You changed a setting', 'good'],
-  stitch: ['Continued', 'good'],
-  storm: ['Outage', 'warn'],
+  answered: ['Answered', 'good'],
+  denied_model: ['Not for this model', 'warn'],
+  gave_up: ['Stopped waiting', 'bad'],
+  invalid_key: ['Bad key', 'bad'],
+  quarantine: ['Key benched', 'bad'],
+  recovery: ['Answered on retry', 'good'],
+  rotation: ['Key rests', 'plain'],
+  sent: ['Asked', 'plain'],
+  setting: ['Setting changed', 'good'],
+  stitch: ['Answer continued', 'good'],
+  storm: ['Provider outage', 'warn'],
   stream_drop: ['Answer cut', 'warn'],
-  surfaced: ['Handed over', 'bad'],
-  switch: ['Took over', 'good'],
-  wait: ['Waiting', 'warn']
+  handover: ['Fallback', 'warn'],
+  surfaced: ['Passed to Hermes', 'bad'],
+  switch: ['Next key', 'good'],
+  wait: ['All keys resting', 'warn']
 }
 
 /**
@@ -1602,6 +1968,9 @@ const EVENT_LABELS = {
  * row's tooltip and as the legend under the filters.
  */
 const EVENT_MEANING = {
+  answered: 'The key this call went out on answered, first time. The time is the whole call; the reason says how long the first word took.',
+  gave_up: 'Every key stayed resting past your \u201cStop waiting\u201d time, so KAME stopped waiting and handed Hermes the original refusal.',
+  sent: 'A request went out on this key. Every request leaves one of these, so a slow answer is visible while it is still coming.',
   denied_model: 'The provider refused this key for THIS model only — a plan that does not include it, or an API not switched on. The key is fine everywhere else, and replacing it would change nothing.',
   invalid_key: 'The provider said this is not a valid credential. Replace it — waiting will not repair one.',
   quarantine: 'This key was rested for a minute or more before it will be offered again.',
@@ -1611,8 +1980,9 @@ const EVENT_MEANING = {
   stitch: 'An answer that was cut short was continued on another key and joined back up.',
   storm: 'A lot of keys refused at once, which is usually the provider rather than your keys.',
   stream_drop: 'The provider stopped in the middle of an answer.',
-  surfaced: 'KAME ran out of things to try, so the error was handed to you rather than hidden.',
-  switch: 'KAME moved the call to this key.',
+  handover: 'Your model could not answer now \u2014 its provider said it is busy (overloaded, or timing out on several keys), it was far slower than usual, or every key was resting \u2014 so this reply fell back to the next model of your fallback list. The next reply starts on your best model again.',
+  surfaced: 'KAME could not fix this one, so Hermes got the error and decides what to do next.',
+  switch: 'The previous key did not answer, so KAME asked this one instead \u2014 or a slow reply got a backup key racing it.',
   wait: 'Every key was resting, so KAME waited instead of spending a request it knew would be refused.'
 }
 
@@ -1642,6 +2012,37 @@ const REASON_WORDS = {
 }
 
 /**
+ * 1.8.2.8. What KAME did next, said after the reason with an arrow, so every row
+ * reads "what happened \u2192 what happened next" without a hover. Durations stay
+ * in the muted tail. Empty where the reason already says it all.
+ */
+const EVENT_NEXT = {
+  answered: '',
+  denied_model: 'this key skips this model and keeps working on your others',
+  gave_up: 'Hermes got the original error',
+  invalid_key: 'out of rotation until you replace it (/kame-keys)',
+  quarantine: 'the key sits out, the others carry on',
+  recovery: '',
+  rotation: 'the next request uses another key',
+  sent: 'waiting for the first word',
+  setting: '',
+  stitch: 'shown to you as one answer',
+  storm: 'keys keep rotating; repeats are counted, not listed',
+  stream_drop: 'continuing on another key from where it stopped',
+  handover: 'the next model of your list answers this reply',
+  surfaced: 'Hermes decides what to do next',
+  switch: '',
+  wait: 'no request is sent until a key is back'
+}
+
+function eventSentence(event) {
+  const reason = reasonText(event)
+  const next = EVENT_NEXT[event.kind] ?? ''
+  if (!next) return reason
+  return reason ? `${reason} \u2192 ${next}` : next
+}
+
+/**
  * The kinds that are KAME working, rather than a provider failing.
  *
  * Mirrors `core.events.GOOD_KINDS`, and the mirror is checked by a test. The
@@ -1649,7 +2050,7 @@ const REASON_WORDS = {
  * only ever recorded failures, so a rotation engine doing its job produced a
  * screen that read like a fault report.
  */
-const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait'])
+const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait', 'setting', 'sent', 'answered', 'handover'])
 
 /** The three views. `id` is what the filter chip stores. */
 const EVENT_VIEWS = [
@@ -1723,6 +2124,54 @@ const SIZED_BY_LABELS = {
   text: ['message', 'weak'],
   kame: ['ours', 'weak'],
   host: ['host', 'weak']
+}
+
+/**
+ * 1.8.2.6. The sentence for a row, with two cases the bare reason told wrong.
+ *
+ * A 400 with nothing else recognised read "an error nothing recognised", and
+ * on 2026-10-13 that was Gemini saying the request itself had an invalid
+ * argument — not a key problem, and nothing another key would change. And a
+ * bare 429 (no quota number, the 1–64 s ladder) read "a rate limit", which a
+ * person watching fourteen keys reads as "my quota is gone"; on the same day
+ * it came with 503s and timeouts from a busy Google, with every quota intact.
+ */
+function reasonText(event) {
+  const reason = event.reason ?? ''
+  if (event.kind === 'surfaced' && reason === 'timeout') {
+    return 'the provider timed out twice in a row \u2014 Hermes takes over the retry'
+  }
+  if (event.code === 400 && (!reason || reason === 'other')) {
+    return 'the provider rejected the request itself — another key would get the same answer'
+  }
+  if (String(event.sized_by ?? '').startsWith('backoff') && (reason === 'rate_limit' || reason === 'per_minute')) {
+    return 'a rate limit with no quota number — usually the provider is busy, not your quota'
+  }
+  return REASON_WORDS[event.reason] ?? event.reason ?? EVENT_LABELS[event.kind]?.[0] ?? ''
+}
+
+/** `title_generation` -> `title generation`: Hermes' task ids, readable. */
+/** Hermes' auxiliary slot ids (config_defaults `auxiliary`) in a person's words. */
+const TASK_WORDS = {
+  title_generation: 'Naming this chat',
+  compression: 'Shrinking a long conversation',
+  vision: 'Looking at an image',
+  web_extract: 'Summarising a web page',
+  approval: 'Checking a command before it runs',
+  mcp: 'Choosing a tool',
+  skills_hub: 'Searching skills',
+  session_search: 'Searching past chats',
+  flush_memories: 'Saving memories',
+  review: 'Reviewing a result',
+  memory_query_rewrite: 'Looking up memories',
+  tts_audio_tags: 'Preparing speech',
+  voice_chat: 'Voice chat'
+}
+
+function taskLabel(task) {
+  const id = String(task || 'other')
+
+  return TASK_WORDS[id] ?? id.replace(/_/g, ' ')
 }
 
 function sizedByLabel(source) {
@@ -1819,8 +2268,8 @@ Click to see what the provider actually said.` : meaning,
       // muted tail, right of the sentence and truncated before it.
       h(
         'span',
-        { className: 'min-w-0 flex-1 truncate text-xs text-(--ui-text-secondary)', key: 'reason' },
-        REASON_WORDS[event.reason] ?? event.reason ?? EVENT_LABELS[event.kind]?.[0] ?? ''
+        { className: 'min-w-0 flex-1 break-words text-xs text-(--ui-text-secondary)', key: 'reason' },
+        event.task ? `${taskLabel(event.task)} · ${eventSentence(event)}` : eventSentence(event)
       ),
       h(
         'span',
@@ -2091,6 +2540,157 @@ function Tally({ count, label, tone, active, onClick, title }) {
  * three tallies that are also the filter, a legend, and rows whose left rail
  * says at a glance which half of the story they belong to.
  */
+// -- secondary events (1.8.2.3) -------------------------------------------
+
+/** The auxiliary tab: title, vision, compression and every other side
+ *  channel, kept apart from the chat model's rotations. Same row shape as
+ *  the Main tab, plus the task column that names which job sent the call. */
+/** 1.8.2.6. How long the list may grow before it scrolls inside itself. The
+ *  page used to stretch with every row, pushing everything under it away. */
+const EVENT_LIST_CLASS = 'mt-3 flex max-h-[60vh] flex-col overflow-y-auto overflow-x-hidden pr-1'
+
+/** Calls on `channel` waiting at least this long get a "still waiting" line. */
+const STILL_WAITING_AFTER_S = 60
+
+/**
+ * 1.8.2.6. One sentence per call that has been running for a while:
+ * "title generation · gemini-flash-lite-latest — no answer for 57m, 294
+ * refusals so far; last: the provider had a server error". On 2026-10-13 a
+ * background call waited 57 minutes through a Google overload and the only
+ * trace was rows scrolling past one by one. It keeps waiting — that is the
+ * owner's rule — the panel just says so.
+ */
+function StillWaiting({ snap, channel }) {
+  const rows = (snap.inflight ?? []).filter(
+    row => (row.channel || 'main') === channel && Number(row.waiting_s ?? 0) >= STILL_WAITING_AFTER_S
+  )
+  if (!rows.length) return null
+
+  return h(
+    'div',
+    { className: 'mt-3 flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2', key: 'waiting' },
+    rows.map((row, index) =>
+      h(
+        'p',
+        { className: 'text-xs text-(--ui-text-secondary)', key: index },
+        h('span', { className: 'text-amber-500', key: 'w' }, 'Still waiting '),
+        `${channel === 'main' ? 'chat' : taskLabel(row.task)} · ${modelOnly(row.identity)} — no answer for ${duration(row.waiting_s)}` +
+          (row.failures ? `, ${count(row.failures, 'refusal', 'refusals')} so far` : '') +
+          (row.reason ? `; last: ${REASON_WORDS[row.reason] ?? row.reason}` : '') +
+          '. KAME keeps trying, as configured.'
+      )
+    )
+  )
+}
+
+function SecondaryPage({ snap }) {
+  const now = useValue($now)
+  const [task, setTask] = useState('all')
+  const events = snap.secondary_events ?? []
+  const byTask = {}
+  for (const event of events) {
+    const name = event.task || 'other'
+    byTask[name] = (byTask[name] || 0) + 1
+  }
+  const tasks = Object.entries(byTask).sort((a, b) => b[1] - a[1])
+  // A filter whose task scrolled out of the buffer falls back to everything
+  // rather than to an empty list that looks like "nothing happened".
+  const active = task !== 'all' && byTask[task] ? task : 'all'
+  const shown = active === 'all' ? events : events.filter(event => (event.task || 'other') === active)
+
+  return h(
+    'div',
+    { className: 'flex flex-col gap-4' },
+    Card(
+      {
+        key: 'secondary',
+        note:
+          'The background calls Hermes makes on its own — titles, compression, vision, web summaries, ' +
+          'approvals and the rest — kept apart from your conversation. They share the same keys and the ' +
+          'same pools as the chat (one pool per provider and model), so this is only a separate view, ' +
+          'never a separate rotation. Click a task to see only its calls.',
+        title: 'Auxiliary model calls'
+      },
+      tasks.length
+        ? h(
+            'div',
+            { className: 'flex flex-wrap items-stretch gap-1', key: 'tasks' },
+            h(Tally, {
+              active: active === 'all',
+              count: events.length,
+              key: 'all',
+              label: 'all tasks',
+              onClick: () => setTask('all'),
+              title: 'Every background call in the buffer, newest first.',
+              tone: 'plain'
+            }),
+            tasks.map(([name, n]) =>
+              h(Tally, {
+                active: active === name,
+                count: n,
+                key: name,
+                label: taskLabel(name),
+                onClick: () => setTask(name),
+                title: `${count(n, 'row', 'rows')} from ${taskLabel(name)} — click to show only these`,
+                tone: 'plain'
+              })
+            )
+          )
+        : null,
+      h(StillWaiting, { channel: 'secondary', key: 'waiting', snap }),
+      shown.length
+        ? h(
+            'div',
+            { className: EVENT_LIST_CLASS, key: 'rows' },
+            shown.map((event, index) => h(EventRow, { event, key: event.seq ?? index, now }))
+          )
+        : h(
+            'p',
+            { className: 'mt-3 text-sm text-(--ui-text-tertiary)', key: 'empty' },
+            'No auxiliary model calls yet. Titles, compression, vision and the other auxiliary tasks appear here as Hermes runs them.'
+          )
+    )
+  )
+}
+
+
+/**
+ * 1.8.2.8 (decisions/0028 D6). Which model wrote each of the last replies, and
+ * how long it took - the answer to "who answered me?" without reading Events,
+ * where every attempt of every step is a row of its own.
+ */
+function Replies({ snap }) {
+  const now = useValue($now)
+  const rows = snap.replies ?? []
+  if (!rows.length) return null
+  const secs = value => (value == null ? '-' : value < 60 ? `${Number(value).toFixed(1)} s` : duration(value))
+
+  return Card(
+    {
+      key: 'replies',
+      note:
+        'The model that wrote each of the last replies of your conversation (each step of a reply that uses ' +
+        'tools is a reply of its own), the time to its first word and in total. A model from your fallback ' +
+        'list says which model it answered for.',
+      title: 'Last replies'
+    },
+    h(
+      'div',
+      { className: 'flex flex-col gap-0.5 text-sm', key: 'rows' },
+      rows.map((row, index) =>
+        h(
+          'p',
+          { className: 'flex flex-wrap gap-x-2 text-(--ui-text-secondary)', key: index },
+          h('span', { className: 'font-mono text-(--ui-text-primary)', key: 'm' }, row.model),
+          row.for ? h('span', { className: 'text-amber-500', key: 'f' }, `for ${row.for}`) : null,
+          h('span', { key: 't' }, `first word ${secs(row.first_s)} · ${secs(row.total_s)} total`),
+          h('span', { className: 'text-(--ui-text-quaternary)', key: 'a' }, ago((now - row.at * 1000) / 1000))
+        )
+      )
+    )
+  )
+}
+
 function EventsPage({ snap }) {
   const now = useValue($now)
   const [view, setView] = useState('all')
@@ -2110,11 +2710,14 @@ function EventsPage({ snap }) {
   return h(
     'div',
     { className: 'flex flex-col gap-4' },
+    h(Replies, { key: 'replies', snap }),
     Card(
       {
+        key: 'events',
         note:
-          'Every decision this Hermes process made about your keys, newest first — the failures and the ' +
-          'rotations that answered them. Keys appear as fingerprints: a hash, never a prefix of the key ' +
+          'Every call your conversation sent and every decision it made about your keys, newest first ' +
+          '(Hermes’ auxiliary models — titles, compression, vision — are on the Background jobs tab) — ' +
+          'each answer, the failures and the rotations that answered them. Keys appear as fingerprints: a hash, never a prefix of the key ' +
           'itself. Provider error text is scrubbed before it is written down, because a provider can quote ' +
           'your own prompt back inside an error.',
         title: 'Events'
@@ -2148,12 +2751,26 @@ function EventsPage({ snap }) {
           onClick: () => setView('wrong'),
           title: 'What the providers said. A refusal here is not a fault in KAME; it is what KAME is for.',
           tone: bad ? 'bad' : 'plain'
+        }),
+        // 1.8.2.7: Hermes' background jobs are one click away, never mixed
+        // into this list. Same keys, same pools — a separate view only.
+        h(Tally, {
+          count: (snap.secondary_events ?? []).length,
+          key: 'background',
+          label: 'auxiliary models →',
+          onClick: () => {
+            $inspect.set(null)
+            $tab.set('secondary')
+          },
+          title: 'Titles, compression, vision and the other jobs Hermes runs on its own. Opens the Auxiliary models tab, where you can pick one task.',
+          tone: 'plain'
         })
       ),
+      h(StillWaiting, { channel: 'main', key: 'waiting', snap }),
       shown.length
         ? h(
             'div',
-            { className: 'mt-3 flex flex-col', key: 'rows' },
+            { className: EVENT_LIST_CLASS, key: 'rows' },
             shown.map(event => h(EventRow, { event, key: event.seq, now }))
           )
         : h(
@@ -2172,7 +2789,7 @@ function EventsPage({ snap }) {
       h(Heartbeat, { key: 'heartbeat', now, snap })
     ),
     Card(
-      { key: 'legend', note: 'Nine words, and what each one means.', title: 'Reading this list' },
+      { key: 'legend', note: 'Each word on this list, and what it means.', title: 'Reading this list' },
       h(
         'div',
         { className: 'grid gap-x-6 gap-y-2 sm:grid-cols-2' },
@@ -2646,7 +3263,16 @@ function KamePage() {
         id: 'events',
         key: 'events',
         label: `Events${snap.events?.length ? ` (${snap.events.length})` : ''}`
-      })
+      }),
+      h(Tab, {
+        active: tab === 'secondary',
+        id: 'secondary',
+        key: 'secondary',
+        label: `Background jobs${snap.secondary_events?.length ? ` (${snap.secondary_events.length})` : ''}`
+      }),
+      tab === 'secondary'
+        ? h('span', { className: 'muted', key: 'buildline' }, ` · build ${snap.build_line || ''}`)
+        : null
     ),
 
     !snap.installed &&
@@ -2669,7 +3295,7 @@ function KamePage() {
           `${retired === 1 ? 'it' : 'them'} as ${retired === 1 ? 'a credential' : 'credentials'}, ` +
           `so KAME no longer offers ${retired === 1 ? 'it' : 'them'} and nothing is being spent on ` +
           `${retired === 1 ? 'it' : 'them'}. Nothing was deleted: paste the replacement over ` +
-          `${retired === 1 ? 'it' : 'them'} in Settings and ${retired === 1 ? 'it comes' : 'they come'} ` +
+          `${retired === 1 ? 'it' : 'them'} in Hermes\u2019 own provider/key settings and ${retired === 1 ? 'it comes' : 'they come'} ` +
           'back by itself. Your other keys are carrying every turn meanwhile.',
         'bad',
         'retired'
@@ -2690,6 +3316,8 @@ function KamePage() {
       ? h(SettingsPage, { key: 'body', snap })
       : tab === 'events'
         ? h(EventsPage, { key: 'body', snap })
+        : tab === 'secondary'
+        ? h(SecondaryPage, { key: 'body', snap })
         : h(
             'div',
             { className: 'flex flex-col gap-4', key: 'body' },
@@ -2727,6 +3355,12 @@ function KamePage() {
               Field('Rotations', counters.rotations ?? 0),
               Field('Recovered', counters.recovered ?? 0, 'answered after a rotation'),
               Field('Surfaced', counters.surfaced ?? 0, 'errors KAME let through'),
+              counters.handed_over
+                ? Field('Fallbacks', counters.handed_over, 'replies your fallback list answered: the model was busy, resting or too slow')
+                : null,
+              counters.probe_bursts
+                ? Field('Keys asked together', counters.probe_bursts, 'quota ran out, so several keys were tried at once')
+                : null,
               counters.waits ? Field('Waited', duration(counters.waited_s), `across ${counters.waits} pause(s)`) : null,
               counters.stream_drops
                 ? Field('Answers cut', counters.stream_drops, 'the provider stopped mid-sentence')
@@ -2773,9 +3407,92 @@ function KamePage() {
         'p',
         { className: 'mt-1', key: 'commands' },
         '/kame for the same picture in the chat, /kame-quota per key and model, /kame-keys to add keys in bulk'
-      )
+      ),
+      h(MadeBy, { compact: true, key: 'made-by' })
     )
   )
+}
+
+// -- who made this (1.8.2.7) --------------------------------------------------
+
+/** The author and the project's home. Written into the panel itself so the
+ *  credit travels with every copy of the plugin. */
+const AUTHOR = 'KAME'
+const AUTHOR_GITHUB = 'https://github.com/Kame696'
+const REPO_URL = 'https://github.com/Kame696/kame-api-rotation-for-hermes'
+
+/** Opens a link with the system browser through Hermes' own door
+ *  (`ctx.os.openExternal`). Without that door (an older Desktop) the address
+ *  is shown so it can be copied — the panel never opens anything by itself. */
+function openLink(url) {
+  if (os && typeof os.openExternal === 'function') {
+    void os.openExternal(url).then(ok => {
+      if (!ok) $notice.set({ detail: `Open this address in your browser: ${url}`, ok: true })
+    })
+    return
+  }
+  $notice.set({ detail: `Open this address in your browser: ${url}`, ok: true })
+}
+
+function MadeBy({ compact }) {
+  const link = (label, url, key) =>
+    h(
+      'button',
+      {
+        className: 'text-(--ui-text-secondary) underline decoration-dotted underline-offset-2 hover:text-(--ui-text-primary)',
+        key,
+        onClick: () => openLink(url),
+        title: url,
+        type: 'button'
+      },
+      label
+    )
+
+  if (compact) {
+    return h(
+      'p',
+      { className: 'mt-1 flex flex-wrap items-center gap-1' },
+      `KAME API Rotation is made by ${AUTHOR} · `,
+      link('github.com/Kame696', AUTHOR_GITHUB, 'profile'),
+      ' · ',
+      link('⭐ Star it on GitHub', REPO_URL, 'star')
+    )
+  }
+
+  return Card(
+    {
+      key: 'made-by',
+      note:
+        `KAME API Rotation is designed and built by ${AUTHOR}. Free and MIT-licensed. If it saves your ` +
+        'conversations from rate limits, a star on GitHub helps other people find it — it costs nothing.',
+      title: 'Made by KAME'
+    },
+    h(
+      'div',
+      { className: 'flex flex-wrap gap-2', key: 'links' },
+      h(Button, { key: 'star', onClick: () => openLink(REPO_URL), size: 'sm', variant: 'outline' }, '⭐ Star on GitHub'),
+      h(Button, { key: 'profile', onClick: () => openLink(AUTHOR_GITHUB), size: 'sm', variant: 'ghost' }, 'KAME on GitHub (Kame696)'),
+      h(Button, { key: 'issues', onClick: () => openLink(`${REPO_URL}/issues`), size: 'sm', variant: 'ghost' }, 'Report a problem')
+    )
+  )
+}
+
+// -- settings, under Settings ▸ Plugins (1.8.2.0) ---------------------------
+
+/** The same form, also under Settings ▸ Plugins (1.8.2.0).
+ *
+ *  Hermes keeps plugin preferences under Settings ▸ Plugins, so the form is
+ *  registered there too. 1.8.2.1 keeps it on the panel's own Settings tab as
+ *  well: the owner edits from the panel, and moving the form away was a loss
+ *  of the 1.1.1 editable panel. Both are the same component, sending the same
+ *  control requests. */
+function KameSettingsEntry() {
+  const snap = useValue($snapshot)
+  const problem = useValue($problem)
+
+  return snap
+    ? h(SettingsPage, { snap })
+    : h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, problem || 'Waiting for the first snapshot…')
 }
 
 // -- registration -----------------------------------------------------------
@@ -2785,9 +3502,41 @@ export default {
   name: PRODUCT,
   description: 'Live key-pool health, rotation and recovery countdowns — a status-bar chip and a full panel.',
   register(ctx) {
+    rest = typeof ctx.rest === 'function' ? (path, opts) => ctx.rest(path, opts) : null
+    os = ctx.os && typeof ctx.os === 'object' ? ctx.os : null
+    ctx.onDispose(() => {
+      rest = null
+      os = null
+    })
     ctx.onDispose(startReading())
 
+    const settingsPage = {
+      icon: 'sync',
+      id: 'settings',
+      order: 0,
+      render: () => h(KameSettingsEntry, null),
+      title: PRODUCT
+    }
+
+    if (typeof ctx.registerSettingsPage === 'function') {
+      ctx.registerSettingsPage(settingsPage)
+    } else if (sdk.SETTINGS_PLUGINS_AREA) {
+      ctx.register({ area: sdk.SETTINGS_PLUGINS_AREA, data: { icon: 'sync' }, id: 'settings', render: settingsPage.render, title: PRODUCT })
+    }
+
+    const composerTop = sdk.COMPOSER_AREAS?.top
+
     ctx.registerMany([
+      ...(composerTop
+        ? [
+            {
+              id: 'composer-line',
+              area: composerTop,
+              order: 90,
+              render: () => h(KameComposerLine, null)
+            }
+          ]
+        : []),
       {
         id: 'chip',
         area: STATUSBAR_AREAS.right,

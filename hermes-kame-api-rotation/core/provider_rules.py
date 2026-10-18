@@ -39,7 +39,7 @@ SCOPED_RULES = (
          why="Google Interactions explicitly names a daily allowance")},
     {"surface": "anthropic_messages", "path": ("error", "details", "error_code"),
      "value": "enforced_spend_limit_reached",
-     "source": "https://platform.claude.com/docs/en/api/rate-limits",
+     "source": "https://docs.anthropic.com/en/api/rate-limits",
      "reading": catalog.Reading(catalog.THROTTLE, window=QuotaWindow.PER_MONTH,
          scope=QuotaScope.ACCOUNT, why="Messages API names the organization monthly spend cap")},
 )

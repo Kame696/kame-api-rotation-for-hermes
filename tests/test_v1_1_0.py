@@ -54,7 +54,10 @@ carousel = importlib.import_module(f"{PACKAGE}.core.carousel")
 core = importlib.import_module(f"{PACKAGE}.core")
 desktop_ui = importlib.import_module(f"{PACKAGE}.desktop_ui")
 dispatch_binding = importlib.import_module(f"{PACKAGE}.dispatch_binding")
-gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
+try:
+    gemini_slots = importlib.import_module(f"{PACKAGE}.gemini_slots")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    gemini_slots = None
 menu = importlib.import_module(f"{PACKAGE}.menu")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 state = importlib.import_module(f"{PACKAGE}.state")
@@ -290,7 +293,7 @@ class TestTheSnapshotIsTheDoorToARealPanel:
 
     def test_every_setting_is_in_the_document(self, home):
         keys = {row["key"] for row in state.snapshot(None)["settings"]}
-        assert keys == set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS)
+        assert keys == (set(settings.ALL_FLAGS) | set(settings.ALL_NUMBERS) | set(settings.ALL_STRINGS)) - settings.HIDDEN
 
     def test_a_setting_carries_its_provenance(self, home, monkeypatch):
         monkeypatch.setenv("KAME_LIVE_STATUS_DISABLED", "1")
@@ -490,11 +493,16 @@ class TestTheDesktopHalfHasACheckableContract:
         assert match and int(match.group(1)) == state.SCHEMA
 
     def test_it_looks_where_the_python_half_writes(self):
-        # 1.1.1 builds the directory once and joins the file names onto it,
-        # because it now reads one file and writes another in the same place.
+        # 1.8.2.0: the panel no longer joins paths itself — it asks its own
+        # backend route (``ctx.rest('/state')``), and the route reads the file
+        # the Python half writes, in the profile the panel is looking at.
         source = self._source()
-        assert "plugin-data/${PLUGIN_ID}" in source
-        assert "/state.json" in source
+        assert "rest('/state')" in source
+        assert "rest('/control'" in source
+        assert "hermesDesktop.readFileText(" not in source
+        assert "hermesDesktop.writeTextFile(" not in source
+        route = (Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation" / "dashboard" / "plugin_api.py").read_text(encoding="utf-8")
+        assert '"plugin-data" / PLUGIN_ID' in route and '"state.json"' in route and '"control.json"' in route
         # And the Python half must agree about that shape.
         assert state.state_path() is None or state.state_path().parent.name == state.PLUGIN_ID
 

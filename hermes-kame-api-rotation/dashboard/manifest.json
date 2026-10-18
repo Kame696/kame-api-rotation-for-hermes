@@ -1,0 +1,8 @@
+{
+  "name": "hermes-kame-api-rotation",
+  "label": "KAME API Rotation",
+  "description": "Backend routes for the KAME Desktop panel: the pool snapshot and its control requests.",
+  "tab": { "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

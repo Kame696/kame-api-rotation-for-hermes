@@ -51,50 +51,46 @@ def guidance(adapter, httpx, evidence, host_text):
     assert block.strip() not in clean.message, "host advice leaked into provider evidence"
 
 
-def factory(adapter, httpx, qid, evidence, classifier):
-    """Drive actual client entrypoints, including an unread streaming body."""
-    original = adapter.gemini_http_error
-    assert qid.install(), "quota-id binding did not install"
-    try:
-        for stream, window, label in [(False, "per_day", "PerDay"),
-                                       (True, "per_day", "PerDay"),
-                                       (True, "per_minute", "PerMinute")]:
-            body = {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
-                "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
-                    "violations": [{"quotaId": "GenerateRequests" + label + "PerProjectPerModel-FreeTier"}]},
-                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}}
-            class UnreadBody(httpx.SyncByteStream):
-                def __iter__(self):
-                    yield json.dumps(body).encode("utf-8")
-            calls = []
-            def respond(request):
-                calls.append(str(request.url))
-                return httpx.Response(429, headers={"content-type": "application/json"}, stream=UnreadBody())
-            with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-                client = adapter.GeminiNativeClient(api_key="synthetic-not-a-key", http_client=transport)
-                try:
-                    result = client.chat.completions.create(model="gemini-test", stream=stream,
-                        messages=[{"role": "user", "content": "test"}])
-                    if stream:
-                        list(result)
-                except adapter.GeminiAPIError as error:
-                    assert getattr(error, "body", None) == body, "factory binding lost structured body"
-                    ev = evidence.harvest(error, message=str(error))
-                    assert classifier.stated_window(error_body=ev.body, error=error) == window
-                    if stream:
-                        try:
-                            error.response.text
-                        except httpx.ResponseNotRead:
-                            pass
-                        else:
-                            raise AssertionError("stream fixture was not actually unread")
-                else:
-                    raise AssertionError("expected API error did not reach caller")
-            assert len(calls) == 1, "contract unexpectedly retried"
-            assert ("streamGenerateContent" in calls[0]) == stream
-    finally:
-        qid.uninstall()
-    assert adapter.gemini_http_error is original, "factory not restored"
+def factory(adapter, httpx, facade, evidence, classifier):
+    """Drive actual client entrypoints, including an unread streaming body.
+
+    1.8.1.9: through KAME's own HTTP client (``facade._with_error_body_hook``),
+    not a wrapper around the host factory. The window must come out of both the
+    plain and the streaming path; the negative control removes the hook and the
+    streaming window must then be lost.
+    """
+    for stream, window, label in [(False, "per_day", "PerDay"),
+                                   (True, "per_day", "PerDay"),
+                                   (True, "per_minute", "PerMinute")]:
+        body = {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
+            "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                "violations": [{"quotaId": "GenerateRequests" + label + "PerProjectPerModel-FreeTier"}]},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}}
+
+        class UnreadBody(httpx.SyncByteStream):
+            def __iter__(self):
+                yield json.dumps(body).encode("utf-8")
+        calls = []
+
+        def respond(request):
+            calls.append(str(request.url))
+            return httpx.Response(429, headers={"content-type": "application/json"}, stream=UnreadBody())
+        with facade._with_error_body_hook(httpx.Client(transport=httpx.MockTransport(respond))) as transport:
+            client = adapter.GeminiNativeClient(api_key="synthetic-not-a-key", http_client=transport)
+            try:
+                result = client.chat.completions.create(model="gemini-test", stream=stream,
+                    messages=[{"role": "user", "content": "test"}])
+                if stream:
+                    list(result)
+            except adapter.GeminiAPIError as error:
+                ev = evidence.harvest(error, message=str(error))
+                got = classifier.stated_window(error_body=ev.body, error=error)
+                assert got == window, f"window {got!r} on stream={stream}"
+                assert "Quota exceeded" in str(error), "host message changed"
+            else:
+                raise AssertionError("expected API error did not reach caller")
+        assert len(calls) == 1, "contract unexpectedly retried"
+        assert ("streamGenerateContent" in calls[0]) == stream
 
 
 def evaluate(name, operation):
@@ -116,13 +112,13 @@ def run(host):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     get = lambda name: importlib.import_module(spec.name + "." + name)
-    qid, evidence, classifier, host_text = (get(n) for n in
-        ("quota_id_binding", "core.evidence", "core.classify", "host_text"))
+    facade, evidence, classifier, host_text = (get(n) for n in
+        ("facade", "core.evidence", "core.classify", "host_text"))
     checks = {
         "assistant_mapping": lambda: mapping(adapter),
         "refusal_fields": lambda: refusal(adapter, httpx),
         "guidance_separation": lambda: guidance(adapter, httpx, evidence, host_text),
-        "factory_paths": lambda: factory(adapter, httpx, qid, evidence, classifier),
+        "factory_paths": lambda: factory(adapter, httpx, facade, evidence, classifier),
     }
     results = {name: evaluate(name, callback) for name, callback in checks.items()}
     broken = {}
@@ -132,7 +128,7 @@ def run(host):
         broken["refusal_fields"] = evaluate("refusal_fields", checks["refusal_fields"])
     with patch.object(host_text, "guidance_blocks", return_value=[]):
         broken["guidance_separation"] = evaluate("guidance_separation", checks["guidance_separation"])
-    with patch.object(qid, "install", return_value=True):
+    with patch.object(facade, "_keep_error_body", lambda response: None):
         broken["factory_paths"] = evaluate("factory_paths", checks["factory_paths"])
     return {"host": str(host), "network": "MockTransport only", "checks": results,
             "mutation_detected": {name: not row["passed"] for name, row in broken.items()},

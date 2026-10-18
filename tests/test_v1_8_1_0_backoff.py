@@ -298,7 +298,8 @@ class TestTheSettingItself:
         assert "flat" in text
 
     def test_it_is_on_the_optional_shelf_and_described_for_the_panel(self):
-        extra = next(g for g in settings.groups() if g["id"] == "extra")
+        # 1.8.2.7: it moved to the "Rest times (advanced)" shelf.
+        extra = next(g for g in settings.groups() if g["id"] == "tuning")
         assert settings.UNSIZED_THROTTLE_BACKOFF in extra["keys"]
         rows = {row["key"]: row for row in settings.describe_all()}
         row = rows[settings.UNSIZED_THROTTLE_BACKOFF]

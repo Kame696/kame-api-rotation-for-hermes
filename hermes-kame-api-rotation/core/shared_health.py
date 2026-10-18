@@ -354,7 +354,14 @@ def _write_document(path: Path, document: Dict[str, Any]) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             json.dump(document, stream, sort_keys=True)
-        os.replace(temporary, path)
+        for attempt in range(5):  # 1.8.2.7: a sibling profile reading it holds it for a moment (Windows)
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02)
     except BaseException:
         try:
             os.unlink(temporary)

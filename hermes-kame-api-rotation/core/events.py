@@ -40,7 +40,11 @@ from collections import deque
 #: produced one, and fifty would have shown a third of the incident it was
 #: sized to explain. A hundred and fifty rows is about 25 KB inside a snapshot
 #: file the panel already re-reads every two seconds.
-MAX_EVENTS = 150
+#:
+#: 400 since 1.8.2.0, when every call started to leave a ``sent`` row and an
+#: ``answered`` row: at 150 a busy hour of healthy traffic would have pushed
+#: the last incident off the screen. About 65 KB in the snapshot.
+MAX_EVENTS = 400
 
 #: The kinds. Named for what the user sees, not for the code path: "quarantine"
 #: rather than "mark(ok=False, kind=auth)", because the first is what the pool
@@ -77,16 +81,30 @@ SURFACED = "surfaced"
 #: only be answered with a guessed window.
 SETTING = "setting"
 
+#: 1.8.2.0. The ordinary half of every call, so the tab shows everything KAME
+#: did and not only what went wrong: which key a call went out on (``sent``)
+#: and that it answered, how fast (``answered``). The owner's own test of
+#: 1.8.1.9 sent a nine-minute NVIDIA answer through a healthy pool and found
+#: no trace of it anywhere on the panel.
+SENT = "sent"
+ANSWERED = "answered"
+#: The opt-in ``max_total_wait_seconds`` ran out and the refusal went to Hermes.
+GAVE_UP = "gave_up"
+#: 1.8.2.7. Every key of the model in use was resting for long, the user has a
+#: fallback chain in Hermes and has opted in, so the call went to Hermes to
+#: answer with the next model. A planned switch, not a failure.
+HANDOVER = "handover"
+
 _KINDS = frozenset(
     {ROTATION, SWITCH, QUARANTINE, INVALID_KEY, DENIED_MODEL, STORM,
-     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING}
+     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING, SENT, ANSWERED, GAVE_UP, HANDOVER}
 )
 
 #: The kinds that are KAME working rather than a provider failing. The panel
 #: colours and filters on this split, and the distinction is the point of the
 #: 1.6.0.1 Events tab: a screen that shows only refusals reads like a fault
 #: report, and a rotation engine that is doing its job is not a fault.
-GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING})
+GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING, SENT, ANSWERED, HANDOVER})
 #: ``SETTING`` sits on this side of the split for the same reason: it is
 #: not a provider refusing, and a row painted as a fault would be read as
 #: one. It is the owner acting, which is neither, and of the two colours
@@ -115,6 +133,7 @@ class Events:
         at: Optional[float] = None,
         detail: str = "",
         sized_by: str = "",
+        task: str = "",
     ) -> Dict[str, Any]:
         """Record one event. Never raises — a readout must not end a turn.
 
@@ -150,6 +169,10 @@ class Events:
                 "detail": redact(detail) if detail else "",
                 "sized_by": str(sized_by or "")[:24],
             }
+            # 1.8.2.6: which background job sent the call. Only on the rows
+            # that have one, so a Main row reads exactly as it always did.
+            if task:
+                row["task"] = str(task)[:40]
         except Exception:
             return {}
         with self._lock:
@@ -180,3 +203,137 @@ class Events:
 #: carousel has one: a pool shared by every conversation in the process has a
 #: history shared by every conversation in the process.
 EVENTS = Events()
+
+# 1.8.2.3: Secondary events — calls from auxiliary models (title, vision,
+# compression, web summary, approval, MCP routing, skill search).  A separate
+# buffer so the main Events tab shows only the chat model.
+SECONDARY_EVENTS = Events(limit=200)
+
+#: ContextVar-based slot name for the current auxiliary call.
+#: Set by hermes-kame-provider before each auxiliary client call, cleared
+#: after.  When set, the transport logs to SECONDARY_EVENTS instead of EVENTS.
+import contextvars
+_CURRENT_AUX_SLOT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "kame_aux_slot", default=""
+)
+
+
+def set_aux_slot(slot: str) -> contextvars.Token:
+    """Mark the current context as an auxiliary call from the named slot."""
+    return _CURRENT_AUX_SLOT.set(slot)
+
+
+def clear_aux_slot(token: contextvars.Token) -> None:
+    """Restore the previous slot (usually empty = main chat)."""
+    _CURRENT_AUX_SLOT.reset(token)
+
+
+def get_aux_slot() -> str:
+    """The auxiliary slot name, or ``""`` for the main chat model."""
+    return _CURRENT_AUX_SLOT.get()
+
+
+def active_events() -> "Events":
+    """The Events buffer for the current context — main or secondary."""
+    return SECONDARY_EVENTS if _CURRENT_AUX_SLOT.get() else EVENTS
+
+
+#: 1.8.2.6. Where Hermes itself says "this is an auxiliary call, for task X".
+#: ``agent.auxiliary_client`` binds a fresh dict to this ContextVar for every
+#: auxiliary call (``_relay_aux_call_scope``: ``{"task": ..., ...}``) and copies
+#: the context into the daemon thread that runs the provider callback, so it is
+#: visible exactly where a KAME client is asked for a completion. The main
+#: agent loop never binds it. ``set_aux_slot`` above was meant to be fed by a
+#: ``pre_auxiliary_call`` hook, but that hook runs in a bounded worker thread,
+#: so a ContextVar set there never reaches the call — which is why the
+#: Background tab stayed empty through 1.8.2.5.
+_HOST_AUX_MODULE = "agent.auxiliary_client"
+_HOST_AUX_VAR = "_RELAY_AUX_CALL_CONTEXT"
+
+
+def host_aux_task() -> str:
+    """The auxiliary task Hermes is running in this context, or ``""``.
+
+    Read-only and import-free: if Hermes has not loaded its auxiliary client,
+    no auxiliary call can be in flight. Never raises.
+    """
+    try:
+        import sys
+
+        module = sys.modules.get(_HOST_AUX_MODULE)
+        var = getattr(module, _HOST_AUX_VAR, None) if module is not None else None
+        context = var.get() if var is not None else None
+    except Exception:
+        return ""
+    if not isinstance(context, dict):
+        return ""
+    task = str(context.get("task") or "").strip()
+    return task if task and task != "unknown" else "auxiliary"
+
+
+class InFlight:
+    """The calls that have not finished yet — for the "still waiting" line.
+
+    1.8.2.6. On 2026-10-13 one background call waited 57 minutes and 294
+    attempts through a Google overload before it answered. Nothing on the
+    panel said so: the rows scrolled past one by one. This keeps one entry
+    per running call (started, attempts, the last reason), so the panel can
+    say "title: no answer for 57 min, 294 tries". It decides nothing.
+    """
+
+    #: An entry with no news for this long is dropped even if its end was
+    #: never seen (a generator Hermes abandoned without closing it).
+    STALE_S = 600.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: Dict[int, Dict[str, Any]] = {}
+
+    def start(self, call: Any) -> None:
+        try:
+            now = time.time()
+            row = {
+                "channel": str(getattr(call, "channel", "main") or "main"),
+                "task": str(getattr(call, "task", "") or ""),
+                "identity": str(getattr(call, "identity", "") or ""),
+                "started": now,
+                "last_at": now,
+                "failures": 0,
+                "reason": "",
+            }
+        except Exception:
+            return
+        with self._lock:
+            self._calls[id(call)] = row
+
+    def note(self, call: Any, kind: str, reason: str = "") -> None:
+        with self._lock:
+            row = self._calls.get(id(call))
+            if row is None:
+                return
+            row["last_at"] = time.time()
+            if kind not in GOOD_KINDS:
+                row["failures"] += 1
+                if reason:
+                    row["reason"] = str(reason)[:120]
+
+    def end(self, call: Any) -> None:
+        with self._lock:
+            self._calls.pop(id(call), None)
+
+    def rows(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Running calls, longest-waiting first."""
+        now = time.time() if now is None else now
+        with self._lock:
+            for key in [k for k, r in self._calls.items() if now - r["last_at"] > self.STALE_S]:
+                self._calls.pop(key, None)
+            rows = [dict(r, waiting_s=round(now - r["started"], 1)) for r in self._calls.values()]
+        rows.sort(key=lambda r: -r["waiting_s"])
+        return rows
+
+    def clear(self) -> None:
+        with self._lock:
+            self._calls.clear()
+
+
+INFLIGHT = InFlight()

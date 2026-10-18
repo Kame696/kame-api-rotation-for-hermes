@@ -49,7 +49,10 @@ def _load_package():
 
 
 _load_package()
-pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+try:
+    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    pool_binding = None
 ledger_module = importlib.import_module(f"{PACKAGE}.core.ledger")
 store_module = importlib.import_module(f"{PACKAGE}.store")
 

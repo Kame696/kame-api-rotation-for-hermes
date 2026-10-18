@@ -465,8 +465,11 @@ class TestAKeyOutsideTheConfigIsNamedAsSuch:
         assert "not in the credential pool" in source
 
 
-pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
-_note_shape = pool_binding.PoolBinding._note_shape
+try:
+    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    pool_binding = None
+_note_shape = getattr(getattr(pool_binding, "PoolBinding", None), "_note_shape", None)
 
 
 class _Pool:

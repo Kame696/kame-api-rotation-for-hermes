@@ -94,7 +94,38 @@ const SECTION = {
     { at: NOW - 300, identity: 'gemini:gemini-3.6-flash', key: 'key:9fefb2', kind: 'recovery',
       reason: 'answered on attempt 2', seconds: 23.4, seq: 16 },
     { at: NOW - 900, code: 429, identity: 'gemini:gemini-3.6-flash', key: 'key:10db63', kind: 'rotation',
-      reason: 'rate_limit', seconds: 21, seq: 15, sized_by: 'retryinfo' }
+      reason: 'rate_limit', seconds: 21, seq: 15, sized_by: 'retryinfo' },
+    // 1.8.2.6: enough rows that the list has to scroll inside itself.
+    ...Array.from({ length: 30 }, (_, i) => ({
+      at: NOW - 1000 - i * 40, identity: 'nvidia:moonshotai/kimi-k3', key: 'key:b65dd9',
+      kind: i % 2 ? 'sent' : 'answered', reason: i % 2 ? '2 of 2 key(s) ready' : 'first word after 18s', seq: 14 - i
+    }))
+  ],
+  // 1.8.2.6: the owner's 2026-10-13 afternoon, on the Background tab — a
+  // Google overload on flash-lite (bare 429s, 503s, timeouts), one request
+  // Gemini rejected outright (400), and a title call still waiting.
+  secondary_events: [
+    { at: NOW - 5, code: 429, identity: 'gemini:gemini-flash-lite-latest:global', key: 'key:f79d71',
+      kind: 'rotation', reason: 'rate_limit', seconds: 16, seq: 60, sized_by: 'backoff.4', task: 'title_generation',
+      detail: '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}' },
+    { at: NOW - 9, identity: 'gemini:gemini-flash-lite-latest:global', kind: 'wait', task: 'title_generation',
+      reason: 'every key resting — 0 of 14 usable', seconds: 12, seq: 59 },
+    { at: NOW - 30, code: 503, identity: 'gemini:gemini-flash-lite-latest:global', key: 'key:6e98e0',
+      kind: 'rotation', reason: 'server', seconds: 1, seq: 58, sized_by: 'kame', task: 'compression',
+      detail: '{"error":{"code":503,"status":"UNAVAILABLE"}}' },
+    { at: NOW - 70, identity: 'gemini:gemini-3.5-flash-lite:global', key: 'key:1d33a7', kind: 'surfaced',
+      code: 400, reason: 'other', seq: 57, task: 'vision',
+      detail: 'Gemini HTTP 400 (INVALID_ARGUMENT): Request contains an invalid argument.' },
+    { at: NOW - 120, identity: 'gemini:gemini-3.5-flash-lite:global', key: 'key:65f97d', kind: 'answered',
+      reason: 'first word after 2s', seq: 56, task: 'session_search' },
+    { at: NOW - 200, identity: 'gemini:gemini-3.5-flash-lite:global', key: 'key:38d2d9', kind: 'answered',
+      reason: 'first word after 3s', seq: 55, task: 'title_generation' }
+  ],
+  inflight: [
+    { channel: 'secondary', task: 'title_generation', identity: 'gemini:gemini-flash-lite-latest:global',
+      started: NOW - 3420, last_at: NOW - 5, failures: 294, reason: 'rate_limit', waiting_s: 3420 },
+    { channel: 'main', task: 'chat', identity: 'nvidia:moonshotai/kimi-k3', started: NOW - 4,
+      last_at: NOW - 1, failures: 0, reason: '', waiting_s: 4 }
   ],
   first_run: false,
   gemini_tool_call_fix: { applied: true, reason: '', repaired: 2 },
@@ -149,6 +180,18 @@ const SECTION = {
       source: 'default', step: null, title: 'Turn spreading off', units: '', value: false }
   ],
   settings_pending_restart: [],
+  fallback: {
+    state: 'on',
+    why: 'Switching: automatic - when every key of your model is resting for more than 60 s, Hermes answers with the next model below, and comes back to your model as soon as its keys return.',
+    threshold_s: 60,
+    switch_limit: 3,
+    warning: 'Hermes switches model at most 3 times in one message, and your list has 4 fallback models: when the first 3 are all out, the rest are never reached and the message ends with no reply. Set agent.api_max_retries: 5 in the Hermes config.yaml to reach all of them.',
+    entries: [
+      { identity: 'gemini:gemini-3.8-flash', role: 'primary', keys: 14, healthy: 0, soonest_s: 2400 },
+      { identity: 'gemini:gemini-3.7-flash', role: 'fallback', keys: 14, healthy: 9, soonest_s: null },
+      { identity: 'nvidia:z-ai/glm-5.3', role: 'fallback', keys: null, healthy: null, soonest_s: null }
+    ]
+  },
   totals: { healthy: 17, keys: 17, ready: 15, rejected: 2, retired: 1, resting: 0, soonest_s: 38 },
   updated_at: Date.now() / 1000,
   version: '1.6.0.1'
@@ -289,7 +332,7 @@ async function loadPlugin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kame-preview-'))
   const source = fs
     .readFileSync(SOURCE, 'utf8')
-    .replace("from '@hermes/plugin-sdk'", "from './sdk.mjs'")
+    .replaceAll("from '@hermes/plugin-sdk'", "from './sdk.mjs'")
     .replace("from 'react/jsx-runtime'", "from './jsx.mjs'")
     .replace("from 'react'", "from './react.mjs'")
 
@@ -400,10 +443,28 @@ body { background: var(--ui-bg-primary); color: var(--ui-text-primary); margin: 
 .bg-amber-500 { background: var(--ui-amber); }
 `
 
+// 1.8.2.7: `--settings file.json` replaces the hand-written settings above
+// with the plugin's real list ({"settings": [...], "groups": [...]}, as
+// written by `settings.describe_all()` / `settings.groups()`), so the
+// Settings tab is judged with all of them on it, not six.
+const SETTINGS_FILE = argOf('--settings')
+if (SETTINGS_FILE) {
+  const real = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))
+  SECTION.settings = real.settings
+  SECTION.setting_groups = real.groups
+}
+
 async function main() {
   const plugin = await loadPlugin()
   const contributions = []
-  plugin.default.register({ onDispose: () => {}, registerMany: entries => contributions.push(...entries) })
+  // Since 1.8.2.2 the panel reads `/state` through the backend door
+  // (`ctx.rest`), not the file; without it the page only says it cannot read
+  // the pool and no tab is ever drawn (the preview silently showed nothing).
+  plugin.default.register({
+    onDispose: () => {},
+    registerMany: entries => contributions.push(...entries),
+    rest: async () => DOCUMENT
+  })
 
   const page = contributions.find(entry => entry.id === 'page')
   const chip = contributions.find(entry => entry.id === 'chip')
@@ -464,7 +525,7 @@ async function main() {
     found.onClick()
   }
 
-  const tabs = ONLY ? [ONLY] : ['overview', 'settings', 'events']
+  const tabs = ONLY ? [ONLY] : ['overview', 'settings', 'events', 'background']
   const blocks = []
 
   for (const tab of tabs) {

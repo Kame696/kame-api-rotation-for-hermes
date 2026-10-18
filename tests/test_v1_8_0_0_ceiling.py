@@ -72,11 +72,14 @@ _load_package()
 carousel_mod = importlib.import_module(f"{PACKAGE}.core.carousel")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 runtime = importlib.import_module(f"{PACKAGE}.runtime")
-pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+try:
+    pool_binding = importlib.import_module(f"{PACKAGE}.pool_binding")
+except ModuleNotFoundError:  # removed in 1.8.1.9 (catalog rule 9); see tests/legacy_1818_retired.py
+    pool_binding = None
 store_module = importlib.import_module(f"{PACKAGE}.store")
 
 Carousel = carousel_mod.Carousel
-PoolBinding = pool_binding.PoolBinding
+PoolBinding = getattr(pool_binding, "PoolBinding", None)
 LedgerStore = store_module.LedgerStore
 JournalStore = store_module.JournalStore
 

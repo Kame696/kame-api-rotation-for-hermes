@@ -90,6 +90,7 @@ class TestReadingTheConfig:
         assert sorted(ctx.asked) == sorted(
             list(settings._ENV_FOR)
             + list(settings._NUMBER_ENV_FOR)
+            + list(settings._STRING_ENV_FOR)
             + list(settings._LEGACY_KEYS)
         )
 
@@ -98,7 +99,7 @@ class TestReadingTheConfig:
         # serve from config.yaml, so the config half of it silently does
         # nothing while the environment half keeps working.
         manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-        for key in list(settings._ENV_FOR) + list(settings._NUMBER_ENV_FOR):
+        for key in list(settings._ENV_FOR) + list(settings._NUMBER_ENV_FOR) + list(settings._STRING_ENV_FOR):
             assert f"\n  {key}:\n" in manifest
 
 
