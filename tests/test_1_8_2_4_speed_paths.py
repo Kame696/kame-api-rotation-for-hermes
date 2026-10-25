@@ -324,11 +324,13 @@ class TestThinkingIsRecognised:
 
 
 class TestMaxModeFiresFromDispatch:
-    def test_max_fires_at_once_until_a_backup_is_refused(self, fresh, monkeypatch):
+    def test_max_no_longer_fires_at_once_in_any_mode(self, fresh, monkeypatch):
+        # 1.8.2.9 (decisions/0031): 'fires from dispatch' sent a second request on EVERY reply
+        # and burned a 14-key pool in four messages. The method stays for callers and says no.
         monkeypatch.setenv("KAME_HEDGE_MODE", "max")
         settings.forget()
         tracker = hedging_mod.HEDGE_TRACKER
-        assert tracker.fires_from_dispatch(IDENTITY)
+        assert not tracker.fires_from_dispatch(IDENTITY)
         tracker.note_hedge_429(IDENTITY)
         assert not tracker.fires_from_dispatch(IDENTITY)
 

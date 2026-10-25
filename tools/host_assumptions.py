@@ -882,6 +882,29 @@ def the_success_hook_still_carries_the_two_counts_1819(text=None):
     return bool("assistant_content_chars=" in joined and "assistant_tool_call_count=" in joined), True
 
 
+def a_stopped_background_job_still_moves_down_the_users_list(text=None):
+    """1.8.2.9 (decisions/0032 A5): a timeout-shaped error from an aux call goes to Hermes' fallback.
+
+    The type name "Timeout" makes ``_is_timeout_error`` true; the three critical tasks skip the
+    same-provider retry; the credential rungs accept only auth, payment and rate-limit words; the
+    request carries its own ``timeout`` (which KAME reads as the job's budget)."""
+    joined = _text_of(text)
+    ok = bool(
+        '_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})' in joined
+        and '"Timeout" in type(exc).__name__ or "timed out" in str(exc).lower()' in joined
+        and "return _is_auth_error(exc) or _is_payment_error(exc) or _is_rate_limit_error(exc)" in joined
+        and "def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:" in joined
+        and "_FALLBACK_REASONS" in joined)
+    return ok, True
+
+
+def the_aux_request_still_carries_the_tasks_timeout(text=None):
+    """1.8.2.9: the budget of a background job is the ``timeout`` Hermes puts in the request."""
+    joined = _text_of(text)
+    return bool("_DEFAULT_AUX_TIMEOUT" in joined and '"timeout": timeout' in joined
+                and "def _effective_aux_timeout" in joined), True
+
+
 #: 1.8.1.8 facts about the host surface its bindings wrapped. 1.8.1.9 wraps
 #: nothing of Hermes', so these no longer bound a KAME decision; they are
 #: reported, not counted. (They also fail for 1.8.1.8 itself against the
@@ -949,6 +972,9 @@ CHECKS = (
     ("agent/auxiliary_client.py", "Hermes asks the provider profile for the auxiliary client first, and uses it unwrapped", hermes_asks_the_profile_for_the_aux_client_unwrapped),
     ("providers/__init__.py", "a home provider plugin replaces the bundled profile in that home", a_home_provider_plugin_replaces_the_bundled_one),
     ("agent/turn_response_intake.py", "the success hook still carries the two counts (1.8.1.9)", the_success_hook_still_carries_the_two_counts_1819),
+    # 1.8.2.9. A stopped background job: its error shape and its budget.
+    ("agent/auxiliary_client.py", "a stopped background job still moves down the user's list", a_stopped_background_job_still_moves_down_the_users_list),
+    ("agent/auxiliary_client.py", "the auxiliary request still carries the task's timeout", the_aux_request_still_carries_the_tasks_timeout),
 )
 
 

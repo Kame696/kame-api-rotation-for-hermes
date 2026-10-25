@@ -390,12 +390,25 @@ function html(node) {
   }
 
   const { children, className, style, ...rest } = node.props ?? {}
+  // 1.8.2.9: the rotation page draws SVG, whose whole meaning is in its attributes (d, stroke,
+  // viewBox...). Every plain string / number attribute the element carries is written out; the
+  // handlers and the few attributes handled above are not.
+  const handled = new Set(['value', 'disabled', 'title', 'onClick', 'onChange', 'onKeyDown', 'key', 'ref'])
+  const generic = Object.entries(rest)
+    .filter(([name, value]) => !handled.has(name) && ['string', 'number', 'boolean'].includes(typeof value) && value !== false)
+    .map(([name, value]) => {
+      const attr = name === 'viewBox' ? name : name.replace(/[A-Z]/g, m => '-' + m.toLowerCase())
+
+      return value === true ? ` ${attr}` : ` ${attr}="${escape(value)}"`
+    })
+    .join('')
   const attrs = [
     className ? ` class="${escape(className)}"` : '',
     style ? ` style="${escape(styleOf(style))}"` : '',
     rest.value !== undefined ? ` value="${escape(rest.value)}"` : '',
     rest.disabled ? ' disabled' : '',
-    rest.title ? ` title="${escape(rest.title)}"` : ''
+    rest.title ? ` title="${escape(rest.title)}"` : '',
+    generic
   ].join('')
 
   if (typeof node.type !== 'string') {
@@ -453,6 +466,21 @@ if (SETTINGS_FILE) {
   SECTION.settings = real.settings
   SECTION.setting_groups = real.groups
 }
+
+// 1.8.2.9: `--fixture file.json` replaces the whole hand-written section with a REAL snapshot
+// (`tools/panel_fixtures.py` writes them from `state.snapshot()`), so the rotation page is judged
+// with the fields the backend really sends. `--open <model>` presses that model's ring, the way a
+// person does, to look at its key table; `--width 900` sets the page width in pixels.
+const FIXTURE = argOf('--fixture')
+if (FIXTURE) {
+  const real = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'))
+  for (const key of Object.keys(SECTION)) {
+    delete SECTION[key]
+  }
+  Object.assign(SECTION, real, { pid: 9164, updated_at: Date.now() / 1000 })
+}
+const OPEN_RING = argOf('--open')
+const WIDTH = argOf('--width')
 
 async function main() {
   const plugin = await loadPlugin()
@@ -525,10 +553,53 @@ async function main() {
     found.onClick()
   }
 
+  /** Press the ring whose label mentions `name` (1.8.2.9). */
+  const openRing = name => {
+    const found = []
+    const walk = node => {
+      if (!node || typeof node !== 'object') {
+        return
+      }
+
+      if (Array.isArray(node)) {
+        node.forEach(walk)
+
+        return
+      }
+
+      if (typeof node.type === 'function') {
+        walk(node.type(node.props ?? {}))
+
+        return
+      }
+
+      if (node.props?.['aria-label'] && node.props?.onClick) {
+        found.push(node.props)
+      }
+
+      walk(node.props?.children)
+    }
+
+    walk(page.render())
+
+    const ring = found.find(props => String(props['aria-label']).includes(name))
+
+    if (ring) {
+      ring.onClick()
+    } else {
+      console.log(`  (no ring for ${name})`)
+    }
+  }
+
   const tabs = ONLY ? [ONLY] : ['overview', 'settings', 'events', 'background']
   const blocks = []
 
   for (const tab of tabs) {
+    if (OPEN_RING && tab === 'overview') {
+      openTab(tab)
+      openRing(OPEN_RING)
+    }
+
     // The panel keeps the open tab in an atom the page owns; the stubbed
     // `useState` cannot switch it, so the tab is chosen the way the file
     // itself does — through the exported atom when there is one, otherwise by
@@ -544,7 +615,7 @@ async function main() {
 <title>KAME panel preview</title>
 <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 <style>${THEME}</style>
-<div class="preview-shell">${blocks.join('\n')}</div>
+<div class="preview-shell"${WIDTH ? ` style="max-width:${Number(WIDTH)}px"` : ''}>${blocks.join('\n')}</div>
 `
   fs.writeFileSync(OUT, out)
   console.log(OUT)

@@ -7,6 +7,81 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.2.9] — 2026-10-24 — back to your best model, nothing idle burns your CPU, background jobs stop eating your best model's quota, no reply behind two silent models, speed in plain words, a rotation page you can read
+
+**What drove it.** The catalog review of 1.8.2.8 (a silent `import yaml` on a stock Hermes) and
+a live test on the author's keys: with the primary and every fallback model busy, the reply ended
+up waiting on the LAST, least capable, model while the best one may have recovered; the old top
+speed mode doubled the requests on every reply and used up a 14-key pool in four messages; and
+the rotation page could not be read at a glance.
+
+- **Back to your best model.** When the model in use says it is busy (or every key of it rests)
+  and nothing after Hermes' position is free, KAME goes back up your fallback list, best first,
+  one request at a time, asking a busy model again at most every 20 s. Only models of your own
+  list on the same provider and endpoint; never with text on screen; never under "Never".
+- **A lighter plugin on every reply.** The snapshot the panel reads used to be built and written
+  on the same thread that waits for the model (about 10 ms each, 27 ms with the panel open, several
+  per reply). Now the reply thread leaves a note and a background thread writes it: 22 ms of plugin
+  time per reply against 73 ms in the healthy-path bench, nothing added to a reply that goes well.
+- **Speed in plain words.** Saver · 1x, Balanced · up to 1.1x, Faster · up to 1.3x, each with
+  one sentence under the buttons; the numbers follow `hedge_budget_pct`. The stored values
+  (`off`, `adaptive`, `max`) are unchanged.
+- **Faster replaces Fastest.** A reply that goes well sends one request (Fastest sent two on every
+  reply). The first backup goes out at 1.5x the model's usual first word, from a budget three times
+  Balanced's, and any rate-limit or quota refusal on that model puts it back to Balanced for 10
+  minutes. Replay of the 2026-10-18 failure: the old mode 65 requests, 14 of 14 keys refused; Faster
+  55 requests, none refused. A config that said `max` now gets Faster, which spends less.
+- **Extra requests this hour**, as a percentage of replies, next to what your setting allows.
+- **The rotation page.** Three sentences first (what is happening, is anything wrong, what next),
+  one ring per model in the order of your list with one segment per key (shape as well as colour),
+  "What KAME did", the three controls you reach for, and two buttons for one model: *Wake this
+  model* and *Try this model now*. The old cards are folded under "Details"; the thin bar is the
+  only thing dropped (the ring says the same).
+- **Reads the fallback list on a stock Hermes** (`hermes_yaml`, then PyYAML; one log line if
+  neither exists) - the defect the catalog review found.
+- **Nothing idle burns your CPU.** Measured on a running gateway: it loads the plugin once per
+  profile (four copies) and each copy re-read and re-parsed the 42 KB `config.yaml` three times
+  every five seconds, about 120 ms each with the pure-Python reader the real Hermes ships - roughly
+  30% of a core with nothing happening. The file is now parsed once per change, by all readers, and
+  a typo left in it is not parsed again until it changes.
+- **Background jobs get a budget.** One title on your best model made 167
+  attempts over 12 minutes, 60 quarantines among them a one-hour daily one, because side jobs
+  inherited the chat's endless wait. Now a title (also profile describer, background review) never
+  waits and sends at most 3 requests in 30 s; every other side job (compression, approval, vision,
+  web extract...) gets 6 requests and up to 5 minutes, or the time Hermes put in its own request,
+  whichever is shorter. A job that cannot start well (model busy, keys short of quota) sends no
+  request at all, and no side job sends backup requests. It stops with a timeout-shaped error,
+  which Hermes answers by moving the job down YOUR fallback list - KAME never picks the model.
+  Your chat keeps its wait, `max_total_wait_seconds: 0` included. `KAME_AUX_UNBOUNDED=1` brings
+  1.8.2.8 back.
+- **Where your quota went.** The journal says which side job sent each request; the first page shows
+  a line under a ring when side jobs are 10% or more of that model's requests ("side jobs: 23% of
+  requests since 08:10"), Details has a card with the split and the jobs stopped early, and when side
+  jobs take 15% or more of your best model the card says, in words, which job you could move to which
+  model of YOUR list and the two lines of Hermes' config to do it. KAME never changes that config.
+  `tools/speed.py` prints the same split.
+- **No reply behind two silent models.** When the best model is silent and the next model raced in
+  is silent too, the reply no longer waits a whole slow bound after the last one joined (37-111 s):
+  each raced model keeps it waiting only to its own late point, never longer than before; at the slow
+  bound one more model of your list joins instead of everything starting over; and when every model
+  that could take the reply is already racing, nothing is cut - the first to speak is shown.
+- **The busy best model is asked again, beside the reply.** When the model Hermes asked for is
+  inside its busy window and is due a look (every 20 s), the reply still starts on the next model at
+  once, exactly as before, and the best model is asked beside it: if it answers first it is shown and
+  its window closes. Added wait: none. Cost: at most 3 extra requests a minute per busy model, only
+  while replies are flowing.
+- **The first page says when Hermes cannot reach your whole fallback list** (`agent.api_max_retries`),
+  and that the same number is Hermes' general retry count.
+- Checked against Google (12 requests, one key): a Gemini function-call turn is accepted by another
+  Gemini 3.6 / 3.7 / 3.8 model when its signature travels with it, and refused by all of them without
+  it - so the race, the circle back and the widen are safe on these models.
+
+Not in this version: Agent Zero's port of all of the above; smart tiering of reasoning steps onto
+a lighter model (decided against: it would be KAME choosing models); a side job that already
+streamed text is still ended by Hermes' own stream limits, not by KAME's budget.
+
+---
+
 ## [1.8.2.8] — 2026-10-17 — your next model when the provider is busy, everything automatic, the model of each reply on screen
 
 **The case that drove it.** Four fallback models with 14 Gemini keys each, "Switch to the

@@ -161,6 +161,33 @@ def report(rows: List[Dict[str, Any]]) -> None:
             say("  se esse numero for alto, o first token wait esta curto demais.")
 
 
+def background_work(rows: List[Dict[str, Any]]) -> None:
+    """1.8.2.9: how much of each model's recorded attempts were background jobs (titles, summaries...).
+
+    Only when the file has such rows (1.8.2.9 and later); "tentativas gravadas": a raced backup leg is
+    not a journal row, so this is a floor, not the provider's own count."""
+    side = [r for r in rows if r.get("channel") == "secondary"]
+    if not side:
+        return
+    say()
+    say("TRABALHO DE FUNDO — tentativas gravadas que foram tarefas de fundo, nao o seu chat")
+    say("%-28s %8s %8s %7s  %s" % ("modelo", "chat", "fundo", "parte", "tarefas principais"))
+    by_model: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_model.setdefault(str(row.get("identity") or "?"), []).append(row)
+    for name, group in sorted(by_model.items()):
+        mine = [r for r in group if r.get("channel") == "secondary"]
+        if not mine:
+            continue
+        tasks: Dict[str, int] = {}
+        for row in mine:
+            label = str(row.get("task") or "?")
+            tasks[label] = tasks.get(label, 0) + 1
+        top = ", ".join("%s %d" % (t, n) for t, n in sorted(tasks.items(), key=lambda kv: -kv[1])[:3])
+        say("%-28s %8d %8d %6.0f%%  %s" % (
+            name[:28], len(group) - len(mine), len(mine), 100.0 * len(mine) / len(group), top))
+
+
 def main() -> int:
     args = sys.argv[1:]
     since = None
@@ -183,7 +210,9 @@ def main() -> int:
 
     say("arquivo: %s" % path)
     say()
-    report(load(path, since))
+    rows = load(path, since)
+    report(rows)
+    background_work(rows)
     return 0
 
 

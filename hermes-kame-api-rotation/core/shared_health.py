@@ -652,8 +652,11 @@ class SharedHealth:
             # that fails changes what OTHER profiles see, never this one.
             pass
 
-    def release_all(self, now: Optional[float] = None) -> Optional[int]:
+    def release_all(self, now: Optional[float] = None, *, only_model: Optional[str] = None) -> Optional[int]:
         """Release every hold in the file — the *Clear pool* button.
+
+        1.8.2.9: with ``only_model`` (an identity), only that model's rows are released and the
+        account-wide rows are left alone (the panel's 'Wake this model').
 
         1.8.1.0 (owner report, 2026-09-21): *Clear pool* forgot the carousel's
         memory and nothing else, so the very next ``select`` read this file,
@@ -687,8 +690,10 @@ class SharedHealth:
                 try:
                     document = _read_document(path)
                     released = 0
-                    for scope in ("model", "account"):
-                        for rows in (document.get(scope) or {}).values():
+                    for scope in (("model",) if only_model else ("model", "account")):
+                        for subject, rows in (document.get(scope) or {}).items():
+                            if only_model and subject != only_model and not str(subject).startswith(only_model + ":"):
+                                continue
                             for fingerprint_key, row in list((rows or {}).items()):
                                 if not isinstance(row, dict):
                                     continue

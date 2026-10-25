@@ -409,7 +409,7 @@ await check('every variadic child list is keyed, on every tab', () => {
   // Events tab, which is exactly the failure the assertion below exists for.
   const landmark = {
     Events: 'Reading this list',
-    Overview: 'Pool health',
+    Overview: 'Your models',
     Settings: 'Everything works without changing anything here'
   }
 
@@ -646,6 +646,161 @@ await check('a backend busy for a moment does not blank the page', async () => {
   restFails = false
   const during = JSON.stringify(render(page.render()))
   assert.ok(during === before, 'a single failed read rebuilt the page')
+})
+
+// -- 1.8.2.9: the rotation page (decisions/0031 job 2) ----------------------------------------
+
+const P = plugin.panelHelpers
+const PANEL_NOW_MS = 1_900_000_000_000
+const PANEL_NOW_S = PANEL_NOW_MS / 1000
+const keyRows = (codes, until = null) => codes.map((code, index) => [`key:${String(index).padStart(6, '0')}`, code, code === 's' || code === 'd' ? until : null, ''])
+const model = (identity, codes, entry = {}) => ({ identity, ...entry, __pool: { identity, keys: codes.length, key_states: keyRows(codes, PANEL_NOW_S + 40) } })
+const world = (models, extra = {}) => ({
+  activity: null,
+  fallback: { entries: models.map((m, i) => ({ identity: m.identity, role: i ? 'fallback' : 'primary', busy_kind: null, busy_until: null, probe_at: null, ...m.entry })), state: 'on', why: '' },
+  installed: true,
+  pools: models.map(m => ({ healthy: 0, idle_for_s: 5, identity: m.identity, key_states: m.__pool.key_states, keys: m.__pool.keys, soonest_s: null })),
+  replies: [],
+  speed: { cap_pct: 10, mode: 'adaptive', paused_until: {} },
+  updated_at: PANEL_NOW_S,
+  ...extra
+})
+
+await check('one segment per key up to forty, one proportional arc per state beyond', () => {
+  assert.equal(P.ringSegments(keyRows(Array(14).fill('r'))).length, 14)
+  const one = P.ringSegments(keyRows(['r']))
+  assert.equal(one.length, 1)
+  assert.ok(one[0].end - one[0].start > 350, 'a single key is the whole circle')
+  const many = P.ringSegments(keyRows([...Array(40).fill('r'), ...Array(15).fill('s'), ...Array(5).fill('d')]))
+  assert.deepEqual(many.map(s => [s.code, s.count]), [['r', 40], ['s', 15], ['d', 5]])
+  const spans = many.reduce((sum, s) => sum + (s.end - s.start), 0)
+  assert.ok(spans > 350 && spans <= 360, `the arcs add up to the circle (${spans})`)
+  assert.deepEqual(P.ringSegments([]), [])
+})
+
+await check('every key state differs from every other by shape or by a mark, not only by colour', () => {
+  const codes = Object.keys(P.KEY_STATE)
+  const marked = new Set(['f', 'x', 'o'])
+  for (const a of codes) {
+    for (const b of codes) {
+      if (a >= b) continue
+      const A = P.KEY_STATE[a]
+      const B = P.KEY_STATE[b]
+      const shapeDiffers = A.width !== B.width || A.dash !== B.dash
+      assert.ok(shapeDiffers || marked.has(a) || marked.has(b), `${a} and ${b} look alike without colour`)
+    }
+  }
+})
+
+await check('the sentence a screen reader gets names the model, its rank, its keys and its state', () => {
+  const snap = world([model('gemini:gemini-3.8-flash', ['r', 'r', 's', 'd']), model('gemini:gemini-3.7-flash', ['r'])])
+  const ring = P.ringModels(snap).main[0]
+  const said = P.ringAria(ring, snap, PANEL_NOW_MS)
+  assert.ok(said.includes('gemini-3.8-flash, your model'), said)
+  assert.ok(said.includes('2 of 4 keys ready') && said.includes('1 resting') && said.includes('1 out for today'), said)
+})
+
+await check('the three sentences at the top say what is happening, what is wrong and what is next', () => {
+  const idle = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r', 'r']), model('gemini:gemini-3.7-flash', ['r'])]), PANEL_NOW_MS)
+  assert.ok(idle.line1.startsWith('Ready — your next reply goes to gemini-3.8-flash'), idle.line1)
+  assert.equal(idle.line2, 'Nothing wrong.')
+  assert.equal(idle.line3, 'Next reply: gemini-3.8-flash.')
+
+  const answering = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], {
+    activity: { attempt: 1, identity: 'gemini:gemini-3.8-flash', key: 'key:a1b2c3', kind: 'calling', model: 'gemini-3.8-flash', started_at: PANEL_NOW_S - 2.4 }
+  }), PANEL_NOW_MS)
+  assert.equal(answering.line1, 'Answering with gemini-3.8-flash — key a1b2c3 — 2.4 s')
+
+  const busyEntry = { busy_kind: 'busy', busy_until: PANEL_NOW_S + 30, probe_at: PANEL_NOW_S + 14 }
+  const busy = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'], { entry: busyEntry }), model('gemini:gemini-3.7-flash', ['r'])]), PANEL_NOW_MS)
+  assert.ok(busy.line2.startsWith('gemini-3.8-flash is busy'), busy.line2)
+  assert.ok(busy.line3.includes('the next reply starts on gemini-3.7-flash') && busy.line3.includes('asked again in 14s'), busy.line3)
+
+  const everyone = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'], { entry: busyEntry }), model('gemini:gemini-3.7-flash', ['r'], { entry: busyEntry })]), PANEL_NOW_MS)
+  assert.ok(everyone.line2.startsWith('Every model is busy'), everyone.line2)
+  assert.equal(everyone.tone, 'bad')
+
+  const toReplace = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r', 'x', 'o'])]), PANEL_NOW_MS)
+  assert.ok(toReplace.line2.startsWith('2 keys to replace'), toReplace.line2)
+
+  const firstRun = P.nowSentences({ ...world([]), fallback: { entries: [{ identity: 'gemini:gemini-3.8-flash', role: 'primary' }], state: 'on', why: '' }, pools: [] }, PANEL_NOW_MS)
+  assert.ok(firstRun.line1.startsWith('Ready — nothing has been asked yet'), firstRun.line1)
+  assert.equal(firstRun.line2, 'Nothing wrong.')
+})
+
+await check('two raced models are named in the first sentence, and the retries note appears only when there is one', () => {
+  const racing = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], {
+    activity: { attempt: 1, identity: 'gemini:gemini-3.8-flash', key: 'key:a1b2c3', kind: 'calling', model: 'gemini-3.8-flash', started_at: PANEL_NOW_S - 21, racing: ['gemini-3.7-flash', 'gemini-3.6-flash'] }
+  }), PANEL_NOW_MS)
+  assert.equal(racing.line1, 'gemini-3.8-flash and gemini-3.7-flash are slow today — gemini-3.6-flash joined — 21.0 s')
+  const one = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], {
+    activity: { attempt: 1, identity: 'gemini:gemini-3.8-flash', kind: 'calling', model: 'gemini-3.8-flash', started_at: PANEL_NOW_S - 9, racing: ['gemini-3.7-flash'] }
+  }), PANEL_NOW_MS)
+  assert.equal(one.line1, 'gemini-3.8-flash is late — gemini-3.7-flash races it — 9.0 s')
+  const probing = P.nowSentences(world([model('gemini:gemini-3.7-flash', ['r'])], {
+    activity: { attempt: 1, identity: 'gemini:gemini-3.7-flash', kind: 'calling', model: 'gemini-3.7-flash', started_at: PANEL_NOW_S - 0.8, racing: [], probe: 'gemini-3.8-flash' }
+  }), PANEL_NOW_MS)
+  assert.equal(probing.line1, 'Answering with gemini-3.7-flash — asking gemini-3.8-flash again beside it — 0.8 s')
+  assert.equal(P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])]), PANEL_NOW_MS).note, '')
+  const warned = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], { fallback: { entries: [], state: 'on', why: '', warning: 'Hermes switches model at most 3 times in one message' } }), PANEL_NOW_MS)
+  assert.ok(warned.note.startsWith('Hermes switches model at most 3 times'), warned.note)
+})
+
+await check('an old reading says so, and an incomplete install is the loudest thing', () => {
+  const old = P.nowSentences({ ...world([model('gemini:gemini-3.8-flash', ['r'])]), updated_at: PANEL_NOW_S - 200 }, PANEL_NOW_MS)
+  assert.ok(old.line2.includes('old — Hermes may be restarting'), old.line2)
+  const broken = P.nowSentences({ ...world([model('gemini:gemini-3.8-flash', ['r'])]), build: { complete: false } }, PANEL_NOW_MS)
+  assert.ok(broken.line2.startsWith('This install is incomplete'), broken.line2)
+})
+
+// -- 1.8.2.9: background jobs and your quota (decisions/0032 A8) -------------------------------
+
+const useOf = (models, extra = {}) => ({ models, since: PANEL_NOW_S - 3600, stopped: {}, suggestion: null, ...extra })
+const process_ = (pid, role, quota, age = 5) => ({ pid, role, updated_at: PANEL_NOW_S - age, quota_use: quota })
+
+await check('quotaShare sums the live processes of the profile and ignores a stale one', () => {
+  const document = {
+    processes: {
+      a: process_(1, 'desktop', useOf({ 'gemini:gemini-3.8-flash:global': { main: 30, side: 10, tasks: { title_generation: 10 } } })),
+      b: process_(2, 'gateway', useOf({ 'gemini:gemini-3.8-flash:global': { main: 20, side: 40, tasks: { title_generation: 40 } } }, { stopped: { title_generation: 3 } })),
+      c: process_(3, 'hermes', useOf({ 'gemini:gemini-3.8-flash:global': { main: 999, side: 999, tasks: { x: 999 } } }), 9999)
+    }
+  }
+  const share = P.quotaShare(document, PANEL_NOW_MS)
+  const row = share.forEntry('gemini:gemini-3.8-flash')
+  assert.equal(row.main, 50)
+  assert.equal(row.side, 50)
+  assert.equal(row.pct, 50)
+  assert.equal(row.tasks.title_generation, 50)
+  assert.equal(share.stopped.title_generation, 3)
+  assert.equal(share.forEntry('gemini:gemini-3.7-flash').total, 0, 'another model is not counted')
+})
+
+await check('the line under a ring appears from ten side requests and ten percent, and not before', () => {
+  const at = (main, side) => P.quotaShare({ processes: { a: process_(1, 'desktop', useOf({ 'gemini:gemini-3.8-flash:global': { main, side, tasks: {} } })) } }, PANEL_NOW_MS)
+  const hidden = P.sideJobsLine(at(91, 9), 'gemini:gemini-3.8-flash')
+  assert.equal(hidden, null, '9 side requests is not enough')
+  assert.equal(P.sideJobsLine(at(100, 10), 'gemini:gemini-3.8-flash'), null, '9% is not enough')
+  const shown = P.sideJobsLine(at(77, 23), 'gemini:gemini-3.8-flash')
+  assert.ok(shown.startsWith('side jobs: 23% of requests since '), shown)
+})
+
+await check('the suggestion is taken from the newest live process that has one, and null when none does', () => {
+  const none = P.quotaShare({ processes: { a: process_(1, 'desktop', useOf({})) } }, PANEL_NOW_MS)
+  assert.equal(none.suggestion, null)
+  const some = P.quotaShare({
+    processes: {
+      a: process_(1, 'desktop', useOf({}, { suggestion: 'old words' }), 30),
+      b: process_(2, 'gateway', useOf({}, { suggestion: 'new words' }), 3)
+    }
+  }, PANEL_NOW_MS)
+  assert.equal(some.suggestion, 'new words')
+})
+
+await check('a document with no quota_use at all (an older build) does not break the page', () => {
+  const share = P.quotaShare({ processes: { a: { pid: 1, updated_at: PANEL_NOW_S - 2 } } }, PANEL_NOW_MS)
+  assert.equal(share.forEntry('gemini:gemini-3.8-flash').total, 0)
+  assert.equal(P.sideJobsLine(share, 'gemini:gemini-3.8-flash'), null)
 })
 
 if (failures.length) {

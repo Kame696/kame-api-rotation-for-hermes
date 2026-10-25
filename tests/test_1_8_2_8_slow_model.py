@@ -31,7 +31,13 @@ model:
 fallback_providers:
   - provider: gemini
     model: gemini-race-two
+  - provider: groq
+    model: llama-x
 """
+# 1.8.2.9 (decisions/0032 B3): the list ends with a model of ANOTHER provider, the only kind the
+# race cannot reach. When every model Hermes could be handed is already in the race, nothing is cut
+# any more (tests/test_1_8_2_9_silent_two_models.py); the hand-over these tests pin is the one to a
+# model that is not racing.
 SILENT = 3.0
 QUICK = {False: (0.3, 0.3, 0.3), True: (0.3, 0.3, 0.3)}
 
@@ -78,10 +84,27 @@ def test_the_next_reply_skips_the_slow_model_without_a_request(fresh):
     with pytest.raises(transport.KamePoolResting):
         list(fresh.stream(R.FakeCall(silent_pool())))
     fresh._handover_until.clear()          # Hermes reached the next model, then a new reply
+    # The raced-in next model was silent too and is marked slow as well; this test asks the
+    # plain case, where the model after it is free (1.8.2.9, decisions/0030 M6).
+    fresh._busy_until.pop("gemini:gemini-race-two", None)
     pool = silent_pool()
     with pytest.raises(transport.KamePoolResting):
         list(fresh.stream(R.FakeCall(pool)))
     assert pool.opened == []
+
+
+def test_when_every_later_model_is_known_slow_too_the_next_reply_stays_on_hermes_model(fresh):
+    # 1.8.2.9 (decisions/0030, M6, owner: stay with the best model): handing Hermes a model
+    # known slow too only walks the reply down to the last one. The slow bound is not armed
+    # (no free model could take it), so the reply waits on the model Hermes asked for.
+    with pytest.raises(transport.KamePoolResting):
+        list(fresh.stream(R.FakeCall(silent_pool())))
+    fresh._handover_until.clear()
+    assert fresh._entry_busy("gemini:gemini-race-two")      # the raced-in model was marked slow
+    fresh._note_busy("groq:llama-x")                         # ... and the model after it is known slow too
+    pool = R.Pool({k: [[0.3, R.chunk("still here", finish="stop")]] for k in R.KEYS})
+    out = list(fresh.stream(R.FakeCall(pool)))
+    assert R.shown(out) == "still here" and len(pool.opened) == 1
 
 
 def test_without_a_fallback_list_a_slow_model_is_waited_for(fresh, tmp_path):
@@ -111,6 +134,7 @@ def test_a_model_that_is_thinking_is_working_not_slow(fresh):
 
 def test_when_the_next_model_is_known_slow_too_the_first_is_waited_for(fresh):
     fresh._note_busy("gemini:gemini-race-two:global")
+    fresh._note_busy("groq:llama-x")             # the list's other-provider tail is known slow too
     pool = R.Pool({R.KEYS[0]: [[0.8, R.chunk("late", finish="stop")]]})
     out = list(fresh.stream(R.FakeCall(pool)))
     assert R.shown(out) == "late" and fresh.handed_over == 0

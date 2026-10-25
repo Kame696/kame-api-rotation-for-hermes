@@ -2564,7 +2564,28 @@ class Carousel:
                 retired = [
                     fingerprint(k) for k, s in pool.items() if s.get("retired")
                 ]
+                # 1.8.2.9 (decisions/0031, 2.6). One entry per key for the panel's ring, in
+                # fingerprint order so a key never jumps around it: ``[fingerprint, code,
+                # until, kind]``. Codes: r ready, s resting (thin), d out for today (daily /
+                # credit), x refused as a credential, o out of rotation. ``until`` is the epoch
+                # the key is back, so two snapshots a few seconds apart say the same thing.
+                key_states = []
+                for k, s in sorted(pool.items(), key=lambda item: fingerprint(item[0])):
+                    resting_now = s["sick_until"] > now
+                    kind = s["kind"] or ""
+                    if s.get("retired"):
+                        code = "o"
+                    elif kind in REJECTED_KINDS:
+                        code = "x"
+                    elif resting_now and (kind in NAMED_WINDOW_KINDS or kind == "billing"):
+                        code = "d"
+                    elif resting_now:
+                        code = "s"
+                    else:
+                        code = "r"
+                    key_states.append([fingerprint(k), code, s["sick_until"] if resting_now else None, kind])
                 out[identity] = {
+                    "key_states": key_states,
                     "keys": len(pool),
                     "healthy": healthy,
                     "resting": len(pool) - healthy,
@@ -2669,6 +2690,31 @@ class Carousel:
                 # recovered, so a scoped ``forget`` leaves it standing; only
                 # the global reset above (or this credential's own next
                 # success, on any model) clears it.
+
+    def known(self, identity: str) -> bool:
+        """Does the bench hold a pool for this model (any pool suffix)?"""
+        with self._lock:
+            return any(name == identity or name.startswith(identity + ":") for name in self._pools)
+
+    def reset_pool(self, identity: str) -> Optional[int]:
+        """The panel's *Wake this model* (1.8.2.9): ONE model's pool, memory AND the shared file.
+
+        Cooldowns, counts and the last error kind of that model's keys are dropped, and its rows
+        in the shared health file are released so another profile's older bench cannot put
+        them back. Other models, the account-wide holds and every key stay as they are."""
+        active = self._shared.active()
+        released = self._shared.release_all(only_model=identity)
+        if active and released is None:
+            raise RuntimeError("shared pool-health release failed")
+        with self._lock:
+            kept = {name: list(pool) for name, pool in self._pools.items()
+                    if name == identity or name.startswith(identity + ":")}
+        for name, keys in kept.items():
+            self.forget(name)
+            with self._lock:
+                # the pool stays on the panel, every key as fresh as one never tried
+                self._pools[name] = {key: _fresh(time.time()) for key in keys}
+        return released
 
     def reset_all(self) -> Optional[int]:
         """The *Clear pool* button: memory AND the shared file.

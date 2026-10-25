@@ -589,6 +589,9 @@ def _install_journal(ctx) -> Any:
 #: prove the file is not stale and follow the pool, so one thread does both.
 _CONTROL_TICK_S = 1.0
 _SNAPSHOT_TICK_S = 5.0
+#: 1.8.2.9: after writing a note left by a call, the heartbeat waits this long before the next
+#: one, so a burst of decisions inside one reply becomes one write, not ten.
+_PUBLISH_GAP_S = 0.2
 
 
 def _env_stamp() -> Any:
@@ -630,43 +633,70 @@ def _start_state_heartbeat() -> None:
         return
 
     def _tick() -> None:
+        import time as _time
+
         from . import control, state
 
-        ticks = 0
+        # 1.8.2.9 (decisions/0031, step 0). The request thread no longer writes the
+        # snapshot: it leaves a note (``state.request_publish``) and wakes this thread,
+        # which writes it within a few milliseconds. The panel's requests, the .env
+        # watch and the forced heartbeat keep their old cadence (1 s / 1 s / 5 s).
+        state.add_consumer()
         env_stamp = _env_stamp()
-        while not stop.wait(_CONTROL_TICK_S):
-            ticks += 1
-            try:
-                # Publishes by itself when it applies something, so the panel
-                # sees the new value and the outcome in the same read.
-                control.poll()
-            except Exception:  # pragma: no cover — ``poll`` swallows its own
-                logger.debug("%s: control poll failed", PLUGIN_NAME, exc_info=True)
-            # 1.8.2.1. A panel request is applied by whichever Hermes process
-            # on this profile polls first (Desktop backend, gateway, a second
-            # window); it writes .env, but only that process's environment
-            # changed. Every other process now picks the edit up from the file
-            # within a second, so a setting saved in the panel is in force in
-            # the process actually serving the chat.
-            stamp = _env_stamp()
-            if stamp != env_stamp:
-                env_stamp = stamp
+        last_control = _time.monotonic()
+        last_snapshot = _time.monotonic()
+        try:
+            while not stop.is_set():
+                state._wake.wait(_CONTROL_TICK_S)
+                if stop.is_set():
+                    break
+                state._wake.clear()
                 try:
-                    from . import settings as _settings
-
-                    changed = _settings.reread_environment()
-                    if changed:
-                        logger.info("%s: .env changed — now in force here: %s",
-                                    PLUGIN_NAME, ", ".join(changed))
+                    if state.drain_pending():
+                        last_snapshot = _time.monotonic()
+                        # Coalesce a burst of notes into one write (the panel polls once a second).
+                        stop.wait(_PUBLISH_GAP_S)
                 except Exception:  # pragma: no cover - a daemon that cannot die
-                    logger.debug("%s: could not reread .env", PLUGIN_NAME, exc_info=True)
-            if ticks * _CONTROL_TICK_S < _SNAPSHOT_TICK_S:
-                continue
-            ticks = 0
-            try:
-                state.publish(force=True)
-            except Exception:  # pragma: no cover - a daemon that cannot die
-                logger.debug("%s: snapshot heartbeat failed", PLUGIN_NAME, exc_info=True)
+                    logger.debug("%s: snapshot write failed", PLUGIN_NAME, exc_info=True)
+                now = _time.monotonic()
+                if now - last_control < _CONTROL_TICK_S:
+                    continue
+                last_control = now
+                try:
+                    # Publishes by itself when it applies something, so the panel
+                    # sees the new value and the outcome in the same read.
+                    control.poll()
+                except Exception:  # pragma: no cover — ``poll`` swallows its own
+                    logger.debug("%s: control poll failed", PLUGIN_NAME, exc_info=True)
+                # 1.8.2.1. A panel request is applied by whichever Hermes process
+                # on this profile polls first (Desktop backend, gateway, a second
+                # window); it writes .env, but only that process's environment
+                # changed. Every other process now picks the edit up from the file
+                # within a second, so a setting saved in the panel is in force in
+                # the process actually serving the chat.
+                stamp = _env_stamp()
+                if stamp != env_stamp:
+                    env_stamp = stamp
+                    try:
+                        from . import settings as _settings
+
+                        changed = _settings.reread_environment()
+                        if changed:
+                            logger.info("%s: .env changed — now in force here: %s",
+                                        PLUGIN_NAME, ", ".join(changed))
+                    except Exception:  # pragma: no cover - a daemon that cannot die
+                        logger.debug("%s: could not reread .env", PLUGIN_NAME, exc_info=True)
+                if now - last_snapshot < _SNAPSHOT_TICK_S:
+                    continue
+                last_snapshot = now
+                try:
+                    # The live activity is kept, so 'Right now' does not fall back to idle
+                    # every five seconds during a long call.
+                    state.publish(force=True, activity=state.current_activity())
+                except Exception:  # pragma: no cover - a daemon that cannot die
+                    logger.debug("%s: snapshot heartbeat failed", PLUGIN_NAME, exc_info=True)
+        finally:
+            state.remove_consumer()
 
     stop = threading.Event()
     context = contextvars.copy_context()
@@ -683,6 +713,12 @@ def _stop_state_heartbeat() -> None:
     thread = globals().pop("_state_heartbeat", None)
     if stop is not None:
         stop.set()
+        try:
+            from . import state as _state
+
+            _state._wake.set()          # 1.8.2.9: wake it now, not at the next second
+        except Exception:  # pragma: no cover
+            pass
     if thread is not None and thread is not threading.current_thread():
         thread.join(timeout=2.0)
 

@@ -306,12 +306,16 @@ class InFlight:
         with self._lock:
             self._calls[id(call)] = row
 
-    def note(self, call: Any, kind: str, reason: str = "") -> None:
+    def note(self, call: Any, kind: str, reason: str = "", *, identity: str = "", fingerprint: str = "") -> None:
         with self._lock:
             row = self._calls.get(id(call))
             if row is None:
                 return
             row["last_at"] = time.time()
+            if fingerprint and kind in (SENT, SWITCH):
+                # 1.8.2.9: the key now on the wire, for the panel's ring ("answering now")
+                row["key"] = str(fingerprint)
+                row["key_identity"] = str(identity or row.get("identity") or "")
             if kind not in GOOD_KINDS:
                 row["failures"] += 1
                 if reason:
@@ -320,6 +324,15 @@ class InFlight:
     def end(self, call: Any) -> None:
         with self._lock:
             self._calls.pop(id(call), None)
+
+    def keys_on_the_wire(self) -> Dict[str, List[str]]:
+        """``{identity: [key fingerprints]}`` of the key each running call last put on the wire."""
+        out: Dict[str, List[str]] = {}
+        with self._lock:
+            for row in self._calls.values():
+                if row.get("key"):
+                    out.setdefault(row.get("key_identity") or row.get("identity") or "", []).append(row["key"])
+        return out
 
     def rows(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
         """Running calls, longest-waiting first."""

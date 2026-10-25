@@ -45,7 +45,7 @@ SCHEMA = 1
 
 #: Every action this module will carry out. Anything else is reported back as
 #: unknown — including, deliberately, anything to do with keys.
-ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events", "refresh")
+ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events", "refresh", "forget_busy")
 
 #: The request most recently applied, kept so the panel can tell "saved" from
 #: "still waiting" without polling anything else.
@@ -212,6 +212,44 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
 
     if action not in ACTIONS:
         return False, f"{action or 'a request with no action'} is not something KAME does"
+
+    if action == "forget_busy":
+        # 1.8.2.9 (decisions/0031 2.7): the panel's 'Try this model now'. Applied on the heartbeat,
+        # never on a call; drops one model's busy / slow window and its probe stamp.
+        name = str(key or "").strip()
+        if not name:
+            return False, "forget_busy needs the model it is for"
+        try:
+            from . import facade
+
+            dropped = facade.TRANSPORT.forget_busy(name)
+        except Exception:
+            logger.debug("kame: could not forget a busy window", exc_info=True)
+            return False, "could not clear that model's busy window - see the log"
+        if not dropped:
+            return False, f"{name} is not known busy or slow right now"
+        return True, f"{name} will be asked first on the next reply"
+
+    if action == "clear_pool" and str(key or "").strip():
+        # 1.8.2.9 (decisions/0031 2.7): ONE model ('Wake this model'). Its keys start again; no other
+        # model, no account-wide hold and no key is touched.
+        name = str(key).strip()
+        try:
+            from .core.carousel import ENGINE
+
+            if not ENGINE.known(name):
+                return False, f"KAME has not used {name} yet, so there is nothing to clear"
+            ENGINE.reset_pool(name)
+            try:
+                from . import facade
+
+                facade.TRANSPORT.forget_busy(name)
+            except Exception:  # pragma: no cover - the bench was cleared; the busy window is a courtesy
+                logger.debug("kame: could not drop the busy window after a clear", exc_info=True)
+        except Exception:
+            logger.debug("kame: could not clear one pool", exc_info=True)
+            return False, "that model's pool could not be cleared - see the log"
+        return True, f"{name}: every key starts again as if it had never been tried"
 
     if action == "clear_pool":
         # Deliberately not "forget the keys". Nothing here can reach a

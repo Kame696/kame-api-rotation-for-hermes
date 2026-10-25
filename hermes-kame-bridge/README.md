@@ -1,8 +1,9 @@
 # hermes-kame-bridge
 
-The companion to **hermes-kame-api-rotation** (current: 1.8.2.8). Install it with the other two KAME
-packages to get every feature today. It is listed in the Hermes plugin catalog as a **disclosed exception to
-rule 9** (it wraps Hermes core at runtime) and only until the two upstream pull requests below are merged.
+The companion to **hermes-kame-api-rotation** (current: 1.8.2.9). Install it with the other two KAME
+packages to get every feature today. It is **not** in the Hermes plugin catalog: it wraps Hermes core at
+runtime, which catalog rule 9 does not allow. It ships with this repository and its releases only, and only
+until the upstream changes below are merged.
 
 KAME reaches Hermes only through documented seams. Two of those seams are
 proposed upstream and not merged yet. This plugin adds them, copied from the

@@ -468,8 +468,13 @@ def test_background_jobs_never_probe_several_keys(fresh):
     t = transport.KameTransport(engine=carousel_mod.Carousel())
     call = FakeCall(world, model)
     call.channel = "secondary"
-    t.complete(call)
+    # 1.8.2.9 (decisions/0032): a background job now has a budget - six requests when its task is
+    # not a cosmetic one - so with the only good key last of fourteen it is stopped before reaching
+    # it. What this test pins is unchanged: it never sends a probe burst of several keys at once.
+    with pytest.raises(transport.KameAuxTimeout):
+        t.complete(call)
     assert t.probe_bursts == 0
+    assert len(world.asked) <= 6
 
 
 def test_the_panel_warns_when_hermes_cannot_reach_the_whole_list(fresh):

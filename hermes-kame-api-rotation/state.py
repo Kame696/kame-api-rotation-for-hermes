@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .core import __version__
 
@@ -241,7 +241,7 @@ def _outside_pool() -> Dict[str, List[str]]:
     return found if isinstance(found, dict) else {}
 
 
-def _fallback_view(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _fallback_view(rows: List[Dict[str, Any]], binding: Any = None) -> Dict[str, Any]:
     """Hermes' fallback chain as the panel shows it (1.8.2.7, read-only).
 
     KAME never edits the chain: Hermes owns it (`hermes fallback add`). This
@@ -259,9 +259,15 @@ def _fallback_view(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         def entry(identity: str, role: str) -> Dict[str, Any]:
             row = next((r for i, r in by_identity.items()
                         if i == identity or i.startswith(identity + ":")), None)
+            view = getattr(binding, "busy_view", None)
+            busy = view(identity) if callable(view) else {}
             return {
                 "identity": identity,
                 "role": role,
+                # 1.8.2.9: the panel's ring halo and 'asked again in ...' countdown
+                "busy_until": busy.get("busy_until"),
+                "busy_kind": busy.get("busy_kind"),
+                "probe_at": busy.get("probe_at"),
                 "keys": row["keys"] if row else None,
                 "healthy": row["healthy"] if row else None,
                 "soonest_s": row["soonest_s"] if row else None,
@@ -299,12 +305,56 @@ def _fallback_view(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             warning = (f"Hermes switches model at most {limit} times in one message, and your list has "
                        f"{len(chain)} fallback models: when the first {limit} are all out, the rest are "
                        f"never reached and the message ends with no reply. Set agent.api_max_retries: "
-                       f"{len(chain) + 1} in Hermes' config.yaml to reach all of them.")
+                       f"{len(chain) + 1} in Hermes' config.yaml to reach all of them. That number is also how "
+                       f"many times Hermes retries an ordinary error, so raising it makes a failing call try longer.")
         return {"state": state, "why": why, "threshold_s": threshold, "entries": entries,
                 "switch_limit": limit, "warning": warning}
     except Exception:
         logger.debug("kame: could not build the fallback view", exc_info=True)
         return {"state": "unknown", "why": "", "threshold_s": 0, "entries": []}
+
+
+def _speed_view(binding: Any = None) -> Dict[str, Any]:
+    """The cost readout: the mode, what it may spend, what it did in the last hour, and since start."""
+    try:
+        from . import settings
+        from .core.hedging import HEDGE_TRACKER
+
+        mode = str(settings.text_value(settings.HEDGE_MODE) or "adaptive")
+        balanced, faster = settings.speed_multipliers()
+        cap = {"off": 0, "adaptive": round((balanced - 1.0) * 100), "max": round((faster - 1.0) * 100)}.get(mode, 0)
+        paused: Dict[str, float] = {}
+        mono, wall = time.monotonic(), time.time()
+        for identity, until in list(HEDGE_TRACKER._max_downgraded_until.items()):
+            if until > mono:
+                paused[identity] = round(wall + (until - mono), 1)
+        view = binding.speed_view() if callable(getattr(binding, "speed_view", None)) else {}
+        return {"mode": mode, "cap_pct": cap, "paused_until": paused, **view}
+    except Exception:
+        logger.debug("kame: could not build the speed view", exc_info=True)
+        return {"mode": "adaptive", "cap_pct": 10, "paused_until": {}}
+
+
+def _quota_use_view(binding: Any = None) -> Dict[str, Any]:
+    """Requests per model over the last day, chat vs background jobs, plus a read-only suggestion.
+
+    1.8.2.9 (decisions/0032 A7/A9). Counts change only when a request starts, so the "nothing changed"
+    shortcut of ``publish`` is not defeated. The suggestion names only a model of the user's own list."""
+    empty = {"since": 0.0, "models": {}, "stopped": {}, "suggestion": None}
+    try:
+        view = binding.quota_use_view() if callable(getattr(binding, "quota_use_view", None)) else None
+        if not view:
+            return empty
+        from .core import aux_budget, fallback_chain
+
+        primary, chain = fallback_chain.read()
+        view["suggestion"] = aux_budget.suggest(
+            view["models"], primary, list(chain),
+            lambda entry: (fallback_chain.entry_source(entry) or ("", ""))[0], view["since"])
+        return view
+    except Exception:
+        logger.debug("kame: could not build the quota-use view", exc_info=True)
+        return empty
 
 
 def _pool_rows() -> List[Dict[str, Any]]:
@@ -316,11 +366,26 @@ def _pool_rows() -> List[Dict[str, Any]]:
         logger.debug("kame: could not read the pool for the snapshot", exc_info=True)
         return []
     rows: List[Dict[str, Any]] = []
+    try:  # 1.8.2.9: the key each running call last put on the wire, for the ring's "answering now"
+        from .core.events import INFLIGHT as _inflight
+
+        on_wire = _inflight.keys_on_the_wire()
+    except Exception:
+        on_wire = {}
     for identity in sorted(pools):
         row = pools[identity]
+        live = {fp for owner, fps in on_wire.items()
+                if owner == identity or identity.startswith(owner + ":") or owner.startswith(identity + ":")
+                for fp in fps}
+        key_states = [
+            ([fp, "f", until, kind] if (code == "r" and fp in live) else [fp, code, until, kind])
+            for fp, code, until, kind in (row.get("key_states") or [])
+        ]
         rows.append(
             {
                 "identity": identity,
+                "key_states": key_states,          # 1.8.2.9: [fingerprint, code, until_epoch|None, kind]
+                "in_flight": sum(1 for state_row in key_states if state_row[1] == "f"),
                 "keys": int(row.get("keys", 0)),
                 "healthy": int(row.get("healthy", 0)),
                 "resting": int(row.get("resting", 0)),
@@ -514,7 +579,12 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         "settings": _settings_rows(),
         # 1.8.2.7. Hermes' own fallback chain, read-only, and whether KAME will
         # hand a call over to it.
-        "fallback": _fallback_view(rows),
+        "fallback": _fallback_view(rows, binding),
+        # 1.8.2.9 (decisions/0031 J5): what the speed mode has really cost, and where Faster is
+        # stepped back. Counters and epoch deadlines: they change only when a call does.
+        "speed": _speed_view(binding),
+        # 1.8.2.9 (decisions/0032 A7): requests per model over the last day, chat vs background jobs.
+        "quota_use": _quota_use_view(binding),
         # 1.2.0. The shelves the rows above are sorted onto, titled and
         # explained here rather than in the panel: the reason one setting is
         # optional and another is an escape hatch is a fact about the plugin,
@@ -1003,6 +1073,95 @@ def publish(
         _disabled_reason = ""
     _sweep_once(path.parent)
     return True
+
+
+# --- 1.8.2.9 (decisions/0031, step 0): the snapshot is built OFF the request thread --------------
+#
+# Until 1.8.2.8 the transport called ``publish`` itself, at the start of every attempt and after
+# most decisions: a full snapshot (two JSON dumps, a file read, a file write, up to 80 ms of
+# sleeps when the panel was reading) on the thread that is waiting for the model. Measured with
+# ``tools/bench_publish.py``: about 10 ms alone, 27 ms (p95 50 ms) with the panel polling the file.
+# Now the request thread only leaves a note; the heartbeat thread (one per process, already there
+# for the panel's requests) wakes at once and writes. With no heartbeat running (a test, a process
+# that never registered) the note is written inline, exactly as before.
+_wake = threading.Event()
+_pending_lock = threading.Lock()
+_pending: Optional[Tuple[Any, Optional[Dict[str, Any]]]] = None
+_current_activity: Optional[Dict[str, Any]] = None
+_consumers = 0
+_in_flight = False
+
+
+def add_consumer() -> None:
+    """The heartbeat thread announces itself: notes are left for it, not written inline."""
+    global _consumers
+    with _pending_lock:
+        _consumers += 1
+
+
+def remove_consumer() -> None:
+    global _consumers
+    with _pending_lock:
+        _consumers = max(0, _consumers - 1)
+    _wake.set()
+
+
+def request_publish(binding: Any = None, *, activity: Optional[Dict[str, Any]] = None) -> None:
+    """Ask for a snapshot from the request thread: one lock, two assignments, one ``Event.set()``.
+
+    The last request wins (``activity`` included, ``None`` meaning the call ended), and
+    the heartbeat keeps the last activity for its own periodic writes so the panel's
+    'Right now' line does not fall back to idle every few seconds during a long call."""
+    global _pending, _current_activity
+    with _pending_lock:
+        if _consumers > 0:
+            _pending = (binding, activity)
+            _current_activity = activity
+            queued = True
+        else:
+            queued = False
+    if queued:
+        _wake.set()
+    else:
+        publish(binding, activity=activity)
+
+
+def take_pending() -> Optional[Tuple[Any, Optional[Dict[str, Any]]]]:
+    global _pending, _in_flight
+    with _pending_lock:
+        note, _pending = _pending, None
+        if note is not None:
+            _in_flight = True
+        return note
+
+
+def current_activity() -> Optional[Dict[str, Any]]:
+    return _current_activity
+
+
+def drain_pending() -> bool:
+    """Write the note left by the request thread, if any. Run by the heartbeat thread."""
+    global _in_flight
+    note = take_pending()
+    if note is None:
+        return False
+    try:
+        publish(note[0], activity=note[1])
+    finally:
+        _in_flight = False
+    return True
+
+
+def drain(timeout: float = 2.0) -> bool:
+    """Wait until nothing is waiting to be written (tests, shutdown). ``True`` when settled."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _pending_lock:
+            settled = _pending is None and not _in_flight
+        if settled:
+            return True
+        time.sleep(0.005)
+    return False
 
 
 def _replace_patiently(temporary: str, path: Any, tries: int = 5, pause_s: float = 0.02) -> None:

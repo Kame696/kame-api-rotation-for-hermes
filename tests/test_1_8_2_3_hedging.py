@@ -137,17 +137,24 @@ class TestDecision(unittest.TestCase):
             else:
                 os.environ["KAME_HEDGE_MODE"] = saved
 
-    def test_mode_max_fires_immediately_then_downgrades(self):
+    def test_mode_max_no_longer_fires_at_once_it_waits_a_notch_sooner_than_balanced(self):
+        # 1.8.2.9 (decisions/0031): the old test pinned 'fires at t=0 with no samples'; that second
+        # request on every reply burned a 14-key pool in four messages. Faster (stored 'max') now
+        # hedges a late reply, at three quarters of the time Balanced would wait, from its own budget.
         saved = os.environ.get("KAME_HEDGE_MODE")
         os.environ["KAME_HEDGE_MODE"] = "max"
         try:
-            # fires at t=0 with no samples at all
-            self.assertTrue(self.t.should_hedge(self.ident, 0.0, healthy_count=3))
+            self.assertFalse(self.t.should_hedge(self.ident, 0.0, healthy_count=3))     # nothing at t=0
+            cold = self.t.threshold(self.ident, stream=False, reasoning=False)
+            self.assertTrue(self.t.should_hedge(self.ident, cold + 0.01, healthy_count=3))
             # and still respects the saturation guard
-            self.assertFalse(self.t.should_hedge(self.ident, 0.0, healthy_count=1))
-            # a hedge 429 downgrades max for 10 minutes
+            self.assertFalse(self.t.should_hedge(self.ident, cold + 0.01, healthy_count=1))
+            # a hedge 429 steps Faster back to Balanced for 10 minutes: its threshold is longer again
+            os.environ["KAME_HEDGE_MODE"] = "adaptive"
+            balanced = self.t.threshold(self.ident, stream=False, reasoning=False)
+            os.environ["KAME_HEDGE_MODE"] = "max"
             self.t.note_hedge_429(self.ident)
-            self.assertFalse(self.t.should_hedge(self.ident, 0.0, healthy_count=3))
+            self.assertAlmostEqual(self.t.threshold(self.ident, stream=False, reasoning=False), balanced)
         finally:
             if saved is None:
                 os.environ.pop("KAME_HEDGE_MODE", None)

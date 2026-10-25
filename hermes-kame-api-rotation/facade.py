@@ -264,6 +264,9 @@ class _FacadeCall(Call):
             host_task = host_aux_task()
         except Exception:
             slot = host_task = ""
+        # 1.8.2.9 (decisions/0032 A2): a task NAMED by the client, a ContextVar or the host's own
+        # marker may be treated as cosmetic (a title); one guessed from the model name never is.
+        self.task_known = bool(client_task or slot or host_task)
         if client_aux:
             self.channel = "secondary"
             self.task = client_task or slot or host_task or _guess_aux_task(model)

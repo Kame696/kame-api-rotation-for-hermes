@@ -74,8 +74,23 @@ _SAMPLE_WINDOW_S = 1800.0
 #: A hedge leg refused with a per-minute 429 cools hedging for this long.
 _HEDGE_COOLDOWN_S = 60.0
 
-#: ``max`` mode auto-downgrades for this long when the 429 rate rises.
+#: ``max`` mode (shown as "Faster") steps back to Balanced for this long on a model after a
+#: quota refusal on any of its keys (1.8.2.9, decisions/0031 J3).
 _MAX_MODE_PENALTY_S = 600.0
+
+#: 1.8.2.9 (decisions/0031, J2). "Faster" is Balanced with its dials turned a notch, bounded by
+#: construction: a healthy reply still sends ONE request (the old top mode sent two on every
+#: reply and burned a 14-key pool in four messages); the first backup goes out at 1.5x the
+#: model's median first word (Balanced 2x), the budget is three times Balanced's (30% by
+#: default, never over 100%), a non-streamed call hedges at 0.75 of the learned threshold.
+_FASTER_MULTIPLIER = 1.5
+_FASTER_NONSTREAM = 0.75
+_FASTER_BUDGET_X = 3.0
+
+#: Refusals that say "this model's quota is spent or near it" - the ones that step Faster back.
+#: 503 / overloaded and timeouts are deliberately absent: a busy model is another mechanism's job
+#: (0028 D2) and racing is exactly what helps there.
+_QUOTA_KINDS = frozenset({"per_minute", "rate_limit", "daily", "insufficient_quota"})
 
 #: 1.8.2.5. A stream's first backup goes out at this many times the model's
 #: median time-to-first-word (the second at twice that).
@@ -203,6 +218,24 @@ class HedgeTracker:
         except Exception:
             return "adaptive"
 
+    # -- 1.8.2.9: Faster ------------------------------------------------------
+
+    def _faster(self, identity: str, now: float) -> bool:
+        """Is the bounded "Faster" in force for this model right now?
+
+        The stored value is still ``max``. It stops being in force for one model for ten
+        minutes after a quota refusal on any of that model's keys (``note_quota_refusal``)
+        and comes back by itself, with no probe and no request."""
+        return self._mode() == "max" and now >= self._max_downgraded_until.get(identity, 0.0)
+
+    def _budget_pct(self, faster: bool) -> float:
+        pct = self._setting("hedge_budget_pct", 10.0)
+        return min(100.0, pct * _FASTER_BUDGET_X) if faster else pct
+
+    def _bucket_id(self, key: str, faster: bool) -> str:
+        """Faster keeps its own bucket, so a mode change never inherits the other's tokens."""
+        return key + "|faster" if faster else key
+
     # -- bucket plumbing ----------------------------------------------------
 
     def _bucket_for(self, key: str, *, budget_pct: float, burst: float) -> _TokenBucket:
@@ -256,6 +289,10 @@ class HedgeTracker:
             else:
                 samples.append((now, latency_s))
                 self._bucket_for(key, budget_pct=budget_pct, burst=burst).refill(1)
+                if self._mode() == "max":
+                    # 1.8.2.9: Faster earns tokens three times as fast, in its own bucket
+                    self._bucket_for(self._bucket_id(key, True), budget_pct=self._budget_pct(True),
+                                     burst=burst).refill(1)
             if len(samples) > _MAX_SAMPLES:
                 samples[:] = samples[-_MAX_SAMPLES:]
 
@@ -276,6 +313,8 @@ class HedgeTracker:
             "hedge_cold_reasoning_s" if reasoning else "hedge_cold_s",
             30.0 if reasoning else 6.0,
         )
+        # 1.8.2.9: Faster hedges a non-streamed call at three quarters of the learned time
+        factor = _FASTER_NONSTREAM if (not stream and self._faster(identity, now)) else 1.0
         with self._lock:
             samples = self._samples.get(key, [])
             recent = [l for t, l in samples if now - t < _SAMPLE_WINDOW_S]
@@ -284,7 +323,7 @@ class HedgeTracker:
                 # a different context, not of this one: they are never
                 # fallback material (a stale threshold hedges wrong on both
                 # sides — too eager for a faster pool, too shy for slower).
-                return cold if cold > 0 else None
+                return cold * factor if cold > 0 else None
             recent.sort()
             pct = self._setting("hedge_quantile", 90.0) / 100.0
             idx = min(len(recent) - 1, int(len(recent) * pct))
@@ -293,8 +332,8 @@ class HedgeTracker:
             # pathological sample window cannot turn hedging off entirely
             # or make it fire on every call
             if cold > 0:
-                return min(max(learned, cold * 0.5), cold * 4.0)
-            return learned
+                return min(max(learned, cold * 0.5), cold * 4.0) * factor
+            return learned * factor
 
     def percentile(self, identity: str, *, now: Optional[float] = None,
                    pct: float = 0.90, stream: bool = False, reasoning: bool = False) -> Optional[float]:
@@ -338,22 +377,17 @@ class HedgeTracker:
         max_tokens = self._setting("hedge_max_prompt_tokens", 32000.0)
         if est_prompt_tokens and est_prompt_tokens > max_tokens:
             return False
-        if mode == "max":
-            if now < self._max_downgraded_until.get(identity, 0.0):
-                pass  # downgraded: fall through to the adaptive rules
-            else:
-                # max mode: fire from dispatch, only the saturation and
-                # prompt-size guards above apply, and the budget is not
-                # consulted — but it is not refilled either, so an
-                # auto-downgrade restores order quickly.
-                return True
+        # 1.8.2.9: no 'fire from dispatch' any more. Faster uses the same rules as Balanced with
+        # its own dials (threshold x 0.75, budget x 3, own bucket); the old 'max' sent a second
+        # request on every reply and the budget was never consulted.
         threshold = self.threshold(identity, stream=stream, reasoning=reasoning, now=now)
         if threshold is None:
             return False
         if elapsed_s < threshold:
             return False
-        key = bucket_key(identity, stream, reasoning)
-        budget_pct = self._setting("hedge_budget_pct", 10.0)
+        faster = self._faster(identity, now)
+        key = self._bucket_id(bucket_key(identity, stream, reasoning), faster)
+        budget_pct = self._budget_pct(faster)
         burst = self._setting("hedge_burst", 3.0)
         with self._lock:
             return self._bucket_for(key, budget_pct=budget_pct, burst=burst).try_consume()
@@ -372,17 +406,20 @@ class HedgeTracker:
         attempts on every main model take more than twice the median — and a
         p90 sits *inside* that tail, so a backup timed on it goes out after
         most of the wait has already been paid. Before ``_MIN_SAMPLES``
-        exist, the cold-start number of the class. ``max`` mode starts the
-        first backup at once.
+        exist, the cold-start number of the class. 1.8.2.9: Faster (``max``) goes
+        out at ``_FASTER_MULTIPLIER`` times the median (cold start: half the
+        class's number); it no longer starts the first backup at once.
         """
         now = time.monotonic() if now is None else now
         cold = self._setting(
             "hedge_cold_reasoning_s" if reasoning else "hedge_cold_s",
             30.0 if reasoning else 6.0,
         )
+        faster = self._faster(identity, now)
+        if faster:
+            cold = cold / 2.0
         cold = max(cold, _STREAM_MIN_TRIGGER_S)
-        if self.fires_from_dispatch(identity, now=now):
-            return 0.0, cold
+        multiplier = _FASTER_MULTIPLIER if faster else _STREAM_MULTIPLIER
         key = bucket_key(identity, True, reasoning)
         with self._lock:
             # The last ``_MAX_SAMPLES`` first-word times, whatever their age:
@@ -394,7 +431,7 @@ class HedgeTracker:
             first = cold
         else:
             median = recent[len(recent) // 2]
-            first = min(max(_STREAM_MIN_TRIGGER_S, _STREAM_MULTIPLIER * median), cold * 4.0)
+            first = min(max(_STREAM_MIN_TRIGGER_S, multiplier * median), cold * 4.0)
         return first, first * 2.0
 
     def first_word_stats(self, identity: str, *, reasoning: bool) -> Optional[Tuple[float, float]]:
@@ -446,7 +483,7 @@ class HedgeTracker:
     ) -> bool:
         """Every guard of :meth:`should_hedge` except the timing, which the
         caller already decided (a stream's triggers are its own). Consumes a
-        budget token when it says yes, outside ``max`` mode."""
+        budget token when it says yes (Faster: from its own, larger bucket)."""
         now = time.monotonic() if now is None else now
         mode = self._mode()
         if mode == "off" or under_pressure or healthy_count < 2:
@@ -456,27 +493,37 @@ class HedgeTracker:
         max_tokens = self._setting("hedge_max_prompt_tokens", 32000.0)
         if est_prompt_tokens and est_prompt_tokens > max_tokens:
             return False
-        if self.fires_from_dispatch(identity, now=now):
-            return True
-        key = bucket_key(identity, stream, reasoning)
-        budget_pct = self._setting("hedge_budget_pct", 10.0)
+        faster = self._faster(identity, now)
+        key = self._bucket_id(bucket_key(identity, stream, reasoning), faster)
+        budget_pct = self._budget_pct(faster)
         burst = self._setting("hedge_burst", 3.0)
         with self._lock:
             return self._bucket_for(key, budget_pct=budget_pct, burst=burst).try_consume()
 
     def fires_from_dispatch(self, identity: str, *, now: Optional[float] = None) -> bool:
-        """Whether ``max`` mode is in force for this identity right now.
+        """Always ``False`` since 1.8.2.9, kept for callers.
 
-        1.8.2.4: the setting promises "fires backups from the start", but the
-        transport waited for the threshold before asking, so ``max`` only
-        skipped the budget. The transport now asks this first and, when it
-        is true, considers the backup without waiting.
-        """
+        Until 1.8.2.8 the top speed setting sent a second request at the first instant of EVERY
+        reply, without consulting the budget (2x, up to 3x), and burned a 14-key Gemini pool
+        in four messages. Faster now waits for the same kind of late first word as Balanced,
+        only a notch sooner (decisions/0031)."""
+        return False
+
+    def note_quota_refusal(self, identity: str, *, now: Optional[float] = None) -> None:
+        """A key of this model was refused for quota (per-minute, rate limit, daily, credit).
+
+        On ANY leg - the main request, a backup, a raced model, a circle probe. Faster steps
+        back to Balanced for this model for ten minutes (``_MAX_MODE_PENALTY_S``); every further
+        refusal pushes the end out again, and it returns by itself afterwards. Only a dict write,
+        and only on a failure: a reply that goes well never reaches it."""
         now = time.monotonic() if now is None else now
-        if self._mode() != "max":
-            return False
         with self._lock:
-            return now >= self._max_downgraded_until.get(identity, 0.0)
+            self._max_downgraded_until[identity] = now + _MAX_MODE_PENALTY_S
+
+    def faster_paused_for(self, identity: str, *, now: Optional[float] = None) -> float:
+        """Seconds Faster is still stepped back on this model (0 when it is in force)."""
+        now = time.monotonic() if now is None else now
+        return max(0.0, self._max_downgraded_until.get(identity, 0.0) - now)
 
     # -- diagnostics and pressure --------------------------------------------
 

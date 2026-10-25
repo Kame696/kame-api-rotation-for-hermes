@@ -14,16 +14,46 @@ Any failure is an empty chain: with no chain KAME behaves exactly as before.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-_TTL_S = 5.0
-_UNREADABLE: Tuple[Optional[str], Tuple[str, ...]] = (None, ("<unreadable>",))
+logger = logging.getLogger(__name__)
+
+_yaml_said = False
+
+
+def _load_yaml(text: str) -> Any:
+    """Parse ``config.yaml`` the way a stock Hermes can.
+
+    1.8.2.9 (catalog review of 1.8.2.8, 2026-10-19): core Hermes does not ship PyYAML, so
+    ``import yaml`` failed inside the callers' ``except Exception`` and the fallback
+    list was silently never read - no hand-over, no cross-model race, no switch limit.
+    Hermes' own ``hermes_yaml`` (core since v0.21.6) first, PyYAML second; with neither,
+    say so once in the log instead of acting as if the user had no list.
+    """
+    global _yaml_said
+    try:
+        from hermes_yaml import safe_load  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from yaml import safe_load  # type: ignore[no-redef]
+        except ImportError:
+            if not _yaml_said:
+                _yaml_said = True
+                logger.warning(
+                    "kame: config.yaml cannot be read - neither hermes_yaml nor PyYAML is "
+                    "installed, so the fallback model list is ignored")
+            raise _NoYaml("neither hermes_yaml nor PyYAML is installed")
+    return safe_load(text)
+
+
+class _NoYaml(ImportError):
+    """No YAML reader on this install: a fact about the install, not a file mid-save."""
 _lock = threading.Lock()
-_cache: Dict[str, Tuple[float, Tuple[Optional[str], Tuple[str, ...]]]] = {}
 
 
 def _home() -> Optional[Path]:
@@ -74,44 +104,91 @@ def _from_config(config: Any) -> Tuple[Optional[str], List[str]]:
     return primary, chain
 
 
-def _read_uncached(home: Optional[Path]) -> Tuple[Optional[str], Tuple[str, ...]]:
-    if home is None:
-        return None, ()
-    path = home / "config.yaml"
-    if not path.exists():
-        return None, ()
-    try:
-        import yaml  # the host ships it
+#: 1.8.2.9 (idle-CPU finding, 2026-10-24): the gateway loads this plugin once per profile and
+#: each copy used to parse the 42 KB ``config.yaml`` three times every five seconds, ~120 ms
+#: each with the pure-Python reader the real Hermes ships (about 30% of a core while idle).
+#: The file is now looked at (one ``stat``) at most once a second and parsed only when its
+#: ``(mtime, size)`` changed; ``read``, ``entry_source`` and ``switch_limit`` share that one
+#: parse. A file that will not parse (Hermes is saving it) keeps the last good reading.
+_STAMP_EVERY_S = 1.0
+_NONE = "none"          # no config.yaml
+_NO_YAML = "noyaml"     # no YAML reader on this install (a fact about the install)
+_OK = "ok"
+_BAD = "bad"            # unreadable now and nothing good known yet
+_parsed: Dict[str, Dict[str, Any]] = {}
 
-        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        # 1.8.2.7 (review M3): a file Hermes is saving right now, or one Windows
-        # holds for a moment, is not "no chain"; the caller must not cache it.
-        return _UNREADABLE
-    primary, chain = _from_config(config)
-    return primary, tuple(chain)
+
+def _stamp_of(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
+
+def _config(home: Optional[Path]) -> Tuple[str, Any, Dict[str, Any]]:
+    """``(kind, parsed config, derived-values memo)`` for ``home``'s ``config.yaml``.
+
+    ``kind`` is ``_OK``, ``_NONE``, ``_NO_YAML`` or ``_BAD``. The memo belongs to one parse: it
+    is dropped with it, so derived values never outlive the text they came from."""
+    if home is None:
+        return _NONE, {}, {}
+    key = str(home)
+    now = time.monotonic()
+    with _lock:
+        entry = _parsed.get(key)
+        if entry is not None and now - entry["checked"] < _STAMP_EVERY_S:
+            return entry["kind"], entry["config"], entry["memo"]
+    path = home / "config.yaml"
+    stamp = _stamp_of(path)
+    with _lock:
+        entry = _parsed.get(key)
+        if entry is not None and entry["stamp"] == stamp and not entry.get("retry"):
+            entry["checked"] = now
+            return entry["kind"], entry["config"], entry["memo"]
+    if stamp is None:
+        fresh = {"stamp": None, "kind": _NONE, "config": {}, "memo": {}, "checked": now}
+    else:
+        try:
+            config = _load_yaml(path.read_text(encoding="utf-8")) or {}
+            fresh = {"stamp": stamp, "kind": _OK, "config": config, "memo": {}, "checked": now}
+        except _NoYaml:
+            fresh = {"stamp": stamp, "kind": _NO_YAML, "config": {}, "memo": {}, "checked": now}
+        except Exception as error:
+            # 1.8.2.7 (review M3): a file Hermes is saving right now, or one Windows holds for a
+            # moment, is not "no chain": keep what was last read. 1.8.2.9 (review, 2026-10-24): a read
+            # that FAILED (the file is held) is looked at again in a second; text that would not
+            # parse is not parsed again until its stamp changes, or a typo left in the file would
+            # bring the idle CPU back.
+            held = isinstance(error, OSError)
+            with _lock:
+                previous = _parsed.get(key)
+                if previous is not None and previous["kind"] == _OK:
+                    previous["checked"] = now
+                    previous["retry"] = held
+                    if not held:
+                        previous["stamp"] = stamp
+                    return previous["kind"], previous["config"], previous["memo"]
+                fresh = {"stamp": stamp, "kind": _BAD, "config": {}, "memo": {}, "checked": now,
+                         "retry": held}
+                _parsed[key] = fresh
+            return _BAD, {}, fresh["memo"]
+    with _lock:
+        _parsed[key] = fresh
+    return fresh["kind"], fresh["config"], fresh["memo"]
 
 
 def read(home: Optional[Path] = None) -> Tuple[Optional[str], Tuple[str, ...]]:
     """``(primary identity or None, fallback identities in Hermes' order)``."""
     home = home if home is not None else _home()
-    key = str(home)
-    now = time.monotonic()
-    with _lock:
-        hit = _cache.get(key)
-        if hit is not None and now - hit[0] < _TTL_S:
-            return hit[1]
-    value = _read_uncached(home)
-    if value is _UNREADABLE:
-        with _lock:
-            hit = _cache.get(key)
-        return hit[1] if hit is not None else (None, ())
-    with _lock:
-        _cache[key] = (now, value)
+    kind, config, memo = _config(home)
+    if kind != _OK:
+        return None, ()
+    value = memo.get("read")
+    if value is None:
+        primary, chain = _from_config(config)
+        value = memo["read"] = (primary, tuple(chain))
     return value
-
-
-_source_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
 
 
 def entry_source(entry: str, home: Optional[Path] = None) -> Optional[Tuple[str, str]]:
@@ -124,17 +201,11 @@ def entry_source(entry: str, home: Optional[Path] = None) -> Optional[Tuple[str,
     home = home if home is not None else _home()
     if home is None:
         return None
-    key = str(home)
-    now = time.monotonic()
-    with _lock:
-        hit = _source_cache.get(key)
-    if hit is None or now - hit[0] >= _TTL_S:
-        try:
-            import yaml  # the host ships it
-
-            config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
-        except Exception:
-            return None
+    kind, config, memo = _config(home)
+    if kind == _BAD:
+        return None
+    table = memo.get("sources")
+    if table is None:
         rows: List[Any] = []
         model = config.get("model") if isinstance(config, dict) else None
         if isinstance(model, dict):
@@ -143,7 +214,7 @@ def entry_source(entry: str, home: Optional[Path] = None) -> Optional[Tuple[str,
             for name in ("fallback_providers", "fallback_model"):
                 value = config.get(name)
                 rows.extend(value if isinstance(value, list) else [value] if isinstance(value, dict) else [])
-        table: Dict[str, Tuple[str, str]] = {}
+        table = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -151,17 +222,13 @@ def entry_source(entry: str, home: Optional[Path] = None) -> Optional[Tuple[str,
             ident = _identity(row.get("provider"), written)
             if ident and ident not in table:
                 table[ident] = (written, str(row.get("base_url") or "").strip().rstrip("/"))
-        hit = (now, table)
-        with _lock:
-            _source_cache[key] = hit
-    return hit[1].get(entry)
+        memo["sources"] = table
+    return table.get(entry)
 
 
 def forget() -> None:
     with _lock:
-        _cache.clear()
-        _limit_cache.clear()
-        _source_cache.clear()
+        _parsed.clear()
 
 
 def _same(identity: str, entry: str) -> bool:
@@ -191,7 +258,6 @@ def primary_identity(home: Optional[Path] = None) -> Optional[str]:
 
 #: Hermes' own default for ``agent.api_max_retries`` (``hermes_cli/config_defaults.py``).
 HOST_SWITCH_LIMIT_DEFAULT = 3
-_limit_cache: Dict[str, Tuple[float, int]] = {}
 
 
 def switch_limit(home: Optional[Path] = None) -> int:
@@ -204,22 +270,16 @@ def switch_limit(home: Optional[Path] = None) -> int:
     that can never reach its last ones when the first are all spent.
     """
     home = home if home is not None else _home()
-    key = str(home)
-    now = time.monotonic()
-    with _lock:
-        hit = _limit_cache.get(key)
-        if hit is not None and now - hit[0] < _TTL_S:
-            return hit[1]
-    limit = HOST_SWITCH_LIMIT_DEFAULT
-    try:
-        import yaml
-
-        config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
-        agent = config.get("agent") if isinstance(config, dict) else None
-        if isinstance(agent, dict) and agent.get("api_max_retries") is not None:
-            limit = max(int(agent["api_max_retries"]), 1)
-    except Exception:
-        pass
-    with _lock:
-        _limit_cache[key] = (now, limit)
+    kind, config, memo = _config(home)
+    limit = memo.get("limit")
+    if limit is None:
+        limit = HOST_SWITCH_LIMIT_DEFAULT
+        try:
+            agent = config.get("agent") if isinstance(config, dict) else None
+            if isinstance(agent, dict) and agent.get("api_max_retries") is not None:
+                limit = max(int(agent["api_max_retries"]), 1)
+        except Exception:
+            pass
+        if kind != _BAD:
+            memo["limit"] = limit
     return limit

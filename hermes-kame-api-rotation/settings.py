@@ -318,7 +318,7 @@ _STRING_VALID: Dict[str, frozenset] = {
 #: 1.8.2.8. What each choice is called on screen, in the order it is shown
 #: (least to most). The stored values never change; only the words do.
 CHOICE_LABELS: Dict[str, Tuple[Tuple[str, str], ...]] = {
-    HEDGE_MODE: (("off", "Saver"), ("adaptive", "Balanced"), ("max", "Fastest")),
+    HEDGE_MODE: (("off", "Saver"), ("adaptive", "Balanced"), ("max", "Faster")),
     MODEL_SWITCH: (("auto", "Automatic"), ("timed", "Set time"), ("never", "Never")),
     FIRST_TOKEN_WAIT: (("auto", "Automatic"), ("timed", "Set time"), ("off", "Off")),
     REPLY_NOTICE: (("always", "Every reply"), ("switches", "Only another model"), ("never", "Never")),
@@ -1356,12 +1356,12 @@ META = {
     HEDGE_MODE: (
         "Backup requests when slow",
         "When a reply is slower than usual, send a backup request on "
-        "another key and use whichever answers first. Adaptive learns each "
-        "model's usual wait and only races the slow calls; Max starts a "
-        "backup on every call at once, for latency-critical work, and steps "
-        "down by itself when rate limits appear.",
-        "Leave on Adaptive. Use Max only if you have many keys and don't "
-        "care about daily limits.",
+        "another key and use whichever answers first. Balanced learns each "
+        "model's usual wait and only races the slow calls; Faster does the "
+        "same a notch sooner and more often, within a larger budget, and "
+        "steps back to Balanced for 10 minutes when a key hits a rate limit.",
+        "Leave on Balanced. Faster if speed matters more than a few extra "
+        "requests.",
     ),
     HEDGE_MAX_LEGS: (
         "Most parallel requests per call",
@@ -1513,9 +1513,8 @@ _PLAIN: Dict[str, Tuple[Optional[str], str]] = {
     ),
     HEDGE_MODE: (
         "Speed",
-        "Balanced (default) races a second key only when a reply is slower than "
-        "usual; Fastest races every reply (more requests); Saver asks one key at "
-        "a time.",
+        "How soon KAME races a second key when a reply is late. The line under the "
+        "buttons says what the chosen mode costs in extra requests.",
     ),
     STREAM_SILENCE_TIMEOUT: (
         "First-token wait (seconds)",
@@ -1643,6 +1642,61 @@ def parse(key: str, raw: object) -> Tuple[Optional[str], str]:
     return None, f"{key} takes true or false; {text!r} is neither"
 
 
+def _times(value: float) -> str:
+    """``1.1`` -> ``1.1x``; ``2.0`` -> ``2x``."""
+    text = f"{value:.1f}"
+    return (text[:-2] if text.endswith(".0") else text) + "x"
+
+
+def speed_multipliers() -> Tuple[float, float]:
+    """``(Balanced, Faster)``: the most requests per reply each mode may use over a day,
+    from the live ``hedge_budget_pct`` (1.8.2.9, decisions/0031): Balanced ``1 + pct/100``,
+    Faster ``1 + min(100, 3 x pct)/100``. Saver is always 1x."""
+    try:
+        pct = float(number(HEDGE_BUDGET_PCT, ALL_NUMBERS[HEDGE_BUDGET_PCT]))
+    except Exception:
+        pct = 10.0
+    return 1.0 + pct / 100.0, 1.0 + min(100.0, 3.0 * pct) / 100.0
+
+
+def choice_labels_now(key: str) -> Dict[str, str]:
+    """The words each choice is shown with. Speed carries what it costs, in plain terms."""
+    labels = dict(CHOICE_LABELS.get(key, ()))
+    if key == HEDGE_MODE:
+        balanced, faster = speed_multipliers()
+        labels = {
+            "off": "Saver · 1x",
+            "adaptive": f"Balanced · up to {_times(balanced)}",
+            "max": f"Faster · up to {_times(faster)}",
+        }
+    return labels
+
+
+def choice_help_now(key: str) -> Dict[str, str]:
+    """One plain sentence per choice, shown under the buttons for the chosen one."""
+    if key != HEDGE_MODE:
+        return {}
+    balanced, faster = speed_multipliers()
+    b_pct = round((balanced - 1.0) * 100)
+    f_pct = round((faster - 1.0) * 100)
+    return {
+        "off": "One request per reply, never more: the cheapest, and a slow reply simply waits.",
+        "adaptive": ("A second key races only a reply that is slower than twice its usual time, "
+                     f"so over a day it uses at most about {b_pct}% more requests."),
+        "max": ("Races a little sooner and more often, at most about "
+                f"{f_pct}% more requests, and goes back to Balanced by itself for 10 minutes "
+                "whenever one of that model's keys hits a rate limit."),
+    }
+
+
+#: 1.8.2.9. One line under the speed buttons (not for Saver): what the percentages leave out.
+CHOICE_FOOTNOTE: Dict[str, str] = {
+    HEDGE_MODE: ("Balanced and Faster may also race your next model when a reply is already about 3x "
+                 "slower than usual, and ask several keys at once when a model runs out of quota - "
+                 "the counter below shows what was really spent."),
+}
+
+
 def describe(key: str) -> Dict[str, object]:
     """Everything a UI needs to render one setting as an editable control."""
     is_number = key in ALL_NUMBERS
@@ -1669,7 +1723,9 @@ def describe(key: str) -> Dict[str, object]:
         "choice_order": [value for value, _label in CHOICE_LABELS[key]] if key in CHOICE_LABELS else None,
         # 1.8.2.8: the words each choice is shown with, and the choice a number
         # belongs to (the panel shows the number only under that answer).
-        "choice_labels": dict(CHOICE_LABELS.get(key, ())),
+        "choice_labels": choice_labels_now(key),
+        "choice_help": choice_help_now(key),          # 1.8.2.9: one plain sentence per choice
+        "choice_footnote": CHOICE_FOOTNOTE.get(key, ""),
         "depends_on": ({"key": DEPENDS_ON[key][0], "value": DEPENDS_ON[key][1],
                         "now": effective_mode(DEPENDS_ON[key][0])} if key in DEPENDS_ON else None),
         # 1.8.2.7: how much this one setting changes, and when a person should
@@ -1728,7 +1784,7 @@ IMPACT: Dict[str, str] = {
 #: 1.8.2.7. One plain sentence per setting: *when* to change it. The help text
 #: says what a setting does; this says whether you are the person who needs it.
 _WHEN: Dict[str, str] = {
-    HEDGE_MODE: "Leave on Balanced. Saver if every extra request costs you money; Fastest when speed matters more than quota.",
+    HEDGE_MODE: "Leave on Balanced. Saver if every extra request costs you money; Faster if speed matters more than a few extra requests.",
     MODEL_SWITCH: "Leave on Automatic. Never if you would rather always wait for the model you picked.",
     FIRST_TOKEN_WAIT: "Leave on Automatic. Set time only if a provider hangs in silence and Automatic is too patient for you.",
     REPLY_NOTICE: "Only another model, if a notice after every reply is too much.",

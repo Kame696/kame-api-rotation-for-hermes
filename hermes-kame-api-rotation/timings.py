@@ -134,6 +134,8 @@ def record(
     call_id: str = "",
     rest_source: Optional[str] = None,
     record_type: str = "",
+    channel: str = "",
+    task: str = "",
 ) -> None:
     """Write one attempt down. Fails silently, always.
 
@@ -193,6 +195,12 @@ def record(
         }
         if record_type:
             row["record_type"] = str(record_type)[:24]
+        # 1.8.2.9 (decisions/0032 A6): which background job sent the attempt, so the share of a
+        # model's requests that went to side jobs can be counted. Only on those rows: a chat row
+        # reads exactly as it always did.
+        if channel and channel != "main":
+            row["channel"] = str(channel)[:16]
+            row["task"] = str(task or "")[:40]
         from .recorder import private_append
 
         with private_append(path) as handle:
@@ -245,6 +253,8 @@ def first_word_history(now: Optional[float] = None) -> "dict":
                     continue
                 if row.get("outcome") != "answered":
                     continue
+                if row.get("channel") == "secondary":
+                    continue  # 1.8.2.9: a title's first word is not the chat's
                 # The first sign of work (text, tool call or reasoning) is what
                 # decides a race; the first word stands in where it was not kept.
                 ms = row.get("ms_to_first_sign") or row.get("ms_to_first_text")

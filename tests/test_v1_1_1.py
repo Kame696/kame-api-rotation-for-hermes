@@ -639,7 +639,7 @@ class TestWhatThePanelIsAllowedToAskFor:
         # deliberate edit to this line. "refresh" joined in 1.6.0.1; it reads
         # the .env again and republishes, and reaches no key either.
         assert control.ACTIONS == (
-            "set", "reset", "reset_all", "clear_pool", "clear_events", "refresh",
+            "set", "reset", "reset_all", "clear_pool", "clear_events", "refresh", "forget_busy",
         )
 
     def test_no_action_can_reach_a_key(self):

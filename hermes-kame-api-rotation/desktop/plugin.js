@@ -1008,7 +1008,7 @@ function Note(text, tone = 'plain', key = undefined) {
  *  that reads `$now` re-renders once a second, which is right for a countdown
  *  and wrong for everything else on the page — so the subscription lives on the
  *  countdown and not on the page that happens to contain one. */
-function PoolRow({ pool, snap }) {
+function PoolRow({ pool, snap, compact = false }) {
   const now = useValue($now)
   // A credential the provider rejected is not benched after its hour is up, so
   // it counts as healthy again — while the line at the bottom of this very row
@@ -1034,17 +1034,20 @@ function PoolRow({ pool, snap }) {
           h('span', { className: 'ml-2 text-(--ui-text-quaternary)', key: 'eta' }, `next in ${duration(eta)}`)
       )
     ),
-    h(
-      'div',
-      { className: 'mt-1.5 h-1 w-full overflow-hidden rounded-full bg-(--ui-bg-quinary)', key: 'bar' },
-      h('div', {
-        className: cn(
-          'h-full rounded-full transition-[width] duration-500',
-          ratio === 1 ? 'bg-primary' : ratio > 0 ? 'bg-amber-500' : 'bg-destructive'
+    // 1.8.2.9: the ring above says the same thing; the bar stays where there is no ring.
+    compact
+      ? null
+      : h(
+          'div',
+          { className: 'mt-1.5 h-1 w-full overflow-hidden rounded-full bg-(--ui-bg-quinary)', key: 'bar' },
+          h('div', {
+            className: cn(
+              'h-full rounded-full transition-[width] duration-500',
+              ratio === 1 ? 'bg-primary' : ratio > 0 ? 'bg-amber-500' : 'bg-destructive'
+            ),
+            style: { width: `${Math.round(ratio * 100)}%` }
+          })
         ),
-        style: { width: `${Math.round(ratio * 100)}%` }
-      })
-    ),
     Boolean(pool.kinds?.length || pool.successes || pool.failures) &&
       h(
         'div',
@@ -1153,6 +1156,1006 @@ function RightNow({ snap }) {
   return h('p', { className: 'text-sm text-(--ui-text-secondary)' }, 'Working.')
 }
 
+// -- 1.8.2.9: the rotation page (decisions/0031, job 2) ----------------------------------------
+//
+// The owner: "poorly made, cannot be understood as a user". The Overview used to be eight cards of
+// equal weight; what a person wants - which model is answering, is anything wrong, what happens
+// next - was one sentence in the second card. Now: three sentences on top, one ring per model in
+// the order of YOUR fallback list (one segment per key), what KAME just did, the three controls
+// that change every conversation, and the old details folded underneath. Nothing of the old page
+// is lost except the thin bar the ring replaces (PARITY_LEDGER, decisions/0031 2.5).
+
+/** Every snapshot path the rotation page reads. tests/test_1_8_2_9_panel_contract.py checks this
+ *  list against a real snapshot AND against this file, so it cannot fall behind the code. */
+const PANEL_READS = [
+  'activity.attempt',
+  'activity.eta_s',
+  'activity.healthy',
+  'activity.identity',
+  'activity.key',
+  'activity.keys',
+  'activity.kind',
+  'activity.model',
+  'activity.probe',
+  'activity.racing',
+  'activity.started_at',
+  'events[].at',
+  'events[].kind',
+  'fallback.entries[].busy_kind',
+  'fallback.entries[].busy_until',
+  'fallback.entries[].identity',
+  'fallback.entries[].probe_at',
+  'fallback.state',
+  'fallback.warning',
+  'fallback.why',
+  'pools[].healthy',
+  'pools[].identity',
+  'pools[].idle_for_s',
+  'pools[].in_flight',
+  'pools[].key_states',
+  'pools[].keys',
+  'pools[].soonest_s',
+  'quota_use.models',
+  'quota_use.since',
+  'quota_use.stopped',
+  'quota_use.suggestion',
+  'replies[].at',
+  'replies[].first_s',
+  'replies[].for',
+  'replies[].model',
+  'replies[].total_s',
+  'speed.cap_pct',
+  'speed.hour.extra_pct',
+  'speed.hour.replies',
+  'speed.mode',
+  'speed.paused_until',
+  'speed.since_start.extra_pct'
+]
+
+/** Which model's key table is open. A module atom, like the tab: it survives a re-render. */
+const $openRing = atom('')
+
+/** Whether the old detail cards (neighbours, what KAME can see, this process) are unfolded. */
+const $detailsOpen = atom(true)
+
+const RING_COLOUR = {
+  bad: 'var(--ui-red, #ef4444)',
+  day: 'var(--ui-text-quaternary, #6f655a)',
+  ready: '#38bdf8',
+  rest: '#f59e0b'
+}
+
+/** Per key state: how it is drawn (colour AND shape, so nobody needs to tell colours apart) and
+ *  how it reads. `width` is the stroke; `dash` makes a dotted arc. */
+const KEY_STATE = {
+  d: { colour: RING_COLOUR.day, dash: '1.2 2.6', glyph: '┈', label: 'out for today', width: 6 },
+  f: { colour: RING_COLOUR.ready, dash: null, glyph: '◉', label: 'answering now', width: 9 },
+  o: { colour: RING_COLOUR.bad, dash: '1.2 2.6', glyph: '×', label: 'out of rotation — replace it', width: 6 },
+  r: { colour: RING_COLOUR.ready, dash: null, glyph: '●', label: 'ready', width: 9 },
+  s: { colour: RING_COLOUR.rest, dash: null, glyph: '◦', label: 'resting', width: 4.5 },
+  x: { colour: RING_COLOUR.bad, dash: null, glyph: '×', label: 'refused — still being tried', width: 4.5 }
+}
+
+const KEY_ORDER = ['f', 'r', 's', 'd', 'x', 'o']
+
+/** What tripped a key, in two or three words - the long sentences live in the Events tab. */
+const KIND_SHORT = {
+  auth: 'refused as a credential',
+  billing: 'out of credit',
+  daily: 'daily quota spent',
+  denied: 'refused',
+  empty: 'empty answer',
+  insufficient_quota: 'out of credit',
+  other: 'refused',
+  per_minute: 'per-minute limit',
+  rate_limit: 'rate limit',
+  revoked: 'key revoked',
+  server: 'provider error',
+  timeout: 'timed out'
+}
+
+/** Seconds from now to an epoch deadline, never negative; null when there is no deadline. */
+function untilEpoch(epoch, nowMs) {
+  return typeof epoch === 'number' && Number.isFinite(epoch) ? Math.max(0, epoch - nowMs / 1000) : null
+}
+
+/** The pool a list entry (or an activity identity) belongs to: KAME suffixes some identities. */
+function poolOf(snap, identity) {
+  return (snap?.pools ?? []).find(
+    pool => pool.identity === identity || pool.identity.startsWith(`${identity}:`) || identity?.startsWith(`${pool.identity}:`)
+  )
+}
+
+/** The arcs of one ring: one per key (in the stable order the backend gives), or - past 40 keys,
+ *  where a ring of slivers is noise - one proportional arc per state. Angles are degrees from
+ *  12 o'clock, clockwise. Pure; exported for the node checks. */
+function ringSegments(keyStates) {
+  const states = Array.isArray(keyStates) ? keyStates : []
+  const total = states.length
+
+  if (!total) {
+    return []
+  }
+
+  if (total > 40) {
+    const counts = {}
+
+    for (const row of states) {
+      counts[row[1]] = (counts[row[1]] ?? 0) + 1
+    }
+
+    let at = 0
+
+    return KEY_ORDER.filter(code => counts[code]).map(code => {
+      const span = (counts[code] / total) * 360
+      const out = { code, count: counts[code], end: at + span - 1, start: at + 1 }
+
+      at += span
+
+      return out
+    })
+  }
+
+  const slot = 360 / total
+  const gap = total === 1 ? 0 : Math.min(2, slot / 3)
+
+  return states.map((row, index) => ({
+    code: row[1],
+    count: 1,
+    end: (index + 1) * slot - gap / 2,
+    fingerprint: row[0],
+    start: index * slot + gap / 2,
+    until: row[2]
+  }))
+}
+
+/** SVG path of an arc on the ring (radius `r`, centre 50,50). */
+function arcPath(r, from, to) {
+  const point = angle => {
+    const a = (angle * Math.PI) / 180
+
+    return [50 + r * Math.sin(a), 50 - r * Math.cos(a)].map(n => n.toFixed(2)).join(' ')
+  }
+
+  return `M ${point(from)} A ${r} ${r} 0 ${to - from > 180 ? 1 : 0} 1 ${point(to)}`
+}
+
+/** The models to draw, in the order of the user's fallback list; pools KAME served that are not in
+ *  the list go in `also`. Without a list: the pools seen, the freshest first. */
+function ringModels(snap) {
+  const entries = snap?.fallback?.entries ?? []
+  const pools = snap?.pools ?? []
+  const used = new Set()
+  const main = []
+
+  entries.forEach((entry, index) => {
+    const pool = poolOf(snap, entry.identity)
+
+    if (pool) {
+      used.add(pool.identity)
+    }
+
+    main.push({ entry, identity: entry.identity, pool, rank: index + 1 })
+  })
+
+  const rest = pools.filter(pool => !used.has(pool.identity))
+
+  if (!entries.length) {
+    return {
+      also: [],
+      main: [...rest]
+        .sort((a, b) => (a.idle_for_s ?? 1e12) - (b.idle_for_s ?? 1e12))
+        .map((pool, index) => ({ entry: null, identity: pool.identity, pool, rank: index + 1 }))
+    }
+  }
+
+  return { also: rest.map(pool => ({ entry: null, identity: pool.identity, pool, rank: 0 })), main }
+}
+
+/** How many keys of a pool are in each state: `{ r, f, s, d, x, o }`. */
+function keyCounts(pool) {
+  const out = { d: 0, f: 0, o: 0, r: 0, s: 0, x: 0 }
+
+  for (const row of pool?.key_states ?? []) {
+    out[row[1]] = (out[row[1]] ?? 0) + 1
+  }
+
+  return out
+}
+
+/** What a model is doing, in a few words: `{ word, tone }`. Pure; exported for the node checks. */
+function modelState(model, snap, nowMs) {
+  const { entry, pool } = model
+
+  if (!pool) {
+    return { tone: 'quiet', word: 'not used yet' }
+  }
+
+  const busy = untilEpoch(entry?.busy_until, nowMs)
+
+  if (busy) {
+    const again = untilEpoch(entry?.probe_at, nowMs)
+
+    return entry?.busy_kind === 'slow'
+      ? { tone: 'warn', word: `slow today — skipped for ${duration(busy)}` }
+      : { tone: 'warn', word: again ? `busy — asked again in ${duration(again)}` : 'busy — asked again soon' }
+  }
+
+  const counts = keyCounts(pool)
+  const ready = counts.r + counts.f
+  const total = pool.keys ?? 0
+
+  if (total && counts.d >= total - counts.o - counts.x && !ready && counts.d) {
+    return { tone: 'bad', word: 'out for today' }
+  }
+
+  if (!ready && total) {
+    const soonest = Math.min(
+      ...(pool.key_states ?? []).filter(row => row[2]).map(row => untilEpoch(row[2], nowMs) ?? Infinity),
+      Infinity
+    )
+
+    return {
+      tone: 'bad',
+      word: Number.isFinite(soonest) ? `resting — first key back in ${duration(soonest)}` : 'resting'
+    }
+  }
+
+  return { tone: 'good', word: 'ready' }
+}
+
+/** The sentence a screen reader gets for a ring (the SVG itself is hidden from it). */
+function ringAria(model, snap, nowMs) {
+  const counts = keyCounts(model.pool)
+  const state = modelState(model, snap, nowMs)
+  const parts = [
+    `${modelOnly(model.identity)}${model.rank === 1 ? ', your model' : model.rank ? `, number ${model.rank} in your list` : ''}`,
+    model.pool ? `${counts.r + counts.f} of ${model.pool.keys} keys ready` : 'no key used yet',
+    counts.s ? `${counts.s} resting` : '',
+    counts.d ? `${counts.d} out for today` : '',
+    counts.x + counts.o ? `${counts.x + counts.o} to replace` : '',
+    state.word,
+    snap?.activity?.identity && poolOf(snap, snap.activity.identity)?.identity === model.pool?.identity
+      ? 'Answering now'
+      : ''
+  ]
+
+  return parts.filter(Boolean).join(', ')
+}
+
+/** The three lines at the top of the Overview: what is happening, anything wrong, what is next.
+ *  Pure (the node checks call it with fixtures). `icon` is a character, never colour alone. */
+function nowSentences(snap, nowMs) {
+  const nowSec = nowMs / 1000
+  const activity = snap?.activity
+  const entries = snap?.fallback?.entries ?? []
+  const models = ringModels(snap).main
+  const usable = models.find(model => model.pool && modelState(model, snap, nowMs).tone === 'good')
+  const first = models[0]
+
+  // -- line 1: what is happening --------------------------------------------------------
+  let icon = '●'
+  // Nothing has been asked yet (first run): not a fault, so it must not read like one.
+  const untouched = models.every(model => !model.pool)
+  let line1 = usable
+    ? `Ready — your next reply goes to ${modelOnly(usable.identity)} (${keyCounts(usable.pool).r + keyCounts(usable.pool).f} of ${usable.pool.keys} keys ready).`
+    : untouched
+      ? `Ready — nothing has been asked yet.${first ? ` Your first reply goes to ${modelOnly(first.identity)}.` : ''}`
+      : 'Nothing is ready right now — see the models below.'
+  const lastReply = (snap?.replies ?? [])[0]
+
+  if (activity?.kind === 'calling' && Array.isArray(activity.racing) && activity.racing.length) {
+    // decisions/0032 B5: the best model is silent and others of the list joined the reply.
+    icon = '◐'
+    const started = typeof activity.started_at === 'number' ? Math.max(0, nowSec - activity.started_at) : null
+    const joined = activity.racing
+    const last = joined[joined.length - 1]
+    const earlier = joined.slice(0, -1)
+
+    line1 =
+      (earlier.length
+        ? `${activity.model} and ${earlier.join(' and ')} are slow today — ${last} joined`
+        : `${activity.model} is late — ${last} races it`) +
+      (started !== null ? ` — ${started.toFixed(1)} s` : '')
+  } else if (activity?.kind === 'calling' && typeof activity.probe === 'string' && activity.probe) {
+    // decisions/0032 C: the reply started on the next model; the best one, busy a moment ago, is
+    // being asked again beside it. The home model is not late - say so.
+    icon = '◐'
+    const started = typeof activity.started_at === 'number' ? Math.max(0, nowSec - activity.started_at) : null
+
+    line1 = `Answering with ${activity.model} — asking ${activity.probe} again beside it` + (started !== null ? ` — ${started.toFixed(1)} s` : '')
+  } else if (activity?.kind === 'calling') {
+    icon = '◐'
+    const started = typeof activity.started_at === 'number' ? Math.max(0, nowSec - activity.started_at) : null
+
+    line1 =
+      `Answering with ${activity.model}` +
+      (activity.key ? ` — key ${String(activity.key).replace(/^key:/, '')}` : '') +
+      (started !== null ? ` — ${started.toFixed(1)} s` : '') +
+      (activity.attempt > 1 ? ` (try ${activity.attempt})` : '')
+  } else if (activity?.kind === 'waiting') {
+    icon = '⏸'
+    const eta = untilEpoch(snap.updated_at + (activity.eta_s ?? 0), nowMs)
+
+    line1 = `Every key is resting — back in ${eta === null ? 'a moment' : duration(eta)}. Nothing is spent while waiting. Esc stops.`
+  } else if (activity?.kind === 'stitching') {
+    icon = '◐'
+    line1 = `The provider cut the answer after ${activity.characters} characters. Continuing it on another key — you should see one unbroken reply.`
+  } else if (lastReply && lastReply.for && nowSec - lastReply.at < 120) {
+    icon = '→'
+    line1 = `${lastReply.model} answered for ${lastReply.for} — ${(lastReply.total_s ?? 0).toFixed(1)} s.`
+  }
+
+  // -- line 2: the worst thing wrong, only one --------------------------------------------
+  const counts = (snap?.pools ?? []).reduce(
+    (sum, pool) => {
+      const c = keyCounts(pool)
+
+      sum.replace += c.x + c.o
+      sum.today += c.d
+
+      return sum
+    },
+    { replace: 0, today: 0 }
+  )
+  const busyModel = models.find(model => modelState(model, snap, nowMs).word.startsWith('busy') || modelState(model, snap, nowMs).word.startsWith('slow'))
+  const paused = Object.entries(snap?.speed?.paused_until ?? {}).find(([, until]) => until > nowSec)
+  let line2 = 'Nothing wrong.'
+  let tone = 'good'
+
+  if (snap?.build?.complete === false) {
+    line2 = 'This install is incomplete — KAME is not rotating.'
+    tone = 'bad'
+  } else if (ageSeconds(snap, nowMs) > STALE_AFTER_S) {
+    line2 = `This reading is ${duration(ageSeconds(snap, nowMs))} old — Hermes may be restarting.`
+    tone = 'warn'
+  } else if (snap && snap.installed === false) {
+    line2 = 'KAME is loaded but not rotating — see the note below.'
+    tone = 'warn'
+  } else if (models.length && !usable && !untouched) {
+    const everyoneBusy = models.every(model => model.pool && untilEpoch(model.entry?.busy_until, nowMs))
+
+    line2 = everyoneBusy
+      ? 'Every model is busy — KAME keeps asking, your best first, until one answers.'
+      : 'No model can answer right now — KAME waits for the first key to come back.'
+    tone = 'bad'
+  } else if (counts.replace > 0) {
+    line2 = `${count(counts.replace, 'key', 'keys')} to replace — the provider refused ${counts.replace === 1 ? 'it' : 'them'} as credentials.`
+    tone = 'bad'
+  } else if (busyModel) {
+    line2 = `${modelOnly(busyModel.identity)} is ${modelState(busyModel, snap, nowMs).word.split(' —')[0]} — your next model answers meanwhile.`
+    tone = 'warn'
+  } else if (counts.today > 0) {
+    line2 = `${count(counts.today, 'key is', 'keys are')} out of quota for today — the others carry on.`
+    tone = 'warn'
+  } else if (paused) {
+    line2 = `Faster is paused on ${modelOnly(paused[0])} for ${duration(paused[1] - nowSec)} — a key hit a rate limit.`
+    tone = 'warn'
+  }
+
+  // -- line 3: what happens next -----------------------------------------------------------
+  let line3 = usable ? `Next reply: ${modelOnly(usable.identity)}.` : ''
+
+  if (snap?.fallback && snap.fallback.state !== 'on' && snap.fallback.why) {
+    line3 = snap.fallback.why
+  } else if (first && entries.length > 1 && modelState(first, snap, nowMs).tone === 'warn') {
+    const again = untilEpoch(first.entry?.probe_at, nowMs)
+    const next = models.find(model => model !== first && model.pool && modelState(model, snap, nowMs).tone === 'good')
+
+    line3 =
+      `If ${modelOnly(first.identity)} stays busy, the next reply starts on ${next ? modelOnly(next.identity) : 'the next model'}` +
+      (again ? `; ${modelOnly(first.identity)} is asked again in ${duration(again)}.` : '.')
+  }
+
+  // -- a quiet note: only when Hermes cannot reach the whole fallback list (decisions/0032 D) -----
+  const note = typeof snap?.fallback?.warning === 'string' ? snap.fallback.warning : ''
+
+  return { icon, line1, line2, line3, note, tone }
+}
+
+/** Three short lines. The first is the answer to "what is it doing"; the other two only matter if
+ *  the first does not already say it. */
+function NowStrip({ snap }) {
+  const now = useValue($now)
+  const said = nowSentences(snap, now)
+
+  return h(
+    'section',
+    {
+      className: cn(
+        'rounded-lg border p-4',
+        said.tone === 'bad'
+          ? 'border-destructive/40 bg-destructive/5'
+          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/40'
+      ),
+      key: 'now-strip'
+    },
+    h(
+      'p',
+      { className: 'flex items-baseline gap-2 text-base text-(--ui-text-primary)', key: 'line1' },
+      h('span', { 'aria-hidden': 'true', className: 'text-(--ui-text-tertiary)', key: 'icon' }, said.icon),
+      said.line1
+    ),
+    h(
+      'p',
+      {
+        className: cn(
+          'mt-1 text-sm',
+          said.tone === 'bad' ? 'text-destructive' : said.tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-secondary)'
+        ),
+        key: 'line2'
+      },
+      said.line2
+    ),
+    said.line3
+      ? h('p', { className: 'mt-0.5 text-sm text-(--ui-text-tertiary)', key: 'line3' }, said.line3)
+      : null,
+    said.note
+      ? h('p', { className: 'mt-1 text-xs text-(--ui-text-quaternary)', key: 'note' }, said.note)
+      : null
+  )
+}
+
+/** Requests of the last day per model, chat vs background jobs, summed over the live Hermes
+ *  processes of THIS profile (the Desktop and the gateway share the keys; the title that
+ *  hammered the best model ran in the gateway). Pure: the document in, plain numbers out.
+ *  `forEntry(identity)` matches a ring's chain entry to the pools' `:global`-style identities. */
+function quotaShare(document, nowMs = Date.now()) {
+  const live = Object.values(document?.processes ?? {}).filter(
+    section => section && typeof section === 'object' && nowMs / 1000 - (section.updated_at ?? 0) <= SECTION_STALE_S
+  )
+  const models = new Map()
+  const stopped = {}
+  let since = 0
+  let suggestion = null
+  // A document with no live `processes` (an older build, a fixture): the top-level fields are the
+  // one process that wrote it.
+  const sections = live.length ? live : document && typeof document === 'object' && document.quota_use ? [document] : []
+
+  for (const section of sections.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))) {
+    const use = section.quota_use
+
+    if (!use || typeof use !== 'object') {
+      continue
+    }
+
+    since = since ? Math.min(since, use.since || since) : use.since || 0
+    suggestion = suggestion ?? (typeof use.suggestion === 'string' && use.suggestion ? use.suggestion : null)
+
+    for (const [task, count] of Object.entries(use.stopped ?? {})) {
+      stopped[task] = (stopped[task] ?? 0) + (Number(count) || 0)
+    }
+
+    for (const [identity, row] of Object.entries(use.models ?? {})) {
+      const into = models.get(identity) ?? { main: 0, side: 0, tasks: {} }
+
+      into.main += Number(row?.main) || 0
+      into.side += Number(row?.side) || 0
+
+      for (const [task, count] of Object.entries(row?.tasks ?? {})) {
+        into.tasks[task] = (into.tasks[task] ?? 0) + (Number(count) || 0)
+      }
+
+      models.set(identity, into)
+    }
+  }
+
+  const forEntry = identity => {
+    const sum = { main: 0, side: 0, tasks: {} }
+
+    for (const [name, row] of models) {
+      if (name === identity || name.startsWith(`${identity}:`) || identity.startsWith(`${name}:`)) {
+        sum.main += row.main
+        sum.side += row.side
+
+        for (const [task, count] of Object.entries(row.tasks)) {
+          sum.tasks[task] = (sum.tasks[task] ?? 0) + count
+        }
+      }
+    }
+
+    const total = sum.main + sum.side
+
+    return { ...sum, pct: total ? Math.round((100 * sum.side) / total) : 0, total }
+  }
+
+  return { forEntry, models, since, stopped, suggestion }
+}
+
+/** `08:10` from epoch seconds, in the viewer's own clock. */
+function clockOf(epochSeconds) {
+  try {
+    return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
+/** A model's side-job line under its ring: only when background jobs are a real share. */
+function sideJobsLine(share, identity) {
+  const row = share.forEntry(identity)
+
+  return row.side >= 10 && row.pct >= 10
+    ? `side jobs: ${row.pct}% of requests since ${clockOf(share.since)}`
+    : null
+}
+
+/** One model as a ring: one segment per key. The SVG is decoration; the button carries the words. */
+function PoolRing({ model, snap, open, onToggle }) {
+  const now = useValue($now)
+  const sideLine = sideJobsLine(quotaShare(useValue($snapshot), now), model.identity)
+  const segments = ringSegments(model.pool?.key_states ?? [])
+  const counts = keyCounts(model.pool)
+  const state = modelState(model, snap, now)
+  const answering =
+    Boolean(snap?.activity?.identity) && poolOf(snap, snap.activity.identity)?.identity === model.pool?.identity
+  const entry = model.entry
+  const busy = untilEpoch(entry?.busy_until, now)
+  const total = model.pool?.keys ?? 0
+  const small = !model.rank
+  const marks = []
+
+  const arcs = segments.map((segment, index) => {
+    const style = KEY_STATE[segment.code] ?? KEY_STATE.r
+    const middle = (segment.start + segment.end) / 2
+
+    if (segment.code === 'f' || segment.code === 'x' || segment.code === 'o') {
+      const a = (middle * Math.PI) / 180
+
+      marks.push(
+        segment.code === 'f'
+          ? h('circle', { cx: (50 + 47 * Math.sin(a)).toFixed(2), cy: (50 - 47 * Math.cos(a)).toFixed(2), fill: RING_COLOUR.ready, key: `m${index}`, r: 2.2 })
+          : h('text', {
+              fill: RING_COLOUR.bad,
+              fontSize: 9,
+              key: `m${index}`,
+              textAnchor: 'middle',
+              x: (50 + 47 * Math.sin(a)).toFixed(2),
+              y: (53 - 47 * Math.cos(a)).toFixed(2)
+            }, '×')
+      )
+    }
+
+    if (segments.length === 1 && segment.count === 1) {
+      return h('circle', {
+        cx: 50,
+        cy: 50,
+        fill: 'none',
+        key: `a${index}`,
+        r: 40,
+        stroke: style.colour,
+        strokeDasharray: style.dash ?? undefined,
+        strokeWidth: style.width
+      })
+    }
+
+    return h('path', {
+      d: arcPath(40, segment.start, segment.end),
+      fill: 'none',
+      key: `a${index}`,
+      stroke: style.colour,
+      strokeDasharray: style.dash ?? undefined,
+      strokeWidth: style.width
+    })
+  })
+
+  const haloColour = busy ? RING_COLOUR.rest : RING_COLOUR.ready
+  const halo = answering
+    ? h('circle', { cx: 50, cy: 50, fill: 'none', key: 'halo', r: 47, stroke: haloColour, strokeWidth: 1.4 })
+    : busy
+      ? h('circle', {
+          cx: 50,
+          cy: 50,
+          fill: 'none',
+          key: 'halo',
+          r: 47,
+          stroke: haloColour,
+          strokeDasharray: entry?.busy_kind === 'slow' ? '1 3' : '5 3',
+          strokeWidth: 1.4
+        })
+      : null
+
+  return h(
+    'button',
+    {
+      'aria-expanded': open,
+      'aria-label': ringAria(model, snap, now),
+      className: cn(
+        'flex flex-col items-center gap-1 rounded-lg border p-2 text-center transition-colors',
+        small ? 'w-28' : 'w-40',
+        open ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-quinary)' : 'border-transparent hover:bg-(--ui-bg-quinary)/50'
+      ),
+      key: model.identity,
+      onClick: onToggle,
+      type: 'button'
+    },
+    h(
+      'svg',
+      {
+        'aria-hidden': 'true',
+        className: cn('text-(--ui-text-primary)', small ? 'size-20' : 'size-28', !model.pool && 'opacity-50'),
+        key: 'ring',
+        viewBox: '0 0 100 100'
+      },
+      model.pool
+        ? null
+        : h('circle', { cx: 50, cy: 50, fill: 'none', key: 'hollow', r: 40, stroke: RING_COLOUR.day, strokeWidth: 3 }),
+      halo,
+      arcs,
+      marks,
+      h(
+        'text',
+        { fill: 'currentColor', fontSize: 24, fontWeight: 600, key: 'ready', textAnchor: 'middle', x: 50, y: 56 },
+        model.pool ? String(counts.r + counts.f) : '–'
+      ),
+      model.pool
+        ? h('text', { fill: 'currentColor', fontSize: 9, key: 'total', opacity: 0.6, textAnchor: 'middle', x: 50, y: 69 }, `/${total}`)
+        : null
+    ),
+    h(
+      'span',
+      { className: 'text-xs font-medium break-all text-(--ui-text-primary)', key: 'name', title: model.identity },
+      `${model.rank ? `${model.rank} · ` : ''}${modelOnly(model.identity)}`
+    ),
+    h(
+      'span',
+      {
+        className: cn(
+          'text-[0.6875rem] leading-snug',
+          state.tone === 'bad' ? 'text-destructive' : state.tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-tertiary)'
+        ),
+        key: 'state'
+      },
+      answering && state.tone === 'good' ? 'answering now' : state.word
+    ),
+    sideLine
+      ? h('span', { className: 'text-[0.625rem] leading-snug text-(--ui-text-quaternary)', key: 'side' }, sideLine)
+      : null
+  )
+}
+
+/** The key shapes, drawn small, so the colours are never the only code. */
+function RingLegend() {
+  const item = (code, text) =>
+    h(
+      'span',
+      { className: 'inline-flex items-center gap-1', key: code },
+      h(
+        'svg',
+        { 'aria-hidden': 'true', className: 'h-2 w-5', viewBox: '0 0 20 8' },
+        h('line', {
+          stroke: KEY_STATE[code].colour,
+          strokeDasharray: KEY_STATE[code].dash ? '1.2 2.2' : undefined,
+          strokeWidth: Math.min(7, KEY_STATE[code].width * 0.7),
+          x1: 1,
+          x2: 19,
+          y1: 4,
+          y2: 4
+        })
+      ),
+      text
+    )
+
+  return h(
+    'p',
+    { className: 'flex flex-wrap gap-x-4 gap-y-1 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'legend' },
+    item('r', 'ready'),
+    item('s', 'resting (thin)'),
+    item('d', 'out for today (dotted)'),
+    item('x', 'refused / replace (×)')
+  )
+}
+
+/** One model's keys, word for word what the old pool row said, plus one line per key and the two
+ *  buttons that act on this model only. Keys are never added or removed from here. */
+function KeyTable({ model, snap }) {
+  const now = useValue($now)
+  const [confirming, setConfirming] = useState(false)
+  const busyRequest = Boolean(useValue($pending))
+  const pool = model.pool
+  const entry = model.entry
+  const busy = untilEpoch(entry?.busy_until, now)
+
+  if (!pool) {
+    return h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, `${modelOnly(model.identity)} has not been used yet — its keys show here after the first call.`)
+  }
+
+  const keys = pool.key_states ?? []
+
+  return h(
+    'div',
+    { className: 'rounded-lg border border-(--ui-stroke-tertiary) p-3', key: `keys-${model.identity}` },
+    h(PoolRow, { compact: true, key: 'summary', pool, snap }),
+    keys.length
+      ? h(
+          'ul',
+          { className: 'mt-2 grid gap-x-6 gap-y-0.5 sm:grid-cols-2', key: 'keys' },
+          keys.map(([fingerprint, code, until, kind]) => {
+            const style = KEY_STATE[code] ?? KEY_STATE.r
+            const left = untilEpoch(until, now)
+
+            return h(
+              'li',
+              { className: 'flex items-baseline justify-between gap-2 text-xs', key: fingerprint },
+              h(
+                'span',
+                { className: 'font-mono text-(--ui-text-secondary)', key: 'fp' },
+                h('span', { 'aria-hidden': 'true', className: 'mr-1.5', key: 'glyph', style: { color: style.colour } }, style.glyph),
+                String(fingerprint).replace(/^key:/, '')
+              ),
+              h(
+                'span',
+                { className: 'text-right text-(--ui-text-tertiary)', key: 'word' },
+                style.label,
+                // a refused credential does not come back by waiting: no countdown for it
+                left && code !== 'o' && code !== 'x' ? ` · back in ${duration(left)}` : '',
+                kind && code !== 'r' && code !== 'f' ? ` · ${KIND_SHORT[kind] ?? kind}` : ''
+              )
+            )
+          })
+        )
+      : null,
+    h(
+      'div',
+      { className: 'mt-3 flex flex-wrap items-center gap-2', key: 'actions' },
+      confirming
+        ? [
+            h(
+              'span',
+              { className: 'text-xs text-(--ui-text-secondary)', key: 'ask' },
+              'Its keys start again as if never tried; a key that is really spent is refused again. No key is deleted.'
+            ),
+            h(
+              Button,
+              {
+                disabled: busyRequest,
+                key: 'yes',
+                onClick: () => {
+                  setConfirming(false)
+                  void request('clear_pool', model.identity)
+                },
+                size: 'sm',
+                variant: 'default'
+              },
+              'Wake it'
+            ),
+            h(Button, { key: 'no', onClick: () => setConfirming(false), size: 'sm', variant: 'ghost' }, 'Cancel')
+          ]
+        : h(
+            Button,
+            { disabled: busyRequest || !rest, key: 'wake', onClick: () => setConfirming(true), size: 'sm', variant: 'outline' },
+            'Wake this model'
+          ),
+      busy && !confirming
+        ? h(
+            Button,
+            {
+              disabled: busyRequest || !rest,
+              key: 'try',
+              onClick: () => void request('forget_busy', model.identity),
+              size: 'sm',
+              variant: 'outline'
+            },
+            'Try this model now'
+          )
+        : null
+    ),
+    h(
+      'p',
+      { className: 'mt-2 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'howto' },
+      'Keys are added or removed with /kame-keys (or in Hermes’ own key settings); this page never touches one.'
+    )
+  )
+}
+
+/** The ring row: your models in the order of your list, then the pools only background jobs used. */
+function ModelRings({ snap }) {
+  const open = useValue($openRing)
+  const { also, main } = ringModels(snap)
+  const everything = [...main, ...also]
+  const opened = everything.find(model => model.identity === open)
+  const chain = snap?.fallback?.entries?.length > 1
+
+  const row = (models, key, label) =>
+    models.length
+      ? h(
+          'div',
+          { key },
+          label ? h('p', { className: 'mb-1 text-[0.6875rem] text-(--ui-text-quaternary)', key: 'label' }, label) : null,
+          h(
+            'div',
+            { className: 'flex flex-wrap items-start gap-1', key: 'rings' },
+            models.map((model, index) => [
+              index > 0 && chain && model.rank
+                ? h('span', { 'aria-hidden': 'true', className: 'self-center text-(--ui-text-quaternary)', key: `to-${model.identity}` }, '›')
+                : null,
+              h(PoolRing, {
+                key: model.identity,
+                model,
+                onToggle: () => $openRing.set(open === model.identity ? '' : model.identity),
+                open: open === model.identity,
+                snap
+              })
+            ])
+          )
+        )
+      : null
+
+  return Card(
+    {
+      key: 'models',
+      note: chain
+        ? 'In the order of your fallback list: KAME starts every reply on 1, and goes down the list when a model is busy, slow or out of quota.'
+        : 'One ring per provider and model. A key spent on one model keeps its allowance on another.',
+      title: 'Your models'
+    },
+    everything.length
+      ? [
+          row(main, 'main'),
+          row(also, 'also', 'Also used by background jobs'),
+          h(RingLegend, { key: 'legend' }),
+          opened ? h(KeyTable, { key: `table-${opened.identity}`, model: opened, snap }) : null
+        ]
+      : h(
+          'p',
+          { className: 'text-sm text-(--ui-text-tertiary)', key: 'empty' },
+          'Nothing recorded yet — no call has been made through a pooled key this session.'
+        )
+  )
+}
+
+/** The last few moves KAME made, in plain words - the story the rings only point at. */
+function Moves({ snap }) {
+  const now = useValue($now)
+  const moves = (snap?.events ?? [])
+    .filter(event => ['handover', 'wait', 'switch', 'gave_up', 'surfaced'].includes(event.kind))
+    .slice(0, 6)
+
+  return Card(
+    { key: 'moves', title: 'What KAME did' },
+    moves.length
+      ? h(
+          'ul',
+          { className: 'flex flex-col gap-1', key: 'moves' },
+          moves.map((event, index) =>
+            h(
+              'li',
+              { className: 'flex items-baseline justify-between gap-3 text-sm', key: `${event.seq ?? index}` },
+              h(
+                'span',
+                { className: 'text-(--ui-text-secondary)', key: 'text' },
+                h('span', { 'aria-hidden': 'true', className: 'mr-2 text-(--ui-text-quaternary)', key: 'icon' }, MOVE_ICON[event.kind] ?? '·'),
+                // a move already reads as a sentence; the arrow the Events tab adds would repeat the icon
+                (event.kind === 'handover' ? reasonText(event) : eventSentence(event)) || event.kind
+              ),
+              h('span', { className: 'shrink-0 text-xs text-(--ui-text-quaternary)', key: 'ago' }, ago(now / 1000 - event.at))
+            )
+          )
+        )
+      : h('p', { className: 'text-sm text-(--ui-text-tertiary)', key: 'none' }, 'Nothing to report — every reply went straight out.'),
+    h(
+      Button,
+      { key: 'all', onClick: () => $tab.set('events'), size: 'sm', variant: 'ghost' },
+      'All events →'
+    )
+  )
+}
+
+const MOVE_ICON = { gave_up: '■', handover: '→', surfaced: '!', switch: '↻', wait: '⏸' }
+
+/** What the speed mode has really cost, against what it may. */
+function SpeedCost({ snap }) {
+  const speed = snap?.speed
+
+  if (!speed || !speed.cap_pct || !speed.hour) {
+    return null
+  }
+
+  const hour = speed.hour
+  const sinceStart = speed.since_start
+  const over = hour.extra_pct !== null && speed.cap_pct > 0 && hour.extra_pct > speed.cap_pct * 1.5
+
+  return h(
+    'p',
+    { className: cn('mt-2 text-xs', over ? 'text-amber-500' : 'text-(--ui-text-secondary)'), key: 'cost' },
+    hour.replies
+      ? `Extra requests this hour: +${hour.extra_pct ?? 0}% (${hour.replies} replies). Your setting allows about +${speed.cap_pct}%.`
+      : `No replies this hour yet. Your setting allows about +${speed.cap_pct}% extra requests.`,
+    sinceStart?.replies && sinceStart.extra_pct !== null ? ` Since Hermes started: +${sinceStart.extra_pct}%.` : ''
+  )
+}
+
+/** Where the quota went: per model, requests since the window began, the share that were background
+ *  jobs (titles, summaries...), the jobs KAME stopped early, and a read-only suggestion. */
+function BackgroundUse({ snap }) {
+  const share = quotaShare(useValue($snapshot), useValue($now))
+  const rows = [...share.models.entries()]
+    .map(([identity, row]) => ({ identity, ...row, total: row.main + row.side }))
+    .filter(row => row.side > 0)
+    .sort((a, b) => b.side - a.side)
+  const stopped = Object.entries(share.stopped).filter(([, count]) => count > 0)
+
+  if (!rows.length && !stopped.length && !share.suggestion) {
+    return null
+  }
+
+  const clock = clockOf(share.since)
+  const tasks = row =>
+    Object.entries(row.tasks)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([task, count]) => `${task} ${count}`)
+      .join(', ')
+
+  return Card(
+    {
+      key: 'background-use',
+      note: 'Titles, summaries and other side jobs spend the same per-model quota as your chats. Counts come from this profile.',
+      title: 'Background jobs and your quota'
+    },
+    ...rows.map(row =>
+      h(
+        'p',
+        { className: 'text-sm text-(--ui-text-secondary)', key: row.identity },
+        `${modelOnly(row.identity)}: ${row.total} requests since ${clock}; ${row.side} (${Math.round((100 * row.side) / row.total)}%) were background jobs - ${tasks(row)}`
+      )
+    ),
+    stopped.length
+      ? h(
+          'p',
+          { className: 'text-sm text-(--ui-text-secondary)', key: 'stopped' },
+          `Stopped early to save your keys: ${stopped.map(([task, count]) => `${task} ${count}`).join(', ')}`
+        )
+      : null,
+    share.suggestion
+      ? h('p', { className: 'text-sm text-(--ui-text-primary)', key: 'suggestion' }, share.suggestion)
+      : null
+  )
+}
+
+/** The settings that change every conversation, on the first page. The same components as the
+ *  Settings tab, so a change here is the same request, validation and hold-what-was-sent. */
+function QuickControls({ snap }) {
+  const busy = Boolean(useValue($pending))
+  const byKey = key => (snap?.settings ?? []).find(setting => setting.key === key)
+  const speed = byKey('hedge_mode')
+  const fallback = byKey('model_switch')
+  const timed = byKey('failover_after_seconds')
+  const notice = byKey('reply_notice')
+
+  return Card(
+    { key: 'quick', note: 'The three you may want to change often. Everything else is in Settings.', title: 'Quick controls' },
+    speed ? h(StringSetting, { busy, key: 'quick-speed', setting: speed }) : null,
+    speed ? h(SpeedCost, { key: 'quick-cost', snap }) : null,
+    fallback ? h(StringSetting, { busy, key: 'quick-fallback', setting: fallback }) : null,
+    fallback && timed && fallback.value === 'timed' ? h(NumberSetting, { busy, key: 'quick-timed', setting: timed }) : null,
+    notice ? h(StringSetting, { busy, key: 'quick-notice', setting: notice }) : null,
+    h(Button, { key: 'all', onClick: () => $tab.set('settings'), size: 'sm', variant: 'ghost' }, 'All settings →')
+  )
+}
+
+/** The cards the page used to start with, folded under one heading. */
+function Details({ children }) {
+  const open = useValue($detailsOpen)
+
+  return h(
+    'section',
+    { className: 'flex flex-col gap-4', key: 'details' },
+    h(
+      'button',
+      {
+        'aria-expanded': open,
+        className: 'self-start text-xs font-medium tracking-wide text-(--ui-text-secondary) uppercase hover:text-(--ui-text-primary)',
+        key: 'toggle',
+        onClick: () => $detailsOpen.set(!open),
+        type: 'button'
+      },
+      `${open ? '▾' : '▸'} Details`
+    ),
+    open ? h('div', { className: 'flex flex-col gap-4', key: 'body' }, children) : null
+  )
+}
+
 // -- settings ---------------------------------------------------------------
 
 /** The source of a value, as a quiet badge beside it. */
@@ -1196,7 +2199,7 @@ function Source({ setting }) {
  * not the default is marked in the margin — which is the one thing a person
  * scanning this page is actually looking for.
  */
-function SettingShell({ setting, control, error }) {
+function SettingShell({ setting, control, error, note, footnote }) {
   const changed = setting.source !== 'default'
 
   return h(
@@ -1270,6 +2273,9 @@ function SettingShell({ setting, control, error }) {
       ),
       h('div', { className: 'flex shrink-0 items-center gap-2', key: 'control' }, control)
     ),
+    // 1.8.2.9: one plain sentence for the chosen answer, and what the percentages leave out.
+    note ? h('p', { className: 'mt-1 text-xs text-(--ui-text-secondary)', key: 'note' }, note) : null,
+    footnote ? h('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', key: 'footnote' }, footnote) : null,
     error ? h('p', { className: 'mt-2 text-xs text-destructive', key: 'error' }, error) : null
   )
 }
@@ -1557,6 +2563,9 @@ function StringSetting({ setting, busy }) {
         reset
       ],
       error,
+      // The sentence for the answer in force; the footnote is not shown for the cheapest answer.
+      footnote: setting.choice_footnote && draft !== setting.choice_order?.[0] ? setting.choice_footnote : '',
+      note: setting.choice_help?.[draft] ?? '',
       setting
     })
   }
@@ -3324,26 +4333,28 @@ function KamePage() {
 
             snap.first_run ? h(FirstRun, { key: 'first-run' }) : null,
 
-            Card({ key: 'right-now', title: 'Right now' }, h(RightNow, { snap })),
+            // 1.8.2.9 (decisions/0031): the five-second read first - three sentences, your models
+            // as rings in the order of your list, what KAME just did, the controls you reach for.
+            h(NowStrip, { key: 'now-strip', snap }),
 
-            h(Neighbours, { key: 'neighbours', snap }),
+            h(ModelRings, { key: 'models', snap }),
 
-            h(WhatItSees, { key: 'what-it-sees', snap }),
+            h(Moves, { key: 'moves', snap }),
 
-            Card(
-              {
-                key: 'pool-health',
-                note: 'One pool per provider and model. A key spent on one model keeps its allowance on another.',
-                title: 'Pool health'
-              },
-              (snap.pools ?? []).length
-                ? (snap.pools ?? []).map(pool => h(PoolRow, { key: pool.identity, pool, snap }))
-                : h(
-                    'p',
-                    { className: 'text-sm text-(--ui-text-tertiary)', key: 'empty' },
-                    'Nothing recorded yet — no call has been made through a pooled key this session.'
-                  )
-            ),
+            h(QuickControls, { key: 'quick', snap }),
+
+            // The old cards, unchanged, folded underneath. "Right now" kept its place in the
+            // details: it is the long form of the first sentence.
+            h(
+              Details,
+              { key: 'details' },
+              Card({ key: 'right-now', title: 'Right now' }, h(RightNow, { snap })),
+
+              h(BackgroundUse, { key: 'background-use', snap }),
+
+              h(Neighbours, { key: 'neighbours', snap }),
+
+              h(WhatItSees, { key: 'what-it-sees', snap }),
 
             Card(
               {
@@ -3396,6 +4407,7 @@ function KamePage() {
               },
               Field('Repair', repair.applied ? 'in place' : 'not applied', repair.applied ? null : repair.reason),
               repair.applied ? Field('Calls separated', repair.repaired ?? 0) : null
+            )
             )
           ),
 
@@ -3570,6 +4582,10 @@ export default {
   }
 }
 
+
+/** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
+ *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
+export const panelHelpers = { KEY_STATE, PANEL_READS, keyCounts, modelState, nowSentences, quotaShare, ringAria, ringModels, ringSegments, sideJobsLine }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

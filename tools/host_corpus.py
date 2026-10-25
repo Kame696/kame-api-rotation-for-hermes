@@ -148,7 +148,7 @@ def run_corpus(*, with_kame: bool, workdir: Path) -> tuple[int, str]:
 
     proc = subprocess.run(
         argv, cwd=str(HERMES), env=env,
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=int(os.environ.get("KAME_CORPUS_TIMEOUT", "600")),
     )
     output = (proc.stdout or "") + (proc.stderr or "")
     log_dir = env.get("KAME_HOST_TEST_LOG_DIR")
