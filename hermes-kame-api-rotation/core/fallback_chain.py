@@ -256,6 +256,45 @@ def primary_identity(home: Optional[Path] = None) -> Optional[str]:
     return read(home)[0]
 
 
+def _listed(config: Any) -> List[str]:
+    """Every identity written in the list itself, the main model included if it was written there."""
+    out: List[str] = []
+    if isinstance(config, dict):
+        for key in ("fallback_providers", "fallback_model"):
+            value = config.get(key)
+            rows = value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+            for row in rows:
+                if isinstance(row, dict):
+                    ident = _identity(row.get("provider"), row.get("model"))
+                    if ident:
+                        out.append(ident)
+    return out
+
+
+def starts_on_main(identity: str, home: Optional[Path] = None) -> bool:
+    """May a reply that STARTS on ``identity`` use the fallback list? (1.8.3.0, decisions/0033 D1)
+
+    Only the main model may: Hermes' ``model.default``, and only when that model is not itself an
+    entry of ``fallback_providers`` - a list model chosen as the default has the rest of the list
+    "after" it only by accident. Anything else (a model picked by hand, a secondary tile) answers
+    with its own keys alone. With no main model known, or no model name to judge, there is nothing
+    to decide by and the answer is True: the 1.8.2.9 behaviour is kept.
+    """
+    home = home if home is not None else _home()
+    kind, config, memo = _config(home)
+    if kind != _OK:
+        return True
+    primary = read(home)[0]
+    if not primary or not identity:
+        return True
+    if not _same(identity, primary):
+        return False
+    listed = memo.get("listed")
+    if listed is None:
+        listed = memo["listed"] = tuple(_listed(config))
+    return primary not in listed
+
+
 #: Hermes' own default for ``agent.api_max_retries`` (``hermes_cli/config_defaults.py``).
 HOST_SWITCH_LIMIT_DEFAULT = 3
 

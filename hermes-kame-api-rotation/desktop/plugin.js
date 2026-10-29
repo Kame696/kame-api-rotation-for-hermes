@@ -1202,6 +1202,7 @@ const PANEL_READS = [
   'replies[].at',
   'replies[].first_s',
   'replies[].for',
+  'replies[].main',
   'replies[].model',
   'replies[].total_s',
   'speed.cap_pct',
@@ -4507,6 +4508,94 @@ function KameSettingsEntry() {
     : h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, problem || 'Waiting for the first snapshot…')
 }
 
+// -- the model selector goes back to the main model (1.8.3.0) ----------------
+
+/** How long after a reply the snapshot is looked at again for the "answered for" row, in
+ *  milliseconds. KAME publishes the row a moment after the reply ends, so the first look can be early. */
+const PILL_LOOKS_MS = [1500, 3000, 6000]
+
+/** A reply older than this is not the one that just ended. */
+const PILL_MAX_AGE_S = 120
+
+/** A model or provider name that is safe to put in a `config.set` value: no spaces, no leading dash. */
+const PILL_MODEL_WORD = /^[^\s-][^\s]*$/
+const PILL_PROVIDER_WORD = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/** What to put back on the model selector after a reply, or `null` when nothing.
+ *
+ *  1.8.3.0 (decisions/0033 D2 b). When a model of the same provider answered in place of the main model,
+ *  Hermes never switched, so the selector should not move. When Hermes itself switched (another provider),
+ *  the selector shows the fallback until the user changes it; this puts the main model back for THIS
+ *  conversation only (`--session`, never the profile default). Pure, so the node check can ask it
+ *  questions: `snap` is KAME's snapshot, `event` the gateway's `message.complete`, `handledAt` the `at` of
+ *  the last reply already put back, `nowS` the clock in seconds. */
+function pillRestorePlan(snap, event, handledAt, nowS) {
+  if (!event || event.type !== 'message.complete') return null
+
+  const sessionId = event.session_id ?? event.sessionId ?? null
+
+  if (!sessionId) return null
+
+  const reply = (snap?.replies ?? [])[0]
+
+  // Only when Hermes itself moved off the main model: a sibling KAME answered with left it in place.
+  if (!reply || !reply.for || reply.switched !== true || typeof reply.at !== 'number') return null
+  if (reply.at <= (handledAt ?? 0) || nowS - reply.at > PILL_MAX_AGE_S) return null
+
+  const main = reply.main
+
+  if (!main || !PILL_MODEL_WORD.test(String(main.model ?? '')) || !PILL_PROVIDER_WORD.test(String(main.provider ?? ''))) {
+    return null
+  }
+
+  return { at: reply.at, session_id: sessionId, value: `${main.model} --provider ${main.provider} --session` }
+}
+
+/** Listen for the end of each reply and, when KAME says a fallback model answered for the main one, put the
+ *  main model back on the selector of that conversation. Returns the function that stops listening.
+ *
+ *  A Desktop without `host.onEvent` / `host.request` gets a no-op: the selector simply stays where Hermes
+ *  left it. A refused request is not an error to show and is not retried. */
+function watchPillRestore({
+  activeSessionId = () => null,
+  host: door,
+  now = () => Date.now() / 1000,
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  snapshot
+}) {
+  if (!door || typeof door.onEvent !== 'function' || typeof door.request !== 'function') return () => {}
+
+  let handledAt = 0
+
+  const look = (event, index) => async () => {
+    const plan = pillRestorePlan(snapshot(), { type: 'message.complete', ...event }, handledAt, now())
+
+    if (!plan) {
+      if (index + 1 < PILL_LOOKS_MS.length) setTimer(look(event, index + 1), PILL_LOOKS_MS[index + 1] - PILL_LOOKS_MS[index])
+
+      return
+    }
+
+    handledAt = plan.at
+
+    const open = activeSessionId()
+
+    if (open && String(open) !== String(plan.session_id)) return
+
+    try {
+      await door.request('config.set', { key: 'model', session_id: plan.session_id, value: plan.value })
+    } catch {
+      // the selector stays where Hermes left it
+    }
+  }
+
+  const stop = door.onEvent('message.complete', event => {
+    setTimer(look(event ?? {}, 0), PILL_LOOKS_MS[0])
+  })
+
+  return typeof stop === 'function' ? stop : () => {}
+}
+
 // -- registration -----------------------------------------------------------
 
 export default {
@@ -4521,6 +4610,16 @@ export default {
       os = null
     })
     ctx.onDispose(startReading())
+    // 1.8.3.0 (decisions/0033 D2 b): after a reply a fallback model answered, the selector goes back to the main one.
+    ctx.onDispose(
+      watchPillRestore({
+        // `host.state.*` are nanostore atoms: read with `.get()`. (`host.state.model` is the composer's
+        // sticky pick, not this conversation's model, so it says nothing about what to put back.)
+        activeSessionId: () => host.state?.activeSessionId?.get?.() ?? null,
+        host,
+        snapshot: () => $snapshot.get()
+      })
+    )
 
     const settingsPage = {
       icon: 'sync',
@@ -4585,7 +4684,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, keyCounts, modelState, nowSentences, quotaShare, ringAria, ringModels, ringSegments, sideJobsLine }
+export const panelHelpers = { KEY_STATE, PANEL_READS, keyCounts, modelState, nowSentences, pillRestorePlan, quotaShare, ringAria, ringModels, ringSegments, sideJobsLine, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

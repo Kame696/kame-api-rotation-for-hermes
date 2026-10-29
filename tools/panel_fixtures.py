@@ -127,7 +127,8 @@ def build(name: str, home: Path, m) -> dict:
         for key in pool_keys[:12]:
             engine.mark(MODELS[0], key, False, 3600.0 * 5, "daily")
         engine.mark(MODELS[0], pool_keys[12], False, 40.0, "per_minute")
-        transport.replies.append({"at": now - 8, "model": "gemini-3.7-flash", "for": "gemini-3.8-flash", "first_s": 1.6, "total_s": 2.3})
+        transport.replies.append({"at": now - 8, "model": "gemini-3.7-flash", "for": "gemini-3.8-flash", "first_s": 1.6, "total_s": 2.3,
+                                  "main": {"provider": "gemini", "model": "gemini-3.8-flash"}})
         for _ in range(30):
             transport._tally(0)
         for _ in range(5):

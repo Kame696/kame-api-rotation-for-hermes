@@ -47,10 +47,14 @@ carousel_mod = importlib.import_module(f"{PACKAGE}.core.carousel")
 chain_mod = importlib.import_module(f"{PACKAGE}.core.fallback_chain")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 
-MODELS = [f"gemini:gemini-3.{n}-flash" for n in (8, 7, 6, 5, 4)]
+# 1.8.3.0 (D2 a): a fallback on the SAME provider is answered inside KAME and never reaches Hermes
+# (tests/test_1_8_3_0_sibling_standin.py). This simulation is of Hermes' walk, so every entry is a
+# different provider, the only kind KAME still hands over.
+PROVIDERS = ["gemini", "groq", "cerebras", "mistral", "nvidia"]
+MODELS = [f"{p}:gemini-3.{n}-flash" for p, n in zip(PROVIDERS, (8, 7, 6, 5, 4))]
 KEYS = {m: [f"AIzaSy{m[-9:-6]}{i:02d}" + "0" * 24 for i in range(14)] for m in MODELS}
-CONFIG = "model:\n  provider: gemini\n  default: gemini-3.8-flash\nfallback_providers:\n" + "".join(
-    f"  - provider: gemini\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:])
+CONFIG = (f"model:\n  provider: {PROVIDERS[0]}\n  default: gemini-3.8-flash\nfallback_providers:\n" + "".join(
+    f"  - provider: {m.split(':', 1)[0]}\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:]))
 
 
 def answer(text):
@@ -62,7 +66,7 @@ def answer(text):
 class FakeCall(transport.Call):
     def __init__(self, identity):
         self.kwargs = {"model": identity, "messages": [{"role": "user", "content": "hi"}]}
-        self.provider = "gemini"
+        self.provider = identity.split(":", 1)[0]
         self.identity = identity
 
     def keys(self):

@@ -320,6 +320,15 @@ def _on_api_error_classification(
         error_message=error_message, error_body=error_body, error=error,
         error_type=error_type, error_code=error_code,
     )
+    # 1.8.3.0 (decisions/0033 D1, review R3): whatever KAME answers below - even when it declines and
+    # Hermes' own pipeline decides - a failure of a main-model reply may become Hermes' own walk down the
+    # list. The call Hermes rebuilds on the next entry is the same reply and keeps the permission.
+    try:
+        from .transport import note_host_fallback
+
+        note_host_fallback(provider, model)
+    except Exception:  # pragma: no cover - bookkeeping must never break the hook
+        logger.debug("%s: could not note a possible fallback", PLUGIN_NAME, exc_info=True)
 
 
     if _host_owns(error_body):
@@ -368,7 +377,19 @@ def _on_api_error_classification(
         verdict.source or "-",
         verdict.rationale,
     )
-    return _to_hook_result(verdict)
+    result = _to_hook_result(verdict)
+    # 1.8.3.0 (decisions/0033 D1). The fallback list is the main model's: a reply that did not start on
+    # the main model (picked by hand, a secondary tile, a list model chosen as the default) must not make
+    # Hermes switch model either. Only the permission changes - the reason, the rotation and the rest stay.
+    if result.get("should_fallback"):
+        try:
+            from .transport import reply_may_fall_back
+
+            if reply_may_fall_back(provider, model) is False:
+                result["should_fallback"] = False
+        except Exception:  # pragma: no cover - a courtesy to the user's choice, never a reason to fail
+            logger.debug("%s: could not tell where the reply started", PLUGIN_NAME, exc_info=True)
+    return result
 
 
 def _on_session_reset(payload=None, **kwargs):

@@ -84,9 +84,11 @@ def test_the_next_reply_skips_the_slow_model_without_a_request(fresh):
     with pytest.raises(transport.KamePoolResting):
         list(fresh.stream(R.FakeCall(silent_pool())))
     fresh._handover_until.clear()          # Hermes reached the next model, then a new reply
-    # The raced-in next model was silent too and is marked slow as well; this test asks the
-    # plain case, where the model after it is free (1.8.2.9, decisions/0030 M6).
-    fresh._busy_until.pop("gemini:gemini-race-two", None)
+    # The raced-in next model was silent too and is marked slow as well; the model after it
+    # (another provider) is free, so Hermes is handed the reply (1.8.2.9, decisions/0030 M6).
+    # 1.8.3.0 (D2 a): were the same-provider sibling free, KAME would answer with it itself and
+    # Hermes would hear nothing (tests/test_1_8_3_0_sibling_standin.py), so it stays marked slow.
+    assert fresh._entry_busy("gemini:gemini-race-two")
     pool = silent_pool()
     with pytest.raises(transport.KamePoolResting):
         list(fresh.stream(R.FakeCall(pool)))

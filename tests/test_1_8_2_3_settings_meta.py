@@ -268,8 +268,8 @@ class TestSettingsWiringMeta(unittest.TestCase):
 
     def test_module_version_mentions_v3(self):
         from core import __version__  # noqa: E402
-        # 1.8.2.4: the v3 line, whatever its last number.
-        self.assertTrue(__version__.startswith("1.8.2."), __version__)
+        # 1.8.2.4: the v3 line, whatever its last number. 1.8.3.0 is still that line.
+        self.assertTrue(__version__.startswith(("1.8.2.", "1.8.3.")), __version__)
 
 
 if __name__ == "__main__":

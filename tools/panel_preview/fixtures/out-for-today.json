@@ -6,7 +6,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.8.2.9",
+ "build_line": "1.8.3.0",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -105,13 +105,13 @@
  "inflight": [],
  "installed": true,
  "pacing_state": {},
- "pid": 18464,
+ "pid": 17004,
  "pools": [
   {
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.0002589225769042969,
+   "idle_for_s": 0.00083160400390625,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -214,7 +214,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.00039076805114746094,
+   "idle_for_s": 0.0010294914245605469,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -317,7 +317,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.0005109310150146484,
+   "idle_for_s": 0.0012488365173339844,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -420,7 +420,7 @@
    "failures": 13,
    "healthy": 1,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.0007004737854003906,
+   "idle_for_s": 0.0018301010131835938,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -428,73 +428,73 @@
     [
      "key:01eb86",
      "d",
-     1792851955.455278,
+     1793267968.4618542,
      "daily"
     ],
     [
      "key:24ebd9",
      "d",
-     1792851955.4552248,
+     1793267968.4617038,
      "daily"
     ],
     [
      "key:36e24d",
      "d",
-     1792851955.4552326,
+     1793267968.461723,
      "daily"
     ],
     [
      "key:55e890",
      "d",
-     1792851955.4552386,
+     1793267968.4617395,
      "daily"
     ],
     [
      "key:6a0942",
      "d",
-     1792851955.4552512,
+     1793267968.461769,
      "daily"
     ],
     [
      "key:74ea95",
      "d",
-     1792851955.455213,
+     1793267968.4616637,
      "daily"
     ],
     [
      "key:7ef9d5",
      "d",
-     1792851955.4552445,
+     1793267968.4617538,
      "daily"
     ],
     [
      "key:865608",
      "d",
-     1792851955.4552717,
+     1793267968.4618316,
      "daily"
     ],
     [
      "key:9267af",
      "d",
-     1792851955.4551919,
+     1793267968.4615986,
      "daily"
     ],
     [
      "key:aff59a",
      "d",
-     1792851955.455284,
+     1793267968.4618704,
      "daily"
     ],
     [
      "key:c96221",
      "d",
-     1792851955.455265,
+     1793267968.4618087,
      "daily"
     ],
     [
      "key:d14a5e",
      "d",
-     1792851955.4552588,
+     1793267968.461787,
      "daily"
     ],
     [
@@ -506,7 +506,7 @@
     [
      "key:fffd54",
      "s",
-     1792851695.455291,
+     1793267708.4618866,
      "per_minute"
     ]
    ],
@@ -526,16 +526,20 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1792851655.1179185,
+  "since": 1793267668.3329563,
   "stopped": {},
   "suggestion": null
  },
  "reason": "not installed",
  "replies": [
   {
-   "at": 1792851647.455188,
+   "at": 1793267660.46159,
    "first_s": 1.6,
    "for": "gemini-3.8-flash",
+   "main": {
+    "model": "gemini-3.8-flash",
+    "provider": "gemini"
+   },
    "model": "gemini-3.7-flash",
    "total_s": 2.3
   }
@@ -754,7 +758,7 @@
    "consequential": false,
    "default": 0.0,
    "depends_on": null,
-   "detail": "Unset, a chat waits for as long as every key is resting: each key's own rest is already capped by the ceiling above, and the call retries the moment one returns, so a spent quota ends with an answer on the same model. A cron job, unset, stops after 300 s \u2014 below Hermes' own cron timeout \u2014 and hands Hermes the provider's original refusal. Any value you set wins everywhere: 0 means never stop waiting, chats and cron alike; a number bounds both.",
+   "detail": "Unset, a chat waits for as long as every key is resting: each key's own rest is already capped by the ceiling above, and the call retries the moment one returns, so a spent quota ends with an answer on the same model. A cron job, unset, stops after 300 s — below Hermes' own cron timeout — and hands Hermes the provider's original refusal. Any value you set wins everywhere: 0 means never stop waiting, chats and cron alike; a number bounds both.",
    "env": "KAME_MAX_TOTAL_WAIT",
    "group": "extra",
    "help": "Default: a chat never gives up, it waits for a key or uses your fallback list; a scheduled job gives up after 5 minutes. A number here makes both give up with an error after that long; 0 makes neither give up.",
@@ -809,9 +813,9 @@
     "off": "One request per reply, never more: the cheapest, and a slow reply simply waits."
    },
    "choice_labels": {
-    "adaptive": "Balanced \u00b7 up to 1.1x",
-    "max": "Faster \u00b7 up to 1.3x",
-    "off": "Saver \u00b7 1x"
+    "adaptive": "Balanced · up to 1.1x",
+    "max": "Faster · up to 1.3x",
+    "off": "Saver · 1x"
    },
    "choice_order": [
     "off",
@@ -898,7 +902,7 @@
     "now": "auto",
     "value": "timed"
    },
-   "detail": "For a provider that accepts a request and then sends nothing. KAME waits this long for the first character \u2014 and for every character after it \u2014 before dropping that key and asking the next one. Zero, the default, means only Hermes' own 120s applies. Leave it at zero unless you have a provider that accepts a request and then hangs: a reasoning model can spend well over twenty seconds before its first token, and a number that short would abandon it mid-thought and rotate through the whole pool doing the same. Anything above zero is raised to at least 5s for the same reason. If you do have such a provider, 60 is the number to try: it is well clear of the slowest honest first token anyone has measured here, and half of what Hermes would otherwise spend before giving up \u2014 so a hung key costs a minute instead of two, and a slow one is still allowed to think.",
+   "detail": "For a provider that accepts a request and then sends nothing. KAME waits this long for the first character — and for every character after it — before dropping that key and asking the next one. Zero, the default, means only Hermes' own 120s applies. Leave it at zero unless you have a provider that accepts a request and then hangs: a reasoning model can spend well over twenty seconds before its first token, and a number that short would abandon it mid-thought and rotate through the whole pool doing the same. Anything above zero is raised to at least 5s for the same reason. If you do have such a provider, 60 is the number to try: it is well clear of the slowest honest first token anyone has measured here, and half of what Hermes would otherwise spend before giving up — so a hung key costs a minute instead of two, and a slow one is still allowed to think.",
    "env": "KAME_STREAM_SILENCE_TIMEOUT",
    "group": "speed",
    "help": "Only with 'Wait for the first token' set to 'Set time': how many seconds a key may stay silent before KAME asks the next one; 60 suits most providers. 0 (default) leaves the wait to Hermes' own 120 s.",
@@ -992,7 +996,7 @@
    "max": 50.0,
    "min": 0.0,
    "off_or_at_least": null,
-   "recommendation": "Leave at 10 \u2014 enough to cover slow incidents, cheap on daily quota.",
+   "recommendation": "Leave at 10 — enough to cover slow incidents, cheap on daily quota.",
    "source": "default",
    "step": null,
    "title": "Backup budget (% of calls)",
@@ -1048,7 +1052,7 @@
    "max": 99.0,
    "min": 50.0,
    "off_or_at_least": null,
-   "recommendation": "Leave at 90 \u2014 the measured sweet spot for tail latency.",
+   "recommendation": "Leave at 90 — the measured sweet spot for tail latency.",
    "source": "default",
    "step": null,
    "title": "Send backup when slower than usual",
@@ -1094,10 +1098,10 @@
    "consequential": false,
    "default": 30.0,
    "depends_on": null,
-   "detail": "The same threshold, separate for models that think before they answer \u2014 a long thinking phase is normal there and must not trigger a backup.",
+   "detail": "The same threshold, separate for models that think before they answer — a long thinking phase is normal there and must not trigger a backup.",
    "env": "KAME_HEDGE_COLD_REASONING_S",
    "group": "speed",
-   "help": "The same threshold, separate for models that think before they answer \u2014 a long thinking phase is normal there and must not trigger a backup.",
+   "help": "The same threshold, separate for models that think before they answer — a long thinking phase is normal there and must not trigger a backup.",
    "impact": "low",
    "key": "hedge_cold_reasoning_s",
    "kind": "number",
@@ -1150,7 +1154,7 @@
    "consequential": false,
    "default": true,
    "depends_on": null,
-   "detail": "For an install with more than one Hermes profile on the same machine, using the same API keys. Off, each profile learns a key's rest and its recovery on its own, so one profile can bench a key while another calls it in the same second and both are told the same refusal. On, every profile reads and writes one file outside any profile's own folder, so a bench or a success in one is seen by the others, and a hold survives restarting Hermes instead of being thrown away with the process. Never a key \u2014 only a hash of one. Turning this on never makes a hold longer than the ceiling above already allows, and does nothing at all if only one profile is running.",
+   "detail": "For an install with more than one Hermes profile on the same machine, using the same API keys. Off, each profile learns a key's rest and its recovery on its own, so one profile can bench a key while another calls it in the same second and both are told the same refusal. On, every profile reads and writes one file outside any profile's own folder, so a bench or a success in one is seen by the others, and a hold survives restarting Hermes instead of being thrown away with the process. Never a key — only a hash of one. Turning this on never makes a hold longer than the ceiling above already allows, and does nothing at all if only one profile is running.",
    "env": "KAME_SHARE_POOL_HEALTH",
    "group": "keyring",
    "help": "On: when several Hermes profiles use the same keys, a key resting in one rests in all; no effect with one profile.",
@@ -1206,17 +1210,17 @@
    "consequential": false,
    "default": "",
    "depends_on": null,
-   "detail": "For regional providers (Vertex, Bedrock), name a key's region, e.g. 'key:a1b2c3=us-central1' \u2014 the key as the Events tab shows it (the six characters alone also work). It sets the region of the whole model on that endpoint, so refusals there do not rest the same model elsewhere. Auto-detected from the endpoint URL when left empty.",
+   "detail": "For regional providers (Vertex, Bedrock), name a key's region, e.g. 'key:a1b2c3=us-central1' — the key as the Events tab shows it (the six characters alone also work). It sets the region of the whole model on that endpoint, so refusals there do not rest the same model elsewhere. Auto-detected from the endpoint URL when left empty.",
    "env": "KAME_KEY_REGION_OVERRIDES",
    "group": "keyring",
-   "help": "For regional providers (Vertex, Bedrock), name a key's region, e.g. 'key:a1b2c3=us-central1' \u2014 the key as the Events tab shows it (the six characters alone also work). It sets the region of the whole model on that endpoint, so refusals there do not rest the same model elsewhere. Auto-detected from the endpoint URL when left empty.",
+   "help": "For regional providers (Vertex, Bedrock), name a key's region, e.g. 'key:a1b2c3=us-central1' — the key as the Events tab shows it (the six characters alone also work). It sets the region of the whole model on that endpoint, so refusals there do not rest the same model elsewhere. Auto-detected from the endpoint URL when left empty.",
    "impact": "low",
    "key": "key_region_overrides",
    "kind": "string",
    "max": null,
    "min": null,
    "off_or_at_least": null,
-   "recommendation": "Leave empty \u2014 the region is read from the URL.",
+   "recommendation": "Leave empty — the region is read from the URL.",
    "source": "default",
    "step": null,
    "title": "Region per key",
@@ -1234,10 +1238,10 @@
    "consequential": false,
    "default": 3600.0,
    "depends_on": null,
-   "detail": "How long a key rests after a daily or account-level refusal \u2014 a quota that is genuinely spent. The provider's own retry hint is ignored for these on purpose: it routinely says a minute when the truth is midnight. It does not govern a key the provider *refused* (a 401, a revoked key): that rests twenty seconds and is then offered last, because waiting is not what repairs one \u2014 and a key the provider names dead leaves rotation instead of resting.",
+   "detail": "How long a key rests after a daily or account-level refusal — a quota that is genuinely spent. The provider's own retry hint is ignored for these on purpose: it routinely says a minute when the truth is midnight. It does not govern a key the provider *refused* (a 401, a revoked key): that rests twenty seconds and is then offered last, because waiting is not what repairs one — and a key the provider names dead leaves rotation instead of resting.",
    "env": "KAME_DAILY_COOLDOWN",
    "group": "tuning",
-   "help": "How long a key rests after a daily or account-level refusal \u2014 a quota that is genuinely spent. The provider's own retry hint is ignored for these on purpose: it routinely says a minute when the truth is midnight. It does not govern a key the provider *refused* (a 401, a revoked key): that rests twenty seconds and is then offered last, because waiting is not what repairs one \u2014 and a key the provider names dead leaves rotation instead of resting.",
+   "help": "How long a key rests after a daily or account-level refusal — a quota that is genuinely spent. The provider's own retry hint is ignored for these on purpose: it routinely says a minute when the truth is midnight. It does not govern a key the provider *refused* (a 401, a revoked key): that rests twenty seconds and is then offered last, because waiting is not what repairs one — and a key the provider names dead leaves rotation instead of resting.",
    "impact": "medium",
    "key": "daily_quota_cooldown_seconds",
    "kind": "number",
@@ -1262,10 +1266,10 @@
    "consequential": false,
    "default": 3600.0,
    "depends_on": null,
-   "detail": "No credential sits out longer than this, whatever set the rest \u2014 a provider's own stated wait, the daily cooldown above, or this plugin's own escalation. Past it the key returns to selection and is probed; a refusal that repeats is held again, so a genuinely long outage costs about one refused request per interval instead of a healthy key sitting out for however long a provider claimed.",
+   "detail": "No credential sits out longer than this, whatever set the rest — a provider's own stated wait, the daily cooldown above, or this plugin's own escalation. Past it the key returns to selection and is probed; a refusal that repeats is held again, so a genuinely long outage costs about one refused request per interval instead of a healthy key sitting out for however long a provider claimed.",
    "env": "KAME_MAX_HOLD",
    "group": "tuning",
-   "help": "No credential sits out longer than this, whatever set the rest \u2014 a provider's own stated wait, the daily cooldown above, or this plugin's own escalation. Past it the key returns to selection and is probed; a refusal that repeats is held again, so a genuinely long outage costs about one refused request per interval instead of a healthy key sitting out for however long a provider claimed.",
+   "help": "No credential sits out longer than this, whatever set the rest — a provider's own stated wait, the daily cooldown above, or this plugin's own escalation. Past it the key returns to selection and is probed; a refusal that repeats is held again, so a genuinely long outage costs about one refused request per interval instead of a healthy key sitting out for however long a provider claimed.",
    "impact": "medium",
    "key": "max_hold_seconds",
    "kind": "number",
@@ -1306,7 +1310,7 @@
    "title": "Short ladder: bare RESOURCE_EXHAUSTED",
    "units": "",
    "value": true,
-   "when": "Keep on. It retries a bare 'rate limit' after 1, 2, 4\u2026 seconds instead of a fixed wait."
+   "when": "Keep on. It retries a bare 'rate limit' after 1, 2, 4… seconds instead of a fixed wait."
   },
   {
    "advanced": true,
@@ -1362,7 +1366,7 @@
    "title": "Where the ladder stops",
    "units": "seconds",
    "value": 64.0,
-   "when": "Rarely. Where the 1, 2, 4\u2026 ladder stops."
+   "when": "Rarely. Where the 1, 2, 4… ladder stops."
   },
   {
    "advanced": true,
@@ -1598,10 +1602,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, stops at 8 MB. Turn this on to stop the writing.",
+   "detail": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state — status, message and body, with API keys removed first — and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
    "env": "KAME_RECORDER_DISABLED",
    "group": "off",
-   "help": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, stops at 8 MB. Turn this on to stop the writing.",
+   "help": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state — status, message and body, with API keys removed first — and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
    "impact": "escape",
    "key": "refusal_recorder_disabled",
    "kind": "flag",
@@ -1654,10 +1658,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, stops at 4 MB. Turn this on to stop the writing.",
+   "detail": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so “is it slow, and whose fault is it” can be answered with numbers rather than from memory — a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
    "env": "KAME_CALL_TIMINGS_DISABLED",
    "group": "off",
-   "help": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, stops at 4 MB. Turn this on to stop the writing.",
+   "help": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so “is it slow, and whose fault is it” can be answered with numbers rather than from memory — a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
    "impact": "escape",
    "key": "call_timings_disabled",
    "kind": "flag",
@@ -1692,7 +1696,7 @@
    "max": null,
    "min": null,
    "off_or_at_least": null,
-   "recommendation": "Leave off \u2014 adaptive hedging is the whole point of the speed work.",
+   "recommendation": "Leave off — adaptive hedging is the whole point of the speed work.",
    "source": "default",
    "step": null,
    "title": "Stop adaptive hedging",
@@ -1733,6 +1737,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1792851655.4632132,
- "version": "1.8.2.9"
+ "updated_at": 1793267668.4753041,
+ "version": "1.8.3.0"
 }

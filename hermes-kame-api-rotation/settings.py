@@ -1210,8 +1210,8 @@ META = {
         "decides nothing from it. It is there because the field that tells a "
         "per-minute quota from a per-day one could not be read before 1.7.0.0, "
         "so it appears in no older log and no rule about it can be checked "
-        "against real traffic. Writes only, never interrupts a call, stops at "
-        "8 MB. Turn this on to stop the writing.",
+        "against real traffic. Writes only, never interrupts a call, and keeps "
+        "the last ~8 MB (the file rotates). Turn this on to stop the writing.",
     ),
     CALL_TIMINGS_DISABLED: (
         "Stop timing calls",
@@ -1224,7 +1224,8 @@ META = {
         "model, and those look identical from outside. No key, no prompt and no "
         "answer text is written; only durations, a model name and the same key "
         "fingerprint the panel already shows. Writes only, never interrupts a "
-        "call, stops at 4 MB. Turn this on to stop the writing.",
+        "call, and keeps the last ~4 MB (the file rotates). Turn this on to stop "
+        "the writing.",
     ),
     QUOTA_ID_DISABLED: (
         "Stop reading the quota window",

@@ -6,9 +6,9 @@
 
 ### What API key rotation should have been: all your keys and models, one agent that never waits.
 
-[![Version](https://img.shields.io/badge/version-1.8.2.9-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.3.0-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/local_tests-3472_passing-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/local_tests-3543_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)_·_1.8.2.9_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/141137)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -29,7 +29,7 @@
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.8.2.9-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.8.3.0-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -168,11 +168,28 @@ flowchart TD
 <tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
 <tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. First to answer wins.</td></tr>
 <tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
-<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, and every new reply starts on your best one.</td></tr>
+<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, only for a reply that started on your main model, and every new reply starts on your best one.</td></tr>
 </table>
 
 <details>
-<summary><b>📣 What's new in 1.8.2.9 and the versions before it</b></summary>
+<summary><b>📣 What's new in 1.8.3.0 and the versions before it</b></summary>
+
+**1.8.3.0 — the fallback list belongs to your main model, and the selector stays on it.**
+
+- **Fallback only for your main model.** The list is used only for a reply that started on the model
+  in your Hermes configuration. Pick another model for a conversation (or a model that is itself in
+  your list) and that reply stays on it: no switching, no racing, no stand-in.
+- **The main model stays on the selector.** When the next model of your list is on the same
+  provider, KAME answers with it itself (the notice says "X answered for Y") and Hermes never
+  switches, so the selector never moves. For a model of another provider Hermes still switches; the
+  desktop page then sets your main model back on that conversation's selector when the reply
+  ends. It never changes your default model. Hermes keeps its own backoff (60 s, doubling) before
+  it returns to the main model by itself, and KAME cannot shorten that.
+- **Request errors are not blamed on your keys.** A "400 unsupported parameter" goes back to Hermes
+  after the first key and rests nothing; an NVIDIA "402 credits exhausted" rests the key for the long
+  window.
+- **The logs rotate.** `calls.jsonl` and `refusals.jsonl` keep the current file and one previous one
+  instead of going silent at 4 MB / 8 MB.
 
 **1.8.2.9 — back to your best model, a quiet gateway, side jobs on a budget, a rotation page you can read.**
 
@@ -449,6 +466,17 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
+**1.8.3.0** (2026-10-29), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite | **3,543 passing** in the development tree, 342 skipped, 1 failing that reads the author's own recorded evidence and fails the same way on 1.8.2.9 |
+| Host gates | `host_prose` ok; `host_corpus` on a copy of the real Hermes: 200 of 200 alone, 196 of 200 with KAME = the same 4 intentional verdicts as 1.8.2.9, nothing new; `host_assumptions` unchanged |
+| Fallback only for the main model | a reply that started on another model never uses the list; a reply Hermes walks down the list keeps its permission (25 checks) |
+| Selector stays on the main model | a same-provider fallback answers inside KAME with no hand-over; the page sets the main model back for that conversation only (21 checks, run in node) |
+| Request errors | four recorded NVIDIA "unsupported parameter" 400s are handed back after the first key with no rest; a 402 reads as a spent account |
+| Logs | rotation checked through the real writers (current + one previous generation, first-word history across both) |
+
 **1.8.2.9** (2026-10-24), see the [changelog](CHANGELOG.md):
 
 | Check | Result |
@@ -585,6 +613,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.3.0** | Fallback belongs to the main model | The fallback list is used only for a reply that started on your main model; a same-provider next model answers inside KAME so the selector never moves, and the page sets the main model back after a switch to another provider; request-shape 400s are not blamed on keys; NVIDIA 402 reads as a spent account; the two instrument logs rotate instead of going silent. |
 | **1.8.2.9** | Best model first again, quiet gateway, side jobs on a budget | The busy best model is asked again, beside the reply; no long wait behind two silent models; titles and other side jobs stop after a few requests and move down your list; the panel shows where your quota went; the idle gateway uses about a fifth of the CPU; speed words with multipliers and *Faster* instead of *Fastest*; a readable rotation page; the fallback list is read on a stock Hermes. |
 | **1.8.2.8** | Busy providers, automatic waits, who answered | Two keys "overloaded" or timing out move the reply to your next model at once, and the busy model is left alone for a while; the switch counts your wait, not only the resting time; *Fallback* and *Wait for the first token* are Automatic (learned per model) / Set time / Never-Off; every reply starts on the best model again; a Desktop notice and a *Last replies* list name the model of each reply; backups keep racing through a 503 storm. |
 | **1.8.2.7** | Providers, fallback list, dry pools | 82 providers learned from their own docs (774 error shapes, graded by independent answer keys); your Hermes fallback list used by itself after a minute of every key resting, back to your model when its keys return; a dry pool asked 4/8/16 keys at once; honest timeouts; four visible settings, the rest automatic; the panel no longer goes blank. Live-proven on a 5-model Gemini chain. |

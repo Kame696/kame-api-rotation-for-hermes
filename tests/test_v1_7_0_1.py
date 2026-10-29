@@ -886,17 +886,24 @@ def test_recording_never_raises(tmp_path, monkeypatch):
     timings_mod.record(identity=MODEL, started_at=1.0, ended_at=2.0)
 
 
-def test_the_ceiling_stops_the_writing(tmp_path, monkeypatch):
+def test_the_ceiling_rotates_the_log_instead_of_stopping_it(tmp_path, monkeypatch):
+    # 1.8.3.0 (decisions/0033 D6): until 1.8.2.9 a full log stopped writing, silently, for 13 days.
+    # Now it moves to its previous generation and the new row lands in a fresh file.
     state_mod = importlib.import_module(f"{PACKAGE}.state")
+    recorder_mod = importlib.import_module(f"{PACKAGE}.recorder")
     monkeypatch.setattr(state_mod, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(timings_mod, "CEILING_BYTES", 10)
+    monkeypatch.setattr(timings_mod, "_off", lambda: False)   # the suite-wide switch is on; this writer is sandboxed
     timings_mod.forget()
+    recorder_mod.forget_rotation()
     written = tmp_path / timings_mod.FILENAME
     written.write_text("x" * 64, encoding="utf-8")
 
     timings_mod.record(identity=MODEL, started_at=1.0, ended_at=2.0)
 
-    assert written.read_text(encoding="utf-8") == "x" * 64
+    assert (tmp_path / "calls.1.jsonl").read_text(encoding="utf-8") == "x" * 64
+    assert MODEL in written.read_text(encoding="utf-8")
+    recorder_mod.forget_rotation()
 
 
 def test_both_ends_of_an_attempt_are_timed():

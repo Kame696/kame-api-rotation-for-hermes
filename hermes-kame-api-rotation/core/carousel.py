@@ -745,6 +745,15 @@ DAILY_INDICATORS = (
 # settled by the payload that always accompanied it instead of by a guess about
 # which of its two meanings applies today.
 
+#: 1.8.3.0 (decisions/0033 D3). The provider's own words for an account that needs paying, for the
+#: refusal that arrives without its status (a wrapped exception). Narrow on purpose: a period or a metric
+#: is never named here, only the payment itself.
+_PAYMENT_REQUIRED_INDICATORS = (
+    "payment required",
+    "credits exhausted",
+    "credits have been exhausted",
+)
+
 #: Phrases that mean a timeout or connection drop occurred.
 TIMEOUT_INDICATORS = (
     "timed out",
@@ -1222,6 +1231,13 @@ def classify(
             else REJECTED_REST_S
         )
         return _stated_or(error, text, headers, base), "auth", (status or 401)
+
+    # 1.8.3.0 (decisions/0033 D3). An account that has to be paid is not a throttle: a 402, or the
+    # provider saying so in words ("Payment Required", "credits exhausted" - NVIDIA's 402), rests the key
+    # for the long window instead of falling through to the twenty-second rest for the unrecognised.
+    # The hook classifier (core/classify.py) already read it as billing; this is the carousel agreeing.
+    if status == 402 or _matches(text, _PAYMENT_REQUIRED_INDICATORS):
+        return daily_cooldown_s, "insufficient_quota", (status or 402)
 
     if status == 429 or _names_a_throttle(text):
         if _matches(text, DAILY_INDICATORS):

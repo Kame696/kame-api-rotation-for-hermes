@@ -123,7 +123,14 @@ def test_chain_is_read_in_hermes_order(fresh):
 
 
 # 1
-def test_handover_raises_a_synthetic_error_before_any_request(fresh):
+def test_handover_raises_a_synthetic_error_before_any_request(fresh, tmp_path):
+    # 1.8.3.0 (D2 a): a first usable entry on the SAME provider is answered inside KAME
+    # (tests/test_1_8_3_0_sibling_standin.py); the hand-over to Hermes is for another provider.
+    (tmp_path / "config.yaml").write_text(CONFIG.replace(
+        "  - provider: gemini\n    model: gemini-3.7-flash\n",
+        "  - provider: groq\n    model: llama-x\n  - provider: gemini\n    model: gemini-3.7-flash\n"),
+        encoding="utf-8")
+    chain_mod.forget()
     rest(fresh, PRIMARY)
     call = FakeCall()
     before = time.time()

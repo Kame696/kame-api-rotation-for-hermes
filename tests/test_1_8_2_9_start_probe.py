@@ -100,9 +100,12 @@ def pool():
 def test_not_due_hands_over_without_a_request(fresh):
     fresh._note_busy(PRIMARY)                      # a fresh window is never due
     call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05)})
-    with pytest.raises(transport.KamePoolResting):          # D8, unchanged: Hermes is handed the next model
-        list(fresh.stream(call))
-    assert call.models_asked == [], "and no request went to anyone"
+    # 1.8.3.0 (D2 a): the next model is on the same provider, so KAME answers with it itself and
+    # Hermes is not asked to switch; the busy model still gets no request.
+    out = list(fresh.stream(call))
+    assert R.shown(out) == "gemini-race-two here"
+    assert call.models_asked == ["gemini-race-two"], "no request went to the busy model"
+    assert fresh.handed_over == 0
     assert fresh._start_probe_plan(call, PRIMARY, True, R.KEYS) is None
 
 
@@ -161,9 +164,9 @@ def test_no_probe_in_saver(fresh, monkeypatch):
     settings.forget()
     busy_and_due(fresh)
     call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05)})
-    with pytest.raises(transport.KamePoolResting):          # D8, unchanged
-        list(fresh.stream(call))
-    assert call.models_asked == []
+    out = list(fresh.stream(call))                           # 1.8.3.0 (D2 a): the sibling stands in
+    assert R.shown(out) == "gemini-race-two here"
+    assert call.models_asked == ["gemini-race-two"], "no probe: the busy model is not asked"
 
 
 def test_no_probe_for_a_non_stream_call(fresh):
@@ -204,9 +207,8 @@ def test_replies_close_together_probe_at_most_every_twenty_seconds(fresh):
     assert "gemini-race" in first.models_asked, "the first reply asked the primary beside the next model"
     fresh._note_busy(PRIMARY)                       # still busy after the probe lost... a new window
     second = Scripted(pool(), {"gemini-race-two": ("fast", 0.05)})
-    with pytest.raises(transport.KamePoolResting):          # not due again: D8's hand-over, no request
-        list(fresh.stream(second))
-    assert second.models_asked == [], "5 seconds later it is not due again"
+    list(fresh.stream(second))                              # not due again: the sibling alone (1.8.3.0)
+    assert second.models_asked == ["gemini-race-two"], "5 seconds later the primary is not asked again"
 
 
 def test_two_conversations_probe_once(fresh):
@@ -249,6 +251,6 @@ def test_a_missing_model_name_loses_no_probe_time(fresh):
     call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05)})
     call.kwargs = {k: v for k, v in call.kwargs.items() if k != "model"}
     before = fresh._probed_at.get("gemini:gemini-race")
-    with pytest.raises(transport.KamePoolResting):          # no name to ask it by: D8's hand-over
-        list(fresh.stream(call))
+    list(fresh.stream(call))                                # no name to ask it by: no probe; the sibling answers
+    assert call.models_asked == ["gemini-race-two"]
     assert fresh._probed_at.get("gemini:gemini-race") == before, "the 20 s clock was not spent on nothing"

@@ -49,9 +49,13 @@ model:
   provider: gemini
   default: gemini-3.8-flash
 fallback_providers:
+  - provider: groq
+    model: llama-x
   - provider: gemini
     model: gemini-3.7-flash
 """
+# 1.8.3.0 (D2 a): a first usable entry on the SAME provider is answered inside KAME, so the list
+# starts with another provider, the only kind these tests' hand-over (to Hermes) still applies to.
 
 
 class Refusal(Exception):
@@ -294,6 +298,9 @@ def test_each_reply_is_named_with_its_model_and_time(fresh, monkeypatch):
 def test_a_fallback_model_says_which_model_it_answered_for(with_chain, monkeypatch):
     said = []
     monkeypatch.setattr(transport, "_turn_notice", lambda text: said.append(text) or True)
+    # 1.8.3.0 (D1): the main model failed first and Hermes moved the reply down its list.
+    monkeypatch.setattr(transport, "_HOST_WALK_PERMITS", {})
+    transport.note_host_fallback("gemini", "gemini-3.8-flash")
     plan = Plan({KEYS[0]: ["ok"]})
     with_chain.complete(FakeCall(plan, identity="gemini:gemini-3.7-flash"))
     assert said[0].startswith("gemini-3.7-flash answered for gemini-3.8-flash")

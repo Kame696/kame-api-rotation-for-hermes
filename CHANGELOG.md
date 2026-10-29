@@ -7,6 +7,37 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.3.0] — 2026-10-29 — your fallback list belongs to your main model, the model selector stays on it, the logs rotate
+
+**What drove it.** A live test on the author's keys: after a reply a fallback model wrote, the
+chat's model selector kept showing the fallback model, and picking a different model by hand did not
+stop KAME (and Hermes) from falling back to the rest of the list.
+
+- **Fallback only for your main model.** The fallback list is used only for a reply that started on
+  your main model (the model in your Hermes configuration). If you pick another model for a
+  conversation, or a model that is itself in your list, that reply uses that model's keys and
+  nothing else: no switching, no racing, no stand-in. Background jobs never switch (unchanged).
+- **The main model stays on the selector.** When the next model of your list is on the same
+  provider, KAME now answers with it itself instead of handing the reply to Hermes, so Hermes
+  never switches and the selector never moves. The reply notice still says "X answered for Y". For
+  a model of another provider Hermes does the switch, as before; the desktop page then puts your
+  main model back on that conversation's selector once the reply ends. It never changes your
+  default model.
+- **Request errors are not blamed on your keys.** A "400 unsupported parameter" (NVIDIA, OpenAI)
+  is the request's fault, not the key's: KAME gives it back to Hermes after the first key and rests
+  nothing. An NVIDIA "402 payment required / credits exhausted" is read as a spent account and
+  rests the key for the long window instead of twenty seconds.
+- **The logs rotate.** `calls.jsonl` and `refusals.jsonl` used to stop writing, without a word, when
+  they reached 4 MB and 8 MB. Now each keeps the current file and one previous one
+  (`calls.1.jsonl`, `refusals.1.jsonl`), 2 MB and 4 MB each, so the disk use is what it was. A rotation
+  and a failure to write are each said once in the log.
+
+**Known limit.** For a model of another provider, Hermes has its own backoff before it goes back to your
+main model (60 s, doubling). KAME tells it the main model is back in two seconds and the page puts the
+selector back, but it cannot shorten Hermes' own wait.
+
+---
+
 ## [1.8.2.9] — 2026-10-24 — back to your best model, nothing idle burns your CPU, background jobs stop eating your best model's quota, no reply behind two silent models, speed in plain words, a rotation page you can read
 
 **What drove it.** The catalog review of 1.8.2.8 (a silent `import yaml` on a stock Hermes) and

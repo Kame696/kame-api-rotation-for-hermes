@@ -75,6 +75,8 @@ class ScriptCall(R.FakeCall):
     def __init__(self, model, script):
         super().__init__(R.Pool({}), kwargs=dict(R.REQUEST, model=model))
         self.identity = "gemini:" + model
+        # 1.8.3.0 (D1): a call on a later model is a reply Hermes walked down the list: it keeps its permission.
+        self._kame_on_main = True
         self.script = {k: (list(v) if isinstance(v, list) else [v]) for k, v in script.items()}
         self.models_asked = []
 
@@ -162,12 +164,14 @@ def test_every_key_of_the_last_model_resting_circles_back_instead_of_waiting(fre
 
 # --- the call start (review H2) -------------------------------------------------------
 
-def test_the_call_start_hands_over_to_a_free_model_as_before(fresh):
+def test_the_call_start_moves_to_a_free_model_without_asking_the_busy_one(fresh):
     busy_known(fresh, FIRST, probed_ago=1.0)       # SECOND and THIRD are free
     call = ScriptCall("gemini-race", {})
-    with pytest.raises(transport.KamePoolResting):
-        list(fresh.stream(call))
-    assert call.models_asked == []                 # no request to the busy one
+    # 1.8.3.0 (D2 a): the free model is on the same provider, so KAME answers with it itself
+    # (it used to hand the call to Hermes); the busy one still gets no request.
+    out = list(fresh.stream(call))
+    assert R.shown(out) == "gemini-race-two answer"
+    assert call.models_asked == ["gemini-race-two"]
 
 
 def test_H2_the_call_start_asks_the_best_model_itself_when_it_is_due(fresh):

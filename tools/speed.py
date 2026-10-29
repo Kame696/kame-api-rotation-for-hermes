@@ -39,9 +39,16 @@ def say(text: str = "") -> None:
 
 def load(path: Path, since: Optional[float]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    if not path.is_file():
+    # 1.8.3.0 (decisions/0033 D6): the log rotates, so the rows are in `calls.1.jsonl` and then
+    # `calls.jsonl`, oldest first.
+    previous = path.with_name(path.name.replace(".jsonl", ".1.jsonl"))
+    files = [p for p in dict.fromkeys((previous, path)) if p.is_file()]
+    if not files:
         return rows
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    lines: List[str] = []
+    for each in files:
+        lines.extend(each.read_text(encoding="utf-8", errors="replace").splitlines())
+    for line in lines:
         line = line.strip()
         if not line:
             continue

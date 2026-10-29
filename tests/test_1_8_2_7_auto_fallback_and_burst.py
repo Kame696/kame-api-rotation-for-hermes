@@ -47,11 +47,14 @@ hedging_mod = importlib.import_module(f"{PACKAGE}.core.hedging")
 pacing_mod = importlib.import_module(f"{PACKAGE}.core.pacing")
 settings = importlib.import_module(f"{PACKAGE}.settings")
 
-MODELS = ["gemini:gemini-3.8-flash", "gemini:gemini-3.7-flash", "gemini:gemini-3.6-flash",
-          "gemini:gemini-3.5-flash", "gemini:gemini-3-flash-preview"]
+# 1.8.3.0 (D2 a): a fallback on the SAME provider is answered inside KAME and never reaches Hermes
+# (tests/test_1_8_3_0_sibling_standin.py). This file drives Hermes' walk of the list, so each entry is
+# a different provider, the only kind KAME still hands over; the burst timing does not depend on it.
+MODELS = ["gemini:gemini-3.8-flash", "groq:gemini-3.7-flash", "cerebras:gemini-3.6-flash",
+          "mistral:gemini-3.5-flash", "nvidia:gemini-3-flash-preview"]
 KEYS = {m: [f"AIzaSy{abs(hash(m)) % 997:03d}K{i:02d}" + "0" * 26 for i in range(14)] for m in MODELS}
 CONFIG = "model:\n  provider: gemini\n  default: gemini-3.8-flash\nfallback_providers:\n" + "".join(
-    f"  - provider: gemini\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:])
+    f"  - provider: {m.split(':', 1)[0]}\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:])
 LATENCY = 0.05
 
 
@@ -144,7 +147,7 @@ class FakeCall(transport.Call):
     def __init__(self, world, identity, stream=False):
         self.world, self.identity, self.stream_mode = world, identity, stream
         self.kwargs = {"model": identity.split(":", 1)[1], "messages": [{"role": "user", "content": "hi"}]}
-        self.provider = "gemini"
+        self.provider = identity.split(":", 1)[0]
         self.channel = "main"
         self.closed = False
 

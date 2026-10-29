@@ -64,15 +64,17 @@ logger = logging.getLogger(__name__)
 #: Beside the state file and the refusal log.
 FILENAME = "calls.jsonl"
 
-#: One line is roughly 200 bytes, so this is a few hundred thousand attempts —
-#: far more than a person generates, and small enough that a forgotten install
-#: never becomes a disk problem. At the ceiling it stops writing rather than
-#: rotating: a window that slides would quietly discard the beginning of the
-#: session somebody is trying to explain.
-CEILING_BYTES = 4 * 1024 * 1024
+#: One line is roughly 200 bytes, so this is about ten thousand attempts per
+#: generation. 1.8.3.0 (decisions/0033 D6): at the ceiling the file moves to one
+#: previous generation (``calls.1.jsonl``) and a new one starts, so the disk total is
+#: still 4 MB. Until 1.8.2.9 it stopped writing here and said nothing, and the stop
+#: held for 13 days before anyone saw it; the reader (``first_word_history``) and
+#: ``tools/speed.py`` read both generations.
+CEILING_BYTES = 2 * 1024 * 1024
 
-#: Set once the ceiling is hit or the destination proves unwritable, so the
-#: cost of being off is one boolean per attempt rather than a failed syscall.
+#: Set once the destination cannot be named at all (no state folder), so the cost of
+#: being off is one boolean per attempt rather than a failed lookup. A full log no
+#: longer sets it: it rotates.
 _silenced = False
 
 
@@ -151,18 +153,6 @@ def record(
         if path is None:
             _silenced = True
             return
-        try:
-            if os.path.getsize(path) >= CEILING_BYTES:
-                _silenced = True
-                logger.info(
-                    "kame: %s reached %d MB — no more call timings will be written",
-                    FILENAME,
-                    CEILING_BYTES // (1024 * 1024),
-                )
-                return
-        except OSError:
-            pass  # Not there yet. The open below creates it.
-
         row = {
             "at": round(time.time(), 3),
             "identity": str(identity or "")[:120],
@@ -201,15 +191,21 @@ def record(
         if channel and channel != "main":
             row["channel"] = str(channel)[:16]
             row["task"] = str(task or "")[:40]
-        from .recorder import private_append
+        from . import recorder
 
-        with private_append(path) as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception:
-        # Never twice: an instrument that logs its own failure on every call
+        # Rotates at the ceiling; a failed rotation or write is said once, and the next attempt tries
+        # again (1.8.3.0) - it used to switch the instrument off for the rest of the process.
+        recorder.append_line(path, CEILING_BYTES, json.dumps(row, ensure_ascii=False))
+    except Exception as exc:
+        # Said once, not on every call: an instrument that logs its own failure on every call
         # is louder than the thing it was measuring.
-        _silenced = True
-        logger.debug("kame: call timings are off after an error", exc_info=True)
+        try:
+            from . import recorder
+
+            recorder.failed_once(FILENAME, "record a call", exc)
+        except Exception:
+            pass
+        logger.debug("kame: could not record a call", exc_info=True)
 
 
 def forget() -> None:
@@ -242,29 +238,37 @@ def first_word_history(now: Optional[float] = None) -> "dict":
     now = _time.time() if now is None else now
     out: "dict" = {}
     path = _destination()
-    if not path or not os.path.isfile(path):
+    if not path:
         return out
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if row.get("outcome") != "answered":
-                    continue
-                if row.get("channel") == "secondary":
-                    continue  # 1.8.2.9: a title's first word is not the chat's
-                # The first sign of work (text, tool call or reasoning) is what
-                # decides a race; the first word stands in where it was not kept.
-                ms = row.get("ms_to_first_sign") or row.get("ms_to_first_text")
-                at = row.get("at")
-                identity = row.get("identity")
-                if not identity or not isinstance(ms, (int, float)) or ms <= 0:
-                    continue
-                if isinstance(at, (int, float)) and now - at > HISTORY_MAX_AGE_S:
-                    continue
-                out.setdefault(identity, deque(maxlen=HISTORY_PER_IDENTITY)).append(ms / 1000.0)
+        from . import recorder
+
+        # 1.8.3.0: the previous generation first, so "oldest first" holds across a rotation.
+        files = recorder.generations(path)
+    except Exception:
+        files = [path] if os.path.isfile(path) else []
+    try:
+        for each in files:
+            with open(each, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("outcome") != "answered":
+                        continue
+                    if row.get("channel") == "secondary":
+                        continue  # 1.8.2.9: a title's first word is not the chat's
+                    # The first sign of work (text, tool call or reasoning) is what
+                    # decides a race; the first word stands in where it was not kept.
+                    ms = row.get("ms_to_first_sign") or row.get("ms_to_first_text")
+                    at = row.get("at")
+                    identity = row.get("identity")
+                    if not identity or not isinstance(ms, (int, float)) or ms <= 0:
+                        continue
+                    if isinstance(at, (int, float)) and now - at > HISTORY_MAX_AGE_S:
+                        continue
+                    out.setdefault(identity, deque(maxlen=HISTORY_PER_IDENTITY)).append(ms / 1000.0)
     except OSError:
         logger.debug("kame: could not read call timings for the backup trigger", exc_info=True)
     return {identity: list(samples) for identity, samples in out.items()}

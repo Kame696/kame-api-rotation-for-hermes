@@ -160,6 +160,27 @@ class KameAuxTimeout(TimeoutError):
     """
 
 
+class _StandIn:
+    """A sibling model that answers this reply inside KAME instead of a hand-over to Hermes.
+
+    1.8.3.0 (decisions/0033 D2 a). Returned by :meth:`KameTransport._maybe_hand_over` in place of
+    ``KamePoolResting`` when the first usable later model of the user's list is on the same provider
+    and endpoint, and the caller can take it. Hermes is never asked to switch, so the chat's model
+    selector stays on the main model. ``identity`` carries the pool suffix, ``model`` is the name as
+    the user wrote it, ``why`` completes "<model> ... - trying <next> (your list, best first)".
+    """
+
+    __slots__ = ("identity", "model", "why")
+
+    def __init__(self, identity: str, model: str, why: str) -> None:
+        self.identity = identity
+        self.model = model
+        self.why = why
+
+    def target(self) -> Tuple[str, str]:
+        return self.identity, self.model
+
+
 def _with_retry_hint(exc: BaseException, kind: str = "", quota_window: str = "") -> BaseException:
     """Append the hint that matches what the error actually is.
 
@@ -780,6 +801,53 @@ _HANDOVER_MEMO_S = 30.0
 # 1.8.2.8: what Hermes is told about the primary's return after a hand-over,
 # so its fallback lasts one reply (the next reply restores the primary).
 _HANDOVER_HOST_BACK_S = 2.0
+#: 1.8.3.0 (decisions/0033 D1): after KAME hands a MAIN-model reply to Hermes, a call that arrives on
+#: one of the entries it was handed to, within this long, is the same reply walking down the list and
+#: keeps the permission. Hermes rebuilds the message at once; a minute and a half covers its retries.
+_WALK_PERMIT_S = 90.0
+#: 1.8.3.0: ``identity -> (the reply started on the main model, when)`` for the classification hook,
+#: which sees the failing model but not the call. A record older than this is not believed.
+_REPLY_ORIGIN: Dict[str, Tuple[bool, float]] = {}
+_REPLY_ORIGIN_FRESH_S = 600.0
+
+
+def reply_may_fall_back(provider: Any, model: Any) -> Optional[bool]:
+    """Did the latest reply KAME saw on this model start on the main model? ``None`` = no fresh record.
+
+    Read by the classification hook (decisions/0033 D1): a reply that did not start on the main model
+    must not make Hermes switch model, so the hook answers ``should_fallback: False`` for it."""
+    ident = f"{str(provider or '').strip().lower()}:{str(model or '').strip().lower()}"
+    now = time.time()
+    best: Optional[Tuple[float, bool]] = None
+    for key, (on_main, at) in list(_REPLY_ORIGIN.items()):
+        if (key == ident or key.startswith(ident + ":")) and now - at < _REPLY_ORIGIN_FRESH_S:
+            if best is None or at > best[0]:
+                best = (at, on_main)
+    return None if best is None else best[1]
+
+
+#: 1.8.3.0 (decisions/0033 D1, review R3): ``entry -> until`` for the walks Hermes starts ON ITS OWN - the
+#: classification hook let a main-model reply fall back without KAME handing it over (an error KAME passes
+#: through). The call Hermes rebuilds on the next entry is the same reply and keeps its permission, exactly
+#: like the walk after KAME's own hand-over (``KameTransport._walk_permits``).
+_HOST_WALK_PERMITS: Dict[str, float] = {}
+
+
+def note_host_fallback(provider: Any, model: Any) -> None:
+    """Hermes is about to move a reply from ``provider:model`` down the list: permit the walk if it is main's."""
+    try:
+        from .core import fallback_chain
+
+        ident = f"{str(provider or '').strip().lower()}:{str(model or '').strip().lower()}"
+        if not (fallback_chain.starts_on_main(ident) or reply_may_fall_back(provider, model) is True):
+            return
+        until = time.time() + _WALK_PERMIT_S
+        for entry in fallback_chain.later_entries(ident):
+            _HOST_WALK_PERMITS[entry] = until
+    except Exception:  # pragma: no cover - bookkeeping must never break the hook
+        logger.debug("kame: could not note Hermes' own fallback", exc_info=True)
+
+
 #: 1.8.2.8 (D11): "Automatic" slow-model watch, ``(floor, ceiling, cold)`` in
 #: seconds, per class (plain, thinking).
 _SLOW_S = {False: (20.0, 45.0, 30.0), True: (25.0, 60.0, 45.0)}
@@ -1375,6 +1443,9 @@ class KameTransport:
         #: memo is dropped (decisions/0027): a later ask is a new turn, handed over
         #: again at once instead of waiting for the keys.
         self._handover_later: Dict[str, Tuple[str, ...]] = {}
+        #: 1.8.3.0 (decisions/0033 D1): chain entry -> until when a call arriving on it is the walk of a
+        #: reply that started on the main model (set where a main reply is handed to Hermes).
+        self._walk_permits: Dict[str, float] = {}
         #: Probe bursts started (decisions/0027).
         self.probe_bursts = 0
         #: ``(identity, key) -> when the provider said this key is back`` for the
@@ -2233,6 +2304,10 @@ class KameTransport:
         # 1.8.2.7 (review H1): a call on a later entry of the fallback list proves
         # Hermes switched, whether or not KAME holds keys for that entry.
         self._note_chain_arrival(getattr(call, "identity", "") or "")
+        # 1.8.3.0 (decisions/0033 D1): where this reply started, decided before anything else happens
+        # (the classification hook reads it for the model that fails).
+        if getattr(call, "channel", "main") == "main":
+            self._reply_on_main(call)
         if not keys:
             yield from self._plain(call, stream)
             return
@@ -2376,15 +2451,21 @@ class KameTransport:
                 circle_to(plan, "probe")
             else:
                 handover = self._maybe_hand_over(call, identity, keys, 0.0, False, waited=0.0, busy=True,
-                                                 skipped=self._busy_until.get(identity, 0.0) - time.time())
-                if handover is not None:
-                    raise handover
-                # 1.8.2.9: nothing after Hermes' position is free - start on the first model of
-                # the list that is (or is due another look), the model in use included, not on
-                # this busy one while a better is due, nor on the last.
-                wrapped = self._wrap_target(call, identity, seen=False, include_self=True)
-                if wrapped is not None and wrapped[0] != identity:
-                    circle_to(wrapped, "was busy moments ago")
+                                                 skipped=self._busy_until.get(identity, 0.0) - time.time(),
+                                                 stand_in_ok=True, avoid=visited + excluded)
+                if isinstance(handover, _StandIn):
+                    # 1.8.3.0 (decisions/0033 D2 a): a sibling of the same provider answers, here,
+                    # on the keys KAME holds - Hermes is not asked to switch.
+                    circle_to(handover.target(), handover.why)
+                else:
+                    if handover is not None:
+                        raise handover
+                    # 1.8.2.9: nothing after Hermes' position is free - start on the first model of
+                    # the list that is (or is due another look), the model in use included, not on
+                    # this busy one while a better is due, nor on the last.
+                    wrapped = self._wrap_target(call, identity, seen=False, include_self=True)
+                    if wrapped is not None and wrapped[0] != identity:
+                        circle_to(wrapped, "was busy moments ago")
 
         while True:
             attempt += 1
@@ -2441,7 +2522,11 @@ class KameTransport:
                 else:
                     handover = self._maybe_hand_over(
                         call, identity, keys, pool_waited, bool(seen),
-                        waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys))
+                        waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
+                        stand_in_ok=True, avoid=visited + excluded)
+                    if isinstance(handover, _StandIn):
+                        circle_to(handover.target(), handover.why)      # 1.8.3.0 (D2 a)
+                        continue
                     if handover is not None:
                         raise handover
                     # 1.8.2.9: every key of this model rests and nothing after it is free:
@@ -3007,7 +3092,11 @@ class KameTransport:
                 handover = self._maybe_hand_over(
                     call, identity, keys, pool_waited, bool(seen),
                     waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
-                    after_failure=True)
+                    after_failure=True,
+                    stand_in_ok=stitcher is None and not replay_tool_request, avoid=visited + excluded)
+                if isinstance(handover, _StandIn):
+                    circle_to(handover.target(), handover.why)          # 1.8.3.0 (D2 a)
+                    continue
                 if handover is not None:
                     raise handover
                 if aux is not None and not seen:
@@ -4192,6 +4281,45 @@ class KameTransport:
         except Exception:  # pragma: no cover - bookkeeping must never break a call
             logger.debug("kame: could not note a fallback arrival", exc_info=True)
 
+    def _reply_on_main(self, call: "Call") -> bool:
+        """May this reply use the fallback list? True when it STARTED on the main model (D1).
+
+        1.8.3.0 (decisions/0033). "Started" is the position of the first call of the reply: Hermes'
+        ``model.default``, when that model is not also in its own list (``fallback_chain.starts_on_main``).
+        A call on a list entry that KAME just handed a main-model reply to (``_walk_permits``) is the same
+        reply walking down the list and keeps the permission. Anything else - a model picked by hand, a
+        secondary tile, a list model chosen as the default - answers with its own keys alone.
+        Decided once per call and kept on it; a call that cannot hold the attribute (a test double)
+        is decided again, which gives the same answer.
+        """
+        cached = getattr(call, "_kame_on_main", None)
+        if isinstance(cached, bool):
+            return cached
+        identity = str(getattr(call, "identity", "") or "").lower()
+        on_main = True
+        try:
+            from .core import fallback_chain
+
+            if fallback_chain.starts_on_main(identity):
+                # Not a reason to end other walks: another conversation's reply may be walking down the
+                # list at this moment, and its permits lapse on their own (``_WALK_PERMIT_S``).
+                on_main = True
+            else:
+                now = time.time()
+                permits = list(self._walk_permits.items()) + list(_HOST_WALK_PERMITS.items())
+                on_main = any(until > now and fallback_chain._same(identity, entry)
+                              for entry, until in permits)
+        except Exception:
+            logger.debug("kame: could not tell where this reply started", exc_info=True)
+            on_main = True
+        try:
+            setattr(call, "_kame_on_main", on_main)
+        except Exception:  # pragma: no cover - a test double without attributes
+            pass
+        if identity:
+            _REPLY_ORIGIN[identity] = (on_main, time.time())
+        return on_main
+
     def _entry_usable(self, identity: str) -> bool:
         """Could a call on this chain entry be answered now, as far as KAME knows?
 
@@ -4350,7 +4478,7 @@ class KameTransport:
             if getattr(call, "channel", "main") != "main" or settings.is_on(settings.NO_MODEL_FALLBACK):
                 return None
             mode = settings.model_switch_mode()
-            if mode == "never":
+            if mode == "never" or not self._reply_on_main(call):     # 1.8.3.0 (D1)
                 return None
             from .core import fallback_chain
 
@@ -4400,6 +4528,8 @@ class KameTransport:
         """
         try:
             if str(settings.text_value(settings.HEDGE_MODE) or "adaptive") == "off":
+                return None
+            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
                 return None
             from .core import fallback_chain
             from .core.hedging import HEDGE_TRACKER as _hedge
@@ -4459,6 +4589,8 @@ class KameTransport:
             if str(settings.text_value(settings.HEDGE_MODE) or "adaptive") == "off":
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
+                return None
+            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
                 return None
             entry = self._chain_entry(identity)
             if entry is None:
@@ -4569,6 +4701,8 @@ class KameTransport:
             if str(settings.text_value(settings.HEDGE_MODE) or "adaptive") == "off":
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
+                return None
+            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
                 return None
             candidates = self._siblings(identity)
             if not candidates:
@@ -4714,6 +4848,8 @@ class KameTransport:
             if seen or getattr(call, "channel", "main") != "main":
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
+                return None
+            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
                 return None
             if self._hermes_has_free_after(call, identity):
                 return None
@@ -4915,10 +5051,22 @@ class KameTransport:
             first = progress.first_text_at or progress.first_sign_at
             first_s = (first - started) if (first and isinstance(started, (int, float))) else None
             primary = fallback_chain.primary_identity()
-            stand_in = bool(primary) and not fallback_chain._same(identity, primary)
+            # 1.8.3.0 (D1): only a reply that started on the main model can be answered "for" it. A model
+            # picked by hand answered for nobody, and the selector must stay on the user's pick.
+            on_main = getattr(call, "_kame_on_main", True) is not False
+            stand_in = on_main and bool(primary) and not fallback_chain._same(identity, primary)
             row = {"at": time.time(), "model": model_label(identity),
                    "for": model_label(primary) if stand_in else "",
                    "first_s": first_s, "total_s": total}
+            if stand_in:
+                # 1.8.3.0 (D2 b): which model the selector should show again, as the user wrote it, and
+                # whether Hermes itself moved off it (a hand-over to another provider). A sibling that
+                # answered inside KAME left Hermes on the main model: nothing to put back.
+                written = fallback_chain.entry_source(primary)
+                row["main"] = {"provider": primary.split(":", 1)[0],
+                               "model": written[0] if written else primary.split(":", 1)[-1]}
+                position = str(getattr(call, "identity", "") or "").lower()
+                row["switched"] = bool(position) and not fallback_chain._same(position, primary)
             self.replies.append(row)
             mode = settings.reply_notice_mode()
             if mode == "never" or (mode == "switches" and not stand_in):
@@ -4933,12 +5081,54 @@ class KameTransport:
         except Exception:  # a notice must never cost the answer
             logger.debug("kame: could not name the reply", exc_info=True)
 
+    def _stand_in_for(self, call: "Call", identity: str, later: Sequence[str], avoid: Sequence[str],
+                      why: str, slow: Optional[float], skipped: Optional[float]) -> Optional[_StandIn]:
+        """The sibling that answers instead of a hand-over, or ``None`` (D2 a).
+
+        The target is the first usable model after Hermes' position, as the hand-over would have
+        chosen it; it must be on the same provider and endpoint (``_siblings``) and not the model in
+        use nor one this call already left. Saver does NOT forbid it: this is not a race, it is the
+        fallback the user configured, answered on keys KAME already holds. A model known busy is only
+        taken when it is due another look (the probe time is claimed under the lock)."""
+        try:
+            from .core.fallback_chain import _same
+
+            target = next((e for e in later if self._entry_free(e) and not _same(identity, e)
+                           and not any(_same(x, e) for x in avoid)), None)
+            if target is None:
+                return None
+            siblings = {e: (m, s) for e, m, s in (self._siblings(identity) or [])}
+            if target not in siblings:
+                return None
+            model, suffix = siblings[target]
+            if not self._claim_probe(target + suffix):
+                return None
+            if skipped is not None:
+                said = "was slow or busy moments ago"
+            elif slow is not None:
+                said = "is slow right now"
+            elif why == "busy":
+                said = "is busy"
+            else:
+                said = "has every key resting" if self.engine.healthy_count(identity, list(call.keys())) == 0 \
+                    else "did not answer in time"
+            return _StandIn(target + suffix, model, said)
+        except Exception:
+            logger.debug("kame: could not pick a sibling to stand in", exc_info=True)
+            return None
+
     def _maybe_hand_over(
         self, call: "Call", identity: str, keys: Sequence[str], pool_waited: float, seen: bool,
         *, waited: Optional[float] = None, busy: bool = False, after_failure: bool = False,
         slow: Optional[float] = None, skipped: Optional[float] = None,
-    ) -> Optional[BaseException]:
+        stand_in_ok: bool = False, avoid: Sequence[str] = (),
+    ) -> Optional[Any]:
         """The exception that lets Hermes' fallback chain answer, or ``None`` to wait.
+
+        1.8.3.0 (decisions/0033 D2 a). With ``stand_in_ok`` the caller can also take a
+        :class:`_StandIn`: when the first usable later model is a sibling (same provider, same
+        endpoint) KAME answers with it itself and Hermes never switches. ``avoid`` are models this
+        call already left or that refused it. Anything else is still a hand-over.
 
         1.8.2.7, owner's idea 1 (decisions/0025, 0027). Every condition must hold:
         "Ignore my fallback list" is off (the default since 0027); the threshold
@@ -4957,6 +5147,8 @@ class KameTransport:
             mode = settings.model_switch_mode()
             if mode == "never":
                 return None
+            if not self._reply_on_main(call):
+                return None  # 1.8.3.0 (decisions/0033 D1): the list is the main model's, not this reply's
             from .core import fallback_chain
 
             # 1.8.2.9 (decisions/0030, review H1): what Hermes can be handed is decided from
@@ -4990,6 +5182,10 @@ class KameTransport:
                 elif eta is None or waited_s + max(0.0, eta) <= threshold:
                     return None
                 why = "waited"
+            if stand_in_ok:
+                stand = self._stand_in_for(call, identity, later, avoid, why, slow, skipped)
+                if stand is not None:
+                    return stand
             now = time.time()
             memo_key = self._memo_key(call, identity)
             if now < self._handover_until.get(memo_key, 0.0):
@@ -5015,6 +5211,9 @@ class KameTransport:
             reset_at = now + _HANDOVER_HOST_BACK_S
             self._handover_until[memo_key] = min(back_at, now + _HANDOVER_MEMO_S)
             self._handover_later[memo_key] = tuple(later)
+            # 1.8.3.0 (D1): the reply Hermes rebuilds on one of these entries is this reply's walk.
+            for entry in later:
+                self._walk_permits[entry] = now + _WALK_PERMIT_S
             healthy = self.engine.healthy_count(identity, keys)
             if skipped is not None:
                 said = (f"{model_label(identity)} was slow or busy moments ago - skipped for this "

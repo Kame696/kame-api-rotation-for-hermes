@@ -32,8 +32,9 @@ The contract, deliberately short
 * **Never leaks a key.** Every string passes the redactor before it touches
   disk, and headers are allowlisted by name before that — Authorization,
   API keys and cookies are never even considered, whatever they are called.
-* **Never grows without bound.** It stops at the ceiling and says so once, and
-  the headers block carries its own, smaller caps on top.
+* **Never grows without bound.** At the ceiling the file moves to one previous
+  generation and a new one starts (1.8.3.0; it used to stop, silently), and the
+  headers block carries its own, smaller caps on top.
 """
 
 from __future__ import annotations
@@ -42,15 +43,16 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: File ceiling. Past this the recorder goes quiet — a user's disk is no place
-#: to grow unattended, and a few thousand refusals are already corpus enough for
-#: any question worth asking of them.
-CEILING_BYTES = 8 * 1024 * 1024
+#: File ceiling. 1.8.3.0 (decisions/0033 D6): past this the file moves to its one previous
+#: generation (``refusals.1.jsonl``) and a new one starts, so the disk total stays 8 MB.
+#: Until 1.8.2.9 the recorder went quiet here, without a word.
+CEILING_BYTES = 4 * 1024 * 1024
 
 #: On by default. ``KAME_RECORDER_DISABLED=1`` turns it off without uninstalling
 #: anything.
@@ -128,6 +130,8 @@ _OPAQUE_VALUE = re.compile(r"^[A-Za-z0-9_\-\.]{40,}$")
 _HEX_TOKEN = re.compile(r"^[0-9a-f]{24,}$", re.I)
 _ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 
+# Kept for callers (and tests) that reset it: since 1.8.3.0 nothing in this module sets it, because a
+# full log rotates instead of going quiet.
 _silenced = False
 
 
@@ -264,6 +268,103 @@ def private_append(path: Any) -> Any:
     return os.fdopen(descriptor, "a", encoding="utf-8")
 
 
+# --- 1.8.3.0 (decisions/0033 D6): the instrument logs rotate instead of going silent ---------------
+#
+# Until 1.8.2.9 ``calls.jsonl`` stopped writing at 4 MB and ``refusals.jsonl`` at 8 MB and said
+# nothing; the stop held for 13 days before anyone saw it. Now a log that reaches its ceiling moves to
+# its ONE previous generation (``calls.1.jsonl``) and a new file starts, so the disk total is what it
+# was. The same scheme and sizes as the Agent Zero port (its decision 0011).
+
+#: The size is looked at on the first write after start and then every this many writes, so a row costs
+#: one ``open`` and no ``stat``.
+_CHECK_EVERY = 64
+_APPEND_LOCK = threading.Lock()
+_WRITES: Dict[str, int] = {}
+#: What is already failing, so a failure that repeats on every row is said once.
+_FAILING: set = set()
+#: Logs past twice their ceiling that could not be rotated: looked at on every write until one works.
+_BLOCKED: set = set()
+
+
+def previous_path(path: Any) -> str:
+    """``.../calls.jsonl`` -> ``.../calls.1.jsonl``: the one previous generation of a log."""
+    folder, name = os.path.split(str(path))
+    stem, dot, ext = name.rpartition(".")
+    return os.path.join(folder, f"{stem}.1.{ext}" if dot else f"{name}.1")
+
+
+def generations(path: Any) -> List[str]:
+    """The files that hold this log's rows and exist, OLDEST FIRST."""
+    return [each for each in (previous_path(path), str(path)) if os.path.isfile(each)]
+
+
+def failed_once(path: Any, what: str, exc: BaseException) -> None:
+    """Say a failure once; it is said again only after the thing worked in between."""
+    token = f"{path}:{what}"
+    if token in _FAILING:
+        return
+    _FAILING.add(token)
+    logger.warning("kame: %s could not %s (%s: %s)", os.path.basename(str(path)), what,
+                   type(exc).__name__, str(exc)[:160])
+
+
+def _rotate_if_full(path: str, ceiling: int) -> bool:
+    """Move a full log to its previous generation. False when it is past twice its ceiling and
+    could not be rotated: that row is dropped, the disk stays bounded."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return True              # not there yet
+    if size < ceiling:
+        return True
+    try:
+        os.replace(path, previous_path(path))
+    except Exception as exc:
+        failed_once(path, "rotate", exc)
+        return size < 2 * ceiling
+    _FAILING.discard(f"{path}:rotate")
+    logger.info("kame: %s rotated (%.1f MB); the previous generation is %s",
+                os.path.basename(path), size / (1024 * 1024), os.path.basename(previous_path(path)))
+    return True
+
+
+def append_line(path: Any, ceiling: int, line: str) -> bool:
+    """Append one line to a KAME log, rotating first when the file has reached ``ceiling``.
+
+    False only when nothing could be written (a failed write, or a log that cannot be rotated and has
+    grown to twice its ceiling); the reason was said in the log, once. Never raises.
+    """
+    path = str(path)
+    try:
+        with _APPEND_LOCK:
+            count = _WRITES.get(path, 0)
+            _WRITES[path] = count + 1
+            if count % _CHECK_EVERY == 0 or path in _BLOCKED:
+                if not _rotate_if_full(path, ceiling):
+                    _BLOCKED.add(path)
+                    return False
+                _BLOCKED.discard(path)
+            try:
+                with private_append(path) as handle:
+                    handle.write(line + "\n")
+            except Exception as exc:
+                failed_once(path, "write", exc)
+                return False
+            _FAILING.discard(f"{path}:write")
+        return True
+    except Exception:  # an instrument must never cost a turn
+        logger.debug("kame: could not append to %s", path, exc_info=True)
+        return False
+
+
+def forget_rotation() -> None:
+    """Start the counters and the 'already said' memory over. Tests, and a fresh start."""
+    with _APPEND_LOCK:
+        _WRITES.clear()
+        _FAILING.clear()
+        _BLOCKED.clear()
+
+
 def _safe_text(value: Any, limit: int = TEXT_LIMIT) -> str:
     if value is None:
         return ""
@@ -337,17 +438,6 @@ def record(
         if path is None:
             return
 
-        try:
-            if os.path.getsize(path) >= CEILING_BYTES:
-                _silenced = True
-                logger.info(
-                    "kame: refusal recorder stopped at %s - %d MB ceiling reached",
-                    path, CEILING_BYTES // (1024 * 1024),
-                )
-                return
-        except OSError:
-            pass  # not created yet
-
         kind = error_type or (type(error).__name__ if error is not None else "")
         body_full = _safe_text(error_body, limit=1_000_000)
         response_full = _response_payload(error)
@@ -376,7 +466,7 @@ def record(
         if headers_payload:
             row["headers"] = headers_payload
 
-        with private_append(path) as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        # 1.8.3.0: rotates at the ceiling instead of stopping; a failure is said once.
+        append_line(path, CEILING_BYTES, json.dumps(row, ensure_ascii=False))
     except Exception:
         logger.debug("kame: refusal recorder failed; carrying on without it", exc_info=True)
