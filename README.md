@@ -9,7 +9,7 @@
 [![Version](https://img.shields.io/badge/version-1.8.3.1-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-3543_passing-brightgreen.svg)](#verified)
-[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)_·_1.8.2.9_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/141137)
+[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.9)_·_1.8.3.1_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -91,7 +91,7 @@ A late reply is **raced** by a backup key, then by your **next model**. Whicheve
 <td width="50%" valign="top">
 
 ### 🔀 Smart model fallback
-Your best model **leads every reply**. A busy, spent or slow one hands over in seconds, and is tried first again soon after.
+The model you picked **leads every reply**. A busy, spent or slow one hands over in seconds - to your main model, then the rest of your list - and is tried first again soon after.
 
 </td>
 </tr>
@@ -119,7 +119,7 @@ On the author's own Gemini free-tier keys (4 fallback models × 14 keys), on a b
 |---|---|---|
 | Main model is **slow** (about 2 minutes for one word) | 46–120 s per reply | **2.6 s median** |
 | Main model is **overloaded** (503) | stuck on it | next model answering in **8.3 s**, then at once |
-| Main model is **out of quota** | next model, then stuck there up to 1 hour | switched in **0.3 s**, back on your best model next reply |
+| Main model is **out of quota** | next model, then stuck there up to 1 hour | switched in **0.3 s**, back on the model you picked next reply |
 | Everything **healthy** | — | your main model, first word in **2–4 s** |
 
 <sub>Measured on the Hermes build, which shares these rules; 8 messages in one session. See <a href="VALIDATION.md">validation and limits</a>.</sub>
@@ -153,7 +153,7 @@ flowchart TD
     C -->|❌ 429| G[💤 Rest that key as long<br/>as the provider says]
     G -.->|next key| B
     C -->|❌ 503 or far too slow| I[🔀 Next model of your list]
-    I --> J([🎯 The next reply starts on<br/>your best model again])
+    I --> J([🎯 The next reply starts on<br/>the model you picked again])
 
     style B fill:#10b981,color:#fff
     style OK fill:#10b981,color:#fff
@@ -168,7 +168,7 @@ flowchart TD
 <tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
 <tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. First to answer wins.</td></tr>
 <tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
-<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, for any model a reply starts on (that model, then your main model, then the rest of the list), and every new reply starts on your best one.</td></tr>
+<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, for any model a reply starts on (that model, then your main model, then the rest of the list), and every new reply starts on the model you picked.</td></tr>
 </table>
 
 <details>
