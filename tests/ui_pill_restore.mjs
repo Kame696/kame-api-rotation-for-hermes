@@ -86,7 +86,7 @@ assert.deepEqual(pillRestorePlan(snap(REPLY), DONE, 0, NOW), {
 })
 assert.ok(!pillRestorePlan(snap(REPLY), DONE, 0, NOW).value.includes('--global'), 'never the profile default')
 assert.equal(pillRestorePlan(snap({ ...REPLY, for: '' }), DONE, 0, NOW), null, 'the main model answered: nothing to put back')
-assert.equal(pillRestorePlan(snap({ ...REPLY, main: undefined }), DONE, 0, NOW), null, 'no main model named')
+assert.equal(pillRestorePlan(snap({ ...REPLY, main: undefined }), DONE, 0, NOW), null, 'no model to go back to named')
 assert.equal(pillRestorePlan(snap({ ...REPLY, switched: false }), DONE, 0, NOW), null, 'a sibling answered inside KAME: Hermes never moved')
 assert.equal(pillRestorePlan(snap({ ...REPLY, switched: undefined }), DONE, 0, NOW), null, 'an older row: not believed')
 assert.equal(pillRestorePlan(snap(), DONE, 0, NOW), null)
@@ -94,8 +94,27 @@ assert.equal(pillRestorePlan(snap(REPLY), { ...DONE, type: 'message.delta' }, 0,
 assert.equal(pillRestorePlan(snap(REPLY), { type: 'message.complete' }, 0, NOW), null, 'no session to address')
 assert.equal(pillRestorePlan(snap({ ...REPLY, at: NOW - 600 }), DONE, 0, NOW), null, 'an old reply is not this one')
 assert.equal(pillRestorePlan(snap(REPLY), DONE, REPLY.at, NOW), null, 'a reply is put back once')
+// 1.8.3.1 (decisions/0034 D1): the selector goes back to the model the session was ON (back_to), never "the main model"
+{
+  const PICKED = { ...REPLY, for: 'gemini-3.6-flash', back_to: { model: 'gemini-3.6-flash', provider: 'gemini' }, main: { model: 'gemini-3.6-flash', provider: 'gemini' }, model: 'llama-x' }
+  assert.equal(pillRestorePlan(snap(PICKED), DONE, 0, NOW).value, 'gemini-3.6-flash --provider gemini --session', 'back to the pick')
+  assert.equal(
+    pillRestorePlan(snap({ ...PICKED, back_to: { model: 'gemini-3.6-flash', provider: 'gemini' }, main: { model: 'gemini-3.8-flash', provider: 'gemini' } }), DONE, 0, NOW).value,
+    'gemini-3.6-flash --provider gemini --session',
+    'back_to wins over the alias'
+  )
+  assert.equal(
+    pillRestorePlan(snap({ ...PICKED, back_to: undefined }), DONE, 0, NOW).value,
+    'gemini-3.6-flash --provider gemini --session',
+    'a row of 1.8.3.0 (main only) is still understood'
+  )
+  assert.equal(pillRestorePlan(snap({ ...PICKED, back_to: undefined, main: undefined }), DONE, 0, NOW), null, 'neither named')
+  assert.equal(pillRestorePlan(snap({ ...PICKED, switched: false }), DONE, 0, NOW), null, 'Hermes did not move: nothing to put back')
+  assert.ok(!pillRestorePlan(snap(PICKED), DONE, 0, NOW).value.includes('--global'), 'still the session only')
+}
+
 for (const bad of [{ model: 'x y', provider: 'gemini' }, { model: '--global', provider: 'gemini' }, { model: 'm', provider: 'a b' }, { model: 'm', provider: '' }]) {
-  assert.equal(pillRestorePlan(snap({ ...REPLY, main: bad }), DONE, 0, NOW), null, `refuses ${JSON.stringify(bad)}`)
+  assert.equal(pillRestorePlan(snap({ ...REPLY, back_to: bad }), DONE, 0, NOW), null, `refuses ${JSON.stringify(bad)}`)
 }
 
 // -- the watcher ---------------------------------------------------------------------------------------

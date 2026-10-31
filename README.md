@@ -6,7 +6,7 @@
 
 ### What API key rotation should have been: all your keys and models, one agent that never waits.
 
-[![Version](https://img.shields.io/badge/version-1.8.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.3.1-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-3543_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.2)_·_1.8.2.9_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/141137)
@@ -29,7 +29,7 @@
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.8.3.0-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.8.3.1-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -168,11 +168,32 @@ flowchart TD
 <tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
 <tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. First to answer wins.</td></tr>
 <tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
-<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, only for a reply that started on your main model, and every new reply starts on your best one.</td></tr>
+<tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, for any model a reply starts on (that model, then your main model, then the rest of the list), and every new reply starts on your best one.</td></tr>
 </table>
 
 <details>
-<summary><b>📣 What's new in 1.8.3.0 and the versions before it</b></summary>
+<summary><b>📣 What's new in 1.8.3.1 and the versions before it</b></summary>
+
+**1.8.3.1 — any model has a way down, one live line, a popover on the chip.**
+
+- **Any model has a ladder.** A reply that starts on model X falls back X, then your main model, then
+  the rest of your list. Picking a model by hand no longer switches the help off. Never switch forbids
+  every switch; background jobs are never raced and never switch on their own account (a stopped
+  important job goes down your list once, as before); and nothing moves once part of the reply is on screen.
+- **One live line, the same words in both versions.** Asking, trying another key, a backup key is asking
+  too, another model is answering instead, every key is resting (and for how long), the answer is being
+  continued, back after a rest.
+- **A popover on the chip.** Click the status-bar chip for one sentence with the state colour, your models
+  with their rings, the last five replies in plain sentences, and a button to the full page.
+- **A busy model is noticed at the first knock** after a busy window, not the second.
+- **Host limits, on record.** The circle back and the start probe stay on one provider in the Hermes port
+  (Hermes' host owns the move to another); the model selector goes back to the model the reply started on.
+  Hermes' own walk is your fallback list only and never goes to your main model, so when you pick a model
+  of one provider and your main model is of another, the main model is reached only when KAME answers
+  inside; a hand-over to Hermes walks your list. Hermes' own spinner keeps its old words (the Desktop
+  erases a line it does not recognise), so the new live line is the one above the message box. The chip
+  says "Ready - next reply: <main model>" even in a chat on a model you picked: the page cannot read the
+  model of the conversation in view reliably.
 
 **1.8.3.0 — the fallback list belongs to your main model, and the selector stays on it.**
 
@@ -383,7 +404,8 @@ Every refusal is sized from what the provider actually sent. Decisions are made 
 <a id="screens"></a>
 ## 🖥️ What you see
 
-**The status-bar chip**, always on screen — the pool being called first:
+**The status-bar chip**, always on screen — the pool being called first. Hover for one line; **click** it for a
+popover with the state in one sentence, your models, the last five replies and a button to the full page:
 
 ```
 ●  KAME  gemini:gemini-3.8-flash 11/14 4s   openrouter:deepseek/deepseek-v4 3/3
@@ -613,6 +635,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.3.1** | Any model has a ladder | A reply that starts on model X falls back X, then your main model, then the rest of the list; the live line has seven states with the same words as Agent Zero; a popover on the status-bar chip; the first busy answer after a busy window reopens it. |
 | **1.8.3.0** | Fallback belongs to the main model | The fallback list is used only for a reply that started on your main model; a same-provider next model answers inside KAME so the selector never moves, and the page sets the main model back after a switch to another provider; request-shape 400s are not blamed on keys; NVIDIA 402 reads as a spent account; the two instrument logs rotate instead of going silent. |
 | **1.8.2.9** | Best model first again, quiet gateway, side jobs on a budget | The busy best model is asked again, beside the reply; no long wait behind two silent models; titles and other side jobs stop after a few requests and move down your list; the panel shows where your quota went; the idle gateway uses about a fifth of the CPU; speed words with multipliers and *Faster* instead of *Fastest*; a readable rotation page; the fallback list is read on a stock Hermes. |
 | **1.8.2.8** | Busy providers, automatic waits, who answered | Two keys "overloaded" or timing out move the reply to your next model at once, and the busy model is left alone for a while; the switch counts your wait, not only the resting time; *Fallback* and *Wait for the first token* are Automatic (learned per model) / Set time / Never-Off; every reply starts on the best model again; a Desktop notice and a *Last replies* list name the model of each reply; backups keep racing through a 503 storm. |

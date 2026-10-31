@@ -848,6 +848,72 @@ def _desktop_ui_state() -> Dict[str, Any]:
         return {"installed": False, "reason": "unavailable", "path": ""}
 
 
+def live_duration(seconds: Any) -> str:
+    """``45s`` / ``2m 10s`` / ``1h 02m`` - the panel's own duration format (``duration`` in ``plugin.js``)."""
+    try:
+        total = max(0, int(float(seconds or 0) + 0.5))
+    except (TypeError, ValueError):
+        total = 0
+    if total < 60:
+        return f"{total}s"
+    minutes = total // 60
+    if minutes < 60:
+        return f"{minutes}m {total % 60:02d}s"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _first(activity: Dict[str, Any], *names: str) -> Any:
+    """The first of ``names`` the activity carries with a value. The generic names of the shared table
+    (``ready``, ``n``, ``max``, ``duration_s``) come first, Hermes' own (``healthy``, ``resume``, ``budget``,
+    ``waited_s``) second."""
+    for name in names:
+        if activity.get(name) is not None:
+            return activity[name]
+    return None
+
+
+def live_line(activity: Any) -> str:
+    """The one live sentence for an activity, in the words of ``tests/fixtures/live_words_1831.json``.
+
+    1.8.3.1 (PLAN_1.8.3.1 D2). Seven states, icons included: calling, retrying (a key was refused, or
+    some keys rest), racing (a backup key asks beside the first), standin (a ladder model answers for the
+    reply's model), waiting, stitching, recovered. ``phase`` (``racing`` / ``standin``) rides beside
+    ``kind: "calling"`` so every reader of the old kinds keeps working. ``""`` when there is nothing to say.
+    The desktop page renders the same table in JavaScript (``liveLineText``); a test runs both against the
+    fixture. ``{model}`` / ``{other}`` are names as the user wrote them, without the provider prefix.
+    """
+    if not isinstance(activity, dict):
+        return ""
+    kind = str(activity.get("phase") or activity.get("kind") or "")
+    model = str(activity.get("model") or "")
+    ready = _first(activity, "ready", "healthy")
+    keys = activity.get("keys")
+    count = f"{'?' if ready is None else ready} of {'?' if keys is None else keys} keys ready"
+    if kind == "calling":
+        try:
+            resting = int(activity.get("attempt") or 1) > 1 or (ready is not None and keys is not None
+                                                                and int(ready) < int(keys))
+        except (TypeError, ValueError):
+            resting = False
+        return f"↻ {model}: trying another key · {count}" if resting else f"⏳ Asking {model} · {count}"
+    if kind == "racing":
+        return f"⚡ {model} is slow to start - a backup key is asking too"
+    if kind == "standin":
+        return f"↪ {model} can't answer now - {activity.get('other') or ''} is answering instead"
+    if kind == "waiting":
+        eta = activity.get("eta_s")
+        if eta is None:
+            return f"⏳ Every key of {model} is resting - waiting for one to come back"
+        return f"⏳ Every key of {model} is resting · next key in {live_duration(eta)}"
+    if kind == "stitching":
+        done, limit = _first(activity, "n", "resume"), _first(activity, "max", "budget")
+        tail = f" ({done} of {limit})" if done is not None and limit is not None else ""
+        return f"↻ The answer was cut off - continuing it on another key{tail}"
+    if kind == "recovered":
+        return f"↻ {model} is back after {live_duration(_first(activity, 'duration_s', 'waited_s'))}"
+    return ""
+
+
 def _status_rail() -> bool:
     try:
         from .transport import status_rail_available

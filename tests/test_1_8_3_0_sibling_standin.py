@@ -44,7 +44,6 @@ def fresh(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text(P.CHAIN, encoding="utf-8")
     settings.forget()
     chain_mod.forget()
-    transport._REPLY_ORIGIN.clear()
     transport._HOST_WALK_PERMITS.clear()
     R.hedging_mod.HEDGE_TRACKER.clear()
     R.pacing_mod.PACER.clear()
@@ -53,7 +52,6 @@ def fresh(monkeypatch, tmp_path):
     yield t
     settings.forget()
     chain_mod.forget()
-    transport._REPLY_ORIGIN.clear()
     transport._HOST_WALK_PERMITS.clear()
     R.hedging_mod.HEDGE_TRACKER.clear()
     R.pacing_mod.PACER.clear()
@@ -168,12 +166,15 @@ def test_a_background_job_never_stands_in(fresh):
     assert fresh._maybe_hand_over(call, PRIMARY, R.KEYS, 0.0, False, stand_in_ok=True) is None
 
 
-def test_a_reply_that_did_not_start_on_the_main_model_never_stands_in(fresh):
+def test_a_reply_that_did_not_start_on_the_main_model_stands_in_with_the_main_model(fresh):
+    # 1.8.3.1 (D1): the list serves the model in use. A reply that started on a list model has the main
+    # model right after it in its ladder, on the same provider: KAME answers with it, inside.
     other = "gemini:gemini-race-two"
     rest_all(fresh, other)
     call = R.FakeCall(P.pool())
     call.identity = other
-    assert fresh._maybe_hand_over(call, other, R.KEYS, 0.0, False, stand_in_ok=True) is None
+    chosen = fresh._maybe_hand_over(call, other, R.KEYS, 0.0, False, stand_in_ok=True)
+    assert isinstance(chosen, transport._StandIn) and chosen.identity == PRIMARY
 
 
 # --- another provider stays Hermes' --------------------------------------------------------------------

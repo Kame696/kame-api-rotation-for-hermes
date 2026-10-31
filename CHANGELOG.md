@@ -7,6 +7,46 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.3.1] — 2026-10-30 — the fallback ladder starts on any model, one live line, a popover on the chip
+
+**What drove it.** 1.8.3.0 made the fallback list belong to the main model only: pick another model and
+KAME stopped helping. The better rule is that every model has a way down, and that what the screen says
+is the same everywhere.
+
+- **Any model has a ladder.** For a reply that starts on model X, KAME's order is X, then your main
+  model, then the rest of your fallback list (without X). A model you picked by hand, or one that is itself
+  in the list, now falls back as the main model does: a busy or resting model hands over, a slow start
+  gets a backup, a model that is silent is raced. Never switch and "no fallback" still forbid every
+  switch; background jobs are never raced and never switch on their own account (a stopped important job
+  goes down your list once, as before); and nothing moves once part of the reply is on screen.
+- **The walk remembers where it started.** When Hermes walks down the list on its own, KAME keeps the model
+  the reply started on, so the next step is the right one, and the desktop page puts the selector back on
+  that model (not always the main one) when the reply ends.
+- **One live line.** The line above the message box says what is happening in seven states, with the same
+  words in the Agent Zero version: asking, trying another key, a backup key is asking too, another model
+  is answering instead, every key is resting (with the time to the next one), the answer is being
+  continued, and "back after 2m 10s".
+- **A popover on the status-bar chip.** Click the chip: one sentence with the state colour, the key
+  count and speed mode, your models with a ring and a word each (up to six), the last five replies in plain
+  sentences ("answered for X (busy) in 3.0s", "waited 40s for a key", "no answer: the provider answered
+  503"), and a button to the full page. Hover says one line.
+- **A busy model is noticed at the first knock.** The first busy answer after a busy window ended reopens
+  it, as in Agent Zero, instead of waiting for a second busy key. Every reply in the half minute after a
+  window used to knock once more on a model that was still busy.
+
+- **Review fixes.** A walk Hermes starts never writes a permit for your main model (it never goes there),
+  and a reply that starts on the main model never inherits another reply's start for 90 seconds. A hand-over
+  to Hermes no longer counts your main model as a place Hermes can go (KAME's own stand-in still uses it).
+  "Never" also withholds Hermes' own fallback in the error hook. The selector goes back to the model as you
+  wrote it, never a lower-cased guess. A reply that fails and is retried writes one "no answer" row. A
+  model's own colon tag (`ollama:llama3:8b`) is no longer read as a region suffix of `ollama:llama3`.
+
+**Known limits (both ports, written on purpose).** For another provider Hermes' host owns the move, so
+the circle back and the start probe walk your whole list only inside one provider in the Hermes port; Hermes
+keeps its own backoff before it returns to the main model by itself.
+
+---
+
 ## [1.8.3.0] — 2026-10-29 — your fallback list belongs to your main model, the model selector stays on it, the logs rotate
 
 **What drove it.** A live test on the author's keys: after a reply a fallback model wrote, the

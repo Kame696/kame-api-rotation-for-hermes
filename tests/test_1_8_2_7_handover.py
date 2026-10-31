@@ -176,7 +176,16 @@ def test_short_rest_is_waited_then_a_rebench_hands_over(fresh, monkeypatch):
 # 4
 def test_the_last_entry_or_no_usable_later_entry_waits(fresh):
     rest(fresh, THIRD)
-    assert fresh._maybe_hand_over(FakeCall(THIRD), THIRD, KEYS, 0.0, False) is None  # last entry
+    # 1.8.3.1 (D1): "last entry" is the end of the ladder of the model the reply STARTED on. A reply
+    # that Hermes walked down to the last entry has nothing left; a reply the user started on that
+    # entry has the whole ladder (main, then the rest of the list) after it.
+    walked = FakeCall(THIRD)
+    walked._kame_origin = PRIMARY
+    assert fresh._maybe_hand_over(walked, THIRD, KEYS, 0.0, False) is None  # last entry of the ladder
+    assert isinstance(fresh._maybe_hand_over(FakeCall(THIRD), THIRD, KEYS, 0.0, False),
+                      transport.KamePoolResting), "started there: the main model and the list follow"
+    fresh._handover_until.clear()
+    fresh._walk_permits.clear()
     rest(fresh, PRIMARY)
     rest(fresh, SECOND)
     rest(fresh, THIRD)

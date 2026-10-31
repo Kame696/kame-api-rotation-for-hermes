@@ -1,6 +1,6 @@
 # hermes-kame-bridge
 
-The companion to **hermes-kame-api-rotation** (current: 1.8.3.0). Install it with the other two KAME
+The companion to **hermes-kame-api-rotation** (current: 1.8.3.1). Install it with the other two KAME
 packages to get every feature today. It is **not** in the Hermes plugin catalog: it wraps Hermes core at
 runtime, which catalog rule 9 does not allow. It ships with this repository and its releases only, and only
 until the upstream changes below are merged.

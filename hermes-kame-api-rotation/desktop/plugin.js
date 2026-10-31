@@ -859,34 +859,42 @@ function KameChip() {
     lines.push(`Last reading ${duration(age)} old — the backend may be down.`)
   }
 
-  lines.push('Click for the full panel')
+  // 1.8.3.1 (D3): hovering says one line; the click opens the popover (models, last replies, the button).
+  const tip = `${lines[0]}\nClick for details`
+  const open = useValue($chipOpen)
 
   return h(
-    Tip,
-    { label: lines.join('\n') },
+    'span',
+    { className: 'relative inline-flex h-full min-w-0', 'data-kame-chip': '1' },
     h(
-      'button',
-      {
-        className: cn(
-          'inline-flex h-full min-w-0 max-w-[22rem] items-center gap-1.5 overflow-hidden rounded-none px-1.5',
-          'text-[0.6875rem] tabular-nums whitespace-nowrap transition-colors',
-          'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
-          stale && 'opacity-60'
-        ),
-        onClick: () => host.navigate(ROUTE),
-        type: 'button'
-      },
-      h(StatusDot, { tone }),
-      h('span', { className: 'shrink-0' }, 'KAME'),
-      shown.length
-        ? shown.map(pool => h(ChipPool, { key: pool.identity, now, pool, snap }))
-        : h(
-            'span',
-            { className: 'shrink-0 text-(--ui-text-quaternary)' },
-            snap?.installed ? (totals.keys ? `${totals.healthy}/${totals.keys}` : 'ready') : '—'
+      Tip,
+      { key: 'tip', label: tip },
+      h(
+        'button',
+        {
+          'aria-expanded': open,
+          className: cn(
+            'inline-flex h-full min-w-0 max-w-[22rem] items-center gap-1.5 overflow-hidden rounded-none px-1.5',
+            'text-[0.6875rem] tabular-nums whitespace-nowrap transition-colors',
+            'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+            stale && 'opacity-60'
           ),
-      hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
-    )
+          onClick: () => $chipOpen.set(!$chipOpen.get()),
+          type: 'button'
+        },
+        h(StatusDot, { tone }),
+        h('span', { className: 'shrink-0' }, 'KAME'),
+        shown.length
+          ? shown.map(pool => h(ChipPool, { key: pool.identity, now, pool, snap }))
+          : h(
+              'span',
+              { className: 'shrink-0 text-(--ui-text-quaternary)' },
+              snap?.installed ? (totals.keys ? `${totals.healthy}/${totals.keys}` : 'ready') : '—'
+            ),
+        hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
+      )
+    ),
+    open ? h(KameChipPopover, { key: 'popover', snap }) : null
   )
 }
 
@@ -903,6 +911,52 @@ function KameChip() {
  * user is looking at while the turn runs. Shown only while a call is in
  * flight, gone the moment it answers.
  */
+/**
+ * The one live sentence for an activity (1.8.3.1, PLAN_1.8.3.1 D2) - the words of
+ * `tests/fixtures/live_words_1831.json`, the same in the Agent Zero port and in `state.live_line` (Python).
+ * Seven states, icons included: calling, retrying (a key was refused, or some keys rest), racing (a backup
+ * key asks beside the first), standin (a ladder model answers for the reply's model), waiting, stitching,
+ * recovered. `phase` (`racing` / `standin`) rides beside `kind: 'calling'`, so every reader of the old kinds
+ * keeps working. `etaSeconds` is the time left as the page counts it (`countdown`); `null` = no estimate.
+ * `''` when there is nothing to say. Pure: the node check runs the shared table through it.
+ */
+function liveLineText(activity, etaSeconds) {
+  if (!activity || typeof activity !== 'object') return ''
+
+  const kind = String(activity.phase || activity.kind || '')
+  const model = activity.model ?? ''
+  const ready = activity.ready ?? activity.healthy
+  const keys = activity.keys
+  const count = `${ready ?? '?'} of ${keys ?? '?'} keys ready`
+
+  if (kind === 'calling') {
+    const resting = (activity.attempt ?? 1) > 1 || (ready != null && keys != null && Number(ready) < Number(keys))
+
+    return resting ? `↻ ${model}: trying another key · ${count}` : `⏳ Asking ${model} · ${count}`
+  }
+
+  if (kind === 'racing') return `⚡ ${model} is slow to start - a backup key is asking too`
+
+  if (kind === 'standin') return `↪ ${model} can't answer now - ${activity.other ?? ''} is answering instead`
+
+  if (kind === 'waiting') {
+    return etaSeconds == null
+      ? `⏳ Every key of ${model} is resting - waiting for one to come back`
+      : `⏳ Every key of ${model} is resting · next key in ${duration(etaSeconds)}`
+  }
+
+  if (kind === 'stitching') {
+    const done = activity.n ?? activity.resume
+    const limit = activity.max ?? activity.budget
+
+    return `↻ The answer was cut off - continuing it on another key${done != null && limit != null ? ` (${done} of ${limit})` : ''}`
+  }
+
+  if (kind === 'recovered') return `↻ ${model} is back after ${duration(activity.duration_s ?? activity.waited_s ?? 0)}`
+
+  return ''
+}
+
 function KameComposerLine() {
   const snap = useValue($snapshot)
   const now = useValue($now)
@@ -914,20 +968,8 @@ function KameComposerLine() {
     return null
   }
 
-  const health = `KAME ${activity.healthy ?? '?'}/${activity.keys ?? '?'} keys healthy`
-  let text = null
-
-  if (activity.kind === 'calling') {
-    const resting = (activity.attempt ?? 1) > 1 || (activity.healthy ?? 0) < (activity.keys ?? 0)
-    text = `${resting ? '↻' : '⏳'} waiting on ${activity.model} — ${health}${resting ? ', trying the next key' : ''}`
-  } else if (activity.kind === 'waiting') {
-    const eta = countdown(activity.eta_s, snap, now)
-    text = `⏳ waiting on a key to come back — ${health}${eta !== null ? `, next key in ${duration(eta)}` : ''}`
-  } else if (activity.kind === 'stitching') {
-    text = `↻ waiting on a cut answer — continuing the answer on the next key (${resumeProgress(activity)})`
-  } else if (activity.kind === 'recovered') {
-    text = `↻ model returned — back after ${duration(activity.waited_s ?? 0)}`
-  }
+  // 1.8.3.1: the words are the shared table's (see `liveLineText`).
+  const text = liveLineText(activity, activity.kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null)
 
   if (!text) {
     return null
@@ -1200,11 +1242,19 @@ const PANEL_READS = [
   'quota_use.stopped',
   'quota_use.suggestion',
   'replies[].at',
+  'replies[].attempts',
+  'replies[].back_to',
+  'replies[].backup',
+  'replies[].cut',
+  'replies[].failed',
   'replies[].first_s',
   'replies[].for',
   'replies[].main',
   'replies[].model',
+  'replies[].reason',
   'replies[].total_s',
+  'replies[].waited_s',
+  'replies[].why',
   'speed.cap_pct',
   'speed.hour.extra_pct',
   'speed.hour.replies',
@@ -2783,7 +2833,7 @@ function FallbackList({ fallback }) {
     h(
       'p',
       { className: 'mt-1 text-xs text-(--ui-text-quaternary)', key: 'how' },
-      'Change this list in Hermes: hermes fallback add / remove. Background jobs never switch model.'
+      'Change this list in Hermes: hermes fallback add / remove. Background jobs are never raced and never switch on their own account; a stopped important job goes down your list once.'
     )
   )
 }
@@ -3691,9 +3741,14 @@ function Replies({ snap }) {
         h(
           'p',
           { className: 'flex flex-wrap gap-x-2 text-(--ui-text-secondary)', key: index },
-          h('span', { className: 'font-mono text-(--ui-text-primary)', key: 'm' }, row.model),
-          row.for ? h('span', { className: 'text-amber-500', key: 'f' }, `for ${row.for}`) : null,
-          h('span', { key: 't' }, `first word ${secs(row.first_s)} · ${secs(row.total_s)} total`),
+          // 1.8.3.1 (review R16): the same sentence the chip popover says, as Agent Zero's Events tab does.
+          h('span', { className: 'font-mono text-(--ui-text-quaternary)', key: 'c' },
+            typeof row.at === 'number' ? clockTime(row.at) : ''),
+          h('span', { className: row.failed ? 'text-destructive' : 'text-(--ui-text-primary)', key: 'l' },
+            replyLineText(replyFromRow(row))),
+          !row.failed && row.first_s != null
+            ? h('span', { className: 'text-(--ui-text-quaternary)', key: 't' }, `first word ${secs(row.first_s)}`)
+            : null,
           h('span', { className: 'text-(--ui-text-quaternary)', key: 'a' }, ago((now - row.at * 1000) / 1000))
         )
       )
@@ -4508,7 +4563,7 @@ function KameSettingsEntry() {
     : h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, problem || 'Waiting for the first snapshot…')
 }
 
-// -- the model selector goes back to the main model (1.8.3.0) ----------------
+// -- the model selector goes back to the model the reply started on (1.8.3.0, 1.8.3.1) --------
 
 /** How long after a reply the snapshot is looked at again for the "answered for" row, in
  *  milliseconds. KAME publishes the row a moment after the reply ends, so the first look can be early. */
@@ -4538,17 +4593,19 @@ function pillRestorePlan(snap, event, handledAt, nowS) {
 
   const reply = (snap?.replies ?? [])[0]
 
-  // Only when Hermes itself moved off the main model: a sibling KAME answered with left it in place.
+  // Only when Hermes itself moved off the model: a sibling KAME answered with left it in place.
   if (!reply || !reply.for || reply.switched !== true || typeof reply.at !== 'number') return null
   if (reply.at <= (handledAt ?? 0) || nowS - reply.at > PILL_MAX_AGE_S) return null
 
-  const main = reply.main
+  // 1.8.3.1 (decisions/0034 D1): the model the reply STARTED on - the model the session was on, whichever
+  // it is - never "the main model". `main` is the alias of 1.8.3.0, read for one more version.
+  const back = reply.back_to || reply.main
 
-  if (!main || !PILL_MODEL_WORD.test(String(main.model ?? '')) || !PILL_PROVIDER_WORD.test(String(main.provider ?? ''))) {
+  if (!back || !PILL_MODEL_WORD.test(String(back.model ?? '')) || !PILL_PROVIDER_WORD.test(String(back.provider ?? ''))) {
     return null
   }
 
-  return { at: reply.at, session_id: sessionId, value: `${main.model} --provider ${main.provider} --session` }
+  return { at: reply.at, session_id: sessionId, value: `${back.model} --provider ${back.provider} --session` }
 }
 
 /** Listen for the end of each reply and, when KAME says a fallback model answered for the main one, put the
@@ -4594,6 +4651,320 @@ function watchPillRestore({
   })
 
   return typeof stop === 'function' ? stop : () => {}
+}
+
+// -- the chip popover (1.8.3.1, PLAN_1.8.3.1 D3) ---------------------------------------------------
+
+/** "2nd", "3rd", "11th", "22nd". */
+function ordinal(n) {
+  const tens = n % 100
+  const unit = n % 10
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th'
+
+  return `${n}${suffix}`
+}
+
+/** One sentence for a reply, in the words of `tests/fixtures/live_words_1831.json` ("replies" rows):
+ *  `reply` is the generic shape (`kind`, `model`, `other`, `seconds`, `key_index`, `waited_s`, `why`, `reason`).
+ *  Pure; the node check runs the shared table through it. */
+function replyLineText(reply) {
+  if (!reply || typeof reply !== 'object') return ''
+
+  const model = reply.model ?? ''
+  const took = reply.seconds == null ? '' : ` in ${Number(reply.seconds).toFixed(1)}s`
+  const kind = String(reply.kind ?? '')
+
+  if (kind === 'answered') return `✓ ${model} answered${took}`
+  if (kind === 'retried') return `↻ ${model} answered on the ${ordinal(Number(reply.key_index) || 2)} key${took}`
+  if (kind === 'backup') return `⚡ a backup key of ${model} answered first${reply.seconds == null ? '' : ` (${Number(reply.seconds).toFixed(1)}s)`}`
+  if (kind === 'standin') return `↪ ${model} answered for ${reply.other ?? ''}${reply.why ? ` (${reply.why})` : ''}${took}`
+  if (kind === 'waited') return `⏳ waited ${duration(reply.waited_s ?? 0)} for a key, then ${model} answered${took}`
+  if (kind === 'cut') return `↻ ${model}'s answer was cut off and finished on another key`
+  if (kind === 'failed') return `✕ no answer: ${reply.reason ?? 'the request failed'}`
+
+  return ''
+}
+
+/** A row of `snap.replies` (what KAME knows about one reply) in the generic shape `replyLineText` reads.
+ *  The most telling thing wins: no answer, a stand-in, a cut answer, a wait, a backup key, a retry. */
+function replyFromRow(row) {
+  const seconds = row?.total_s ?? null
+  const model = row?.model ?? ''
+
+  if (row?.failed) return { kind: 'failed', model, reason: row.reason }
+  if (row?.for) return { kind: 'standin', model, other: row.for, seconds, why: row.why }
+  if (row?.cut) return { kind: 'cut', model }
+  if (row?.waited_s) return { kind: 'waited', model, seconds, waited_s: row.waited_s }
+  if (row?.backup) return { kind: 'backup', model, seconds }
+  if ((row?.attempts ?? 1) > 1) return { kind: 'retried', model, key_index: row.attempts, seconds }
+
+  return { kind: 'answered', model, seconds }
+}
+
+const SPEED_LABEL = { adaptive: 'Balanced', max: 'Faster', off: 'Saver' }
+
+/** How many models and replies the popover lists. */
+const CHIP_MODELS_MAX = 6
+const CHIP_REPLIES_MAX = 5
+
+/** One model's status, on the right of its row: `{ text, tone }`. Words of PLAN_1.8.3.1 D3. */
+function chipRowStatus(model, snap, nowMs) {
+  const { entry, pool } = model
+
+  if (!pool) return { text: 'not used yet', tone: 'quiet' }
+
+  const busy = untilEpoch(entry?.busy_until, nowMs)
+
+  if (busy) {
+    const again = untilEpoch(entry?.probe_at, nowMs)
+
+    return entry?.busy_kind === 'slow'
+      ? { text: `slow today · skipped for ${duration(busy)}`, tone: 'warn' }
+      : { text: again ? `busy · asked again in ${duration(again)}` : 'busy · asked again soon', tone: 'warn' }
+  }
+
+  const counts = keyCounts(pool)
+  const ready = counts.r + counts.f
+  const total = pool.keys ?? 0
+  const refused = counts.x + counts.o
+
+  if (!ready && total) {
+    if (refused) {
+      return { text: `${count(refused, 'key', 'keys')} refused - replace ${refused === 1 ? 'it' : 'them'}`, tone: 'bad' }
+    }
+
+    const soonest = Math.min(
+      ...(pool.key_states ?? []).filter(row => row[2]).map(row => untilEpoch(row[2], nowMs) ?? Infinity),
+      Infinity
+    )
+
+    if (counts.d && !counts.s) return { text: 'out for today', tone: 'bad' }
+
+    return { text: Number.isFinite(soonest) ? `resting · back in ${duration(soonest)}` : 'resting', tone: 'bad' }
+  }
+
+  return { text: `${ready} of ${total} ready`, tone: ready === total ? 'good' : 'warn' }
+}
+
+/** hh:mm of an epoch second, on the viewer's clock. */
+function clockTime(epochSeconds) {
+  const date = new Date(epochSeconds * 1000)
+
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/** Everything the chip's popover shows, as plain data (PLAN_1.8.3.1 D3): a header, one sentence with the
+ *  state colour, the keys line, the models of the ladder (up to six), the last replies (up to five), the
+ *  retired-key sentence when a key is retired, and the button. Pure: the node check calls it with fixtures. */
+function chipPopoverModel(snap, nowMs) {
+  const totals = snap?.totals ?? {}
+  const activity = snap?.activity ?? null
+  const said = nowSentences(snap, nowMs)
+  const all = snap?.installed ? ringModels(snap).main : []
+  const hasList = (snap?.fallback?.entries ?? []).length > 0
+  const usable = all.find(model => model.pool && modelState(model, snap, nowMs).tone === 'good')
+  const inUse = activity?.identity ? poolOf(snap, activity.identity)?.identity : null
+  const stale = ageSeconds(snap, nowMs) > STALE_AFTER_S
+  let sentence
+
+  if (!snap) {
+    sentence = `${PRODUCT} has not been read yet.`
+  } else if (!snap.installed) {
+    sentence = `${PRODUCT} is loaded but not rotating: ${snap.reason ?? 'unknown'}`
+  } else if (said.tone !== 'good') {
+    sentence = said.line2
+  } else if (activity) {
+    sentence = liveLineText(activity, activity.kind === 'waiting' ? untilEpoch((snap.updated_at ?? 0) + (activity.eta_s ?? 0), nowMs) : null)
+  } else if (usable) {
+    sentence = `Ready - next reply: ${modelOnly(usable.identity)}`
+  } else {
+    sentence = 'Ready - nothing has been asked yet'
+  }
+
+  const speed = SPEED_LABEL[snap?.speed?.mode]
+  const keysLine = totals.keys
+    ? `${totals.ready ?? totals.healthy ?? 0} of ${totals.keys} keys ready${speed ? ` · Speed: ${speed}` : ''}`
+    : 'No pooled key has been used yet'
+
+  const models = all.slice(0, CHIP_MODELS_MAX).map(model => {
+    const status = chipRowStatus(model, snap, nowMs)
+    const isMain = hasList && model.rank === 1
+    const answering = Boolean(inUse) && model.pool?.identity === inUse
+
+    return {
+      identity: model.identity,
+      name: modelOnly(model.identity),
+      segments: ringSegments(model.pool?.key_states ?? []),
+      status: status.text,
+      tags: [...(isMain ? ['main'] : []), ...(answering && !isMain ? ['in use'] : [])],
+      tone: status.tone
+    }
+  })
+
+  const replies = (snap?.replies ?? []).slice(0, CHIP_REPLIES_MAX).map(row => ({
+    at: row.at,
+    line: replyLineText(replyFromRow(row)),
+    time: typeof row.at === 'number' ? clockTime(row.at) : ''
+  }))
+
+  const retired = retiredCount(snap)
+
+  return {
+    button: 'Open API Rotation',
+    emptyReplies: 'No reply yet in this session.',
+    keysLine,
+    models,
+    more: Math.max(0, all.length - CHIP_MODELS_MAX),
+    replies,
+    retired: retired
+      ? `${count(retired, 'key is', 'keys are')} out of rotation - the provider refused ${retired === 1 ? 'it' : 'them'} as ${retired === 1 ? 'a credential' : 'credentials'}. Replace ${retired === 1 ? 'it' : 'them'} in Hermes' key settings.`
+      : '',
+    sentence,
+    stale,
+    title: 'API Rotation',
+    tone: toneFor(snap, nowMs),
+    version: snap?.version ? `KAME ${snap.version}` : 'KAME'
+  }
+}
+
+/** Whether the chip's popover is open. A module atom, like the open ring: it survives a re-render. */
+const $chipOpen = atom(false)
+
+/** A small ring for the popover: one arc per key, the page's colours. */
+function MiniRing({ segments }) {
+  const arcs = segments.map((segment, index) => {
+    const style = KEY_STATE[segment.code] ?? KEY_STATE.r
+
+    if (segments.length === 1 && segment.count === 1) {
+      return h('circle', { cx: 50, cy: 50, fill: 'none', key: `a${index}`, r: 38, stroke: style.colour, strokeWidth: 12 })
+    }
+
+    return h('path', {
+      d: arcPath(38, segment.start, segment.end),
+      fill: 'none',
+      key: `a${index}`,
+      stroke: style.colour,
+      strokeDasharray: style.dash ?? undefined,
+      strokeWidth: 12
+    })
+  })
+
+  return h(
+    'svg',
+    { 'aria-hidden': 'true', className: 'size-4 shrink-0', viewBox: '0 0 100 100' },
+    segments.length
+      ? arcs
+      : h('circle', { cx: 50, cy: 50, fill: 'none', key: 'none', r: 38, stroke: RING_COLOUR.day, strokeWidth: 12 })
+  )
+}
+
+const TONE_TEXT = {
+  bad: 'text-destructive',
+  good: 'text-(--ui-text-secondary)',
+  quiet: 'text-(--ui-text-quaternary)',
+  warn: 'text-amber-500'
+}
+
+/** The popover itself: opens on a click on the chip, closes on a click anywhere else or Escape. */
+function KameChipPopover({ snap }) {
+  const now = useValue($now)
+  const view = chipPopoverModel(snap, now)
+
+  useEffect(() => {
+    const close = () => $chipOpen.set(false)
+    const onKey = event => {
+      if (event.key === 'Escape') close()
+    }
+    const onDown = event => {
+      const inside = typeof event.target?.closest === 'function' && event.target.closest('[data-kame-chip]')
+
+      if (!inside) close()
+    }
+
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onDown)
+
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onDown)
+    }
+  }, [])
+
+  return h(
+    'div',
+    {
+      'aria-label': view.title,
+      className: cn(
+        'fixed right-2 bottom-8 z-50 w-80 max-w-[calc(100vw-1rem)] rounded-lg border border-(--ui-stroke-tertiary)',
+        'bg-(--ui-bg-primary) p-3 text-xs shadow-lg',
+        view.stale && 'opacity-70'
+      ),
+      'data-kame-chip': '1',
+      role: 'dialog'
+    },
+    h(
+      'div',
+      { className: 'flex items-baseline justify-between gap-2', key: 'head' },
+      h('span', { className: 'text-sm font-medium text-(--ui-text-primary)', key: 'title' }, view.title),
+      h('span', { className: 'text-(--ui-text-quaternary)', key: 'version' }, view.version)
+    ),
+    h(
+      'p',
+      { className: 'mt-2 flex items-start gap-1.5 text-(--ui-text-primary)', key: 'sentence' },
+      h(StatusDot, { key: 'dot', tone: view.tone }),
+      h('span', { key: 'text' }, view.sentence)
+    ),
+    h('p', { className: 'mt-0.5 pl-4 text-(--ui-text-tertiary)', key: 'keys' }, view.keysLine),
+    view.models.length
+      ? h(
+          'div',
+          { className: 'mt-3', key: 'models' },
+          h('h3', { className: 'text-[0.625rem] font-medium tracking-wide text-(--ui-text-quaternary) uppercase', key: 'h' }, 'Your models'),
+          ...view.models.map(model =>
+            h(
+              'div',
+              { className: 'mt-1 flex items-center gap-2', key: model.identity },
+              h(MiniRing, { key: 'ring', segments: model.segments }),
+              h('span', { className: 'min-w-0 flex-1 truncate font-mono text-(--ui-text-primary)', key: 'name', title: model.identity }, model.name),
+              ...model.tags.map(tag =>
+                h('span', { className: 'shrink-0 rounded bg-(--ui-bg-quinary) px-1 text-[0.625rem] text-(--ui-text-tertiary)', key: `tag-${tag}` }, tag)
+              ),
+              h('span', { className: cn('shrink-0 tabular-nums', TONE_TEXT[model.tone] ?? TONE_TEXT.good), key: 'status' }, model.status)
+            )
+          ),
+          view.more > 0 ? h('p', { className: 'mt-1 text-(--ui-text-quaternary)', key: 'more' }, `+${view.more} more`) : null
+        )
+      : null,
+    h(
+      'div',
+      { className: 'mt-3', key: 'replies' },
+      h('h3', { className: 'text-[0.625rem] font-medium tracking-wide text-(--ui-text-quaternary) uppercase', key: 'h' }, 'Last replies'),
+      ...(view.replies.length
+        ? view.replies.map((reply, index) =>
+            h(
+              'p',
+              { className: 'mt-1 flex gap-2 text-(--ui-text-secondary)', key: `r${index}` },
+              h('span', { className: 'shrink-0 tabular-nums text-(--ui-text-quaternary)', key: 'time' }, reply.time),
+              h('span', { key: 'line' }, reply.line)
+            )
+          )
+        : [h('p', { className: 'mt-1 text-(--ui-text-quaternary)', key: 'none' }, view.emptyReplies)])
+    ),
+    view.retired ? h('p', { className: 'mt-3 text-destructive', key: 'retired' }, view.retired) : null,
+    h(
+      'button',
+      {
+        className: 'mt-3 w-full rounded-md border border-(--ui-stroke-tertiary) px-2 py-1 text-(--ui-text-primary) hover:bg-(--chrome-action-hover)',
+        key: 'open',
+        onClick: () => {
+          $chipOpen.set(false)
+          host.navigate(ROUTE)
+        },
+        type: 'button'
+      },
+      view.button
+    )
+  )
 }
 
 // -- registration -----------------------------------------------------------
@@ -4684,7 +5055,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, keyCounts, modelState, nowSentences, pillRestorePlan, quotaShare, ringAria, ringModels, ringSegments, sideJobsLine, watchPillRestore }
+export const panelHelpers = { KEY_STATE, PANEL_READS, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, nowSentences, ordinal, pillRestorePlan, quotaShare, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, sideJobsLine, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

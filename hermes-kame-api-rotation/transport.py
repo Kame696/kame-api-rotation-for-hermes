@@ -801,51 +801,97 @@ _HANDOVER_MEMO_S = 30.0
 # 1.8.2.8: what Hermes is told about the primary's return after a hand-over,
 # so its fallback lasts one reply (the next reply restores the primary).
 _HANDOVER_HOST_BACK_S = 2.0
-#: 1.8.3.0 (decisions/0033 D1): after KAME hands a MAIN-model reply to Hermes, a call that arrives on
-#: one of the entries it was handed to, within this long, is the same reply walking down the list and
-#: keeps the permission. Hermes rebuilds the message at once; a minute and a half covers its retries.
+#: 1.8.3.0 (decisions/0033 D1): after KAME hands a reply to Hermes, a call that arrives on one of the
+#: entries it was handed to, within this long, is the same reply walking down the list. Hermes
+#: rebuilds the message at once; a minute and a half covers its retries.
+#: 1.8.3.1 (decisions/0034 D1): the permit carries the reply's ORIGIN, so the walk goes on down the
+#: ladder of the model the reply started on, whichever model that was.
 _WALK_PERMIT_S = 90.0
-#: 1.8.3.0: ``identity -> (the reply started on the main model, when)`` for the classification hook,
-#: which sees the failing model but not the call. A record older than this is not believed.
-_REPLY_ORIGIN: Dict[str, Tuple[bool, float]] = {}
-_REPLY_ORIGIN_FRESH_S = 600.0
+
+#: 1.8.3.1 (D1, review R3 of 1.8.3.0): ``entry -> (until, origin)`` for the walks Hermes starts ON ITS OWN -
+#: the classification hook let a reply fall back without KAME handing it over (an error KAME passes
+#: through). The call Hermes rebuilds on the next entry is the same reply and keeps the origin, exactly like
+#: the walk after KAME's own hand-over (``KameTransport._walk_permits``).
+_HOST_WALK_PERMITS: Dict[str, Tuple[float, str]] = {}
 
 
-def reply_may_fall_back(provider: Any, model: Any) -> Optional[bool]:
-    """Did the latest reply KAME saw on this model start on the main model? ``None`` = no fresh record.
+def _permit_origin(position: str, *tables: Dict[str, Tuple[float, str]]) -> Optional[str]:
+    """The origin of the live walk permit that covers ``position``, or ``None``. The first table wins."""
+    from .core.fallback_chain import _same
 
-    Read by the classification hook (decisions/0033 D1): a reply that did not start on the main model
-    must not make Hermes switch model, so the hook answers ``should_fallback: False`` for it."""
-    ident = f"{str(provider or '').strip().lower()}:{str(model or '').strip().lower()}"
     now = time.time()
-    best: Optional[Tuple[float, bool]] = None
-    for key, (on_main, at) in list(_REPLY_ORIGIN.items()):
-        if (key == ident or key.startswith(ident + ":")) and now - at < _REPLY_ORIGIN_FRESH_S:
-            if best is None or at > best[0]:
-                best = (at, on_main)
-    return None if best is None else best[1]
+    for table in tables:
+        for entry, (until, origin) in list(table.items()):
+            if until > now and _same(position, entry):
+                return origin
+    return None
 
 
-#: 1.8.3.0 (decisions/0033 D1, review R3): ``entry -> until`` for the walks Hermes starts ON ITS OWN - the
-#: classification hook let a main-model reply fall back without KAME handing it over (an error KAME passes
-#: through). The call Hermes rebuilds on the next entry is the same reply and keeps its permission, exactly
-#: like the walk after KAME's own hand-over (``KameTransport._walk_permits``).
-_HOST_WALK_PERMITS: Dict[str, float] = {}
+def _is_main_model(identity: str) -> bool:
+    """Is ``identity`` the profile's main model (``model.default``)? (1.8.3.1, review R1/R2)"""
+    try:
+        from .core import fallback_chain
+
+        main = fallback_chain.primary_identity()
+        return bool(main) and fallback_chain._same(str(identity or "").strip().lower(), main)
+    except Exception:
+        return False
+
+
+#: 1.8.3.1 (review R8): Hermes retries a failed reply up to ``agent.api_max_retries`` times, each a new call;
+#: failures of the same conversation on the same model within this long are one failed reply, one row.
+_FAILED_ROW_WINDOW_S = 90.0
 
 
 def note_host_fallback(provider: Any, model: Any) -> None:
-    """Hermes is about to move a reply from ``provider:model`` down the list: permit the walk if it is main's."""
+    """Hermes is about to move a reply from ``provider:model`` down the list: permit the walk.
+
+    The permission is to the entries after the failing model in the ladder of the reply's origin - the
+    failing model itself, unless a live permit says the reply started elsewhere. A permit that is
+    still live is never rewritten: the first writer knows the true origin.
+
+    1.8.3.1 (review R1): Hermes never walks TO the main model, so no permit is written for it, and a
+    failure ON the main model starts a reply of its own (it never inherits another reply's origin). The
+    permits KAME wrote itself at a hand-over (the live transport's) are read as well as the ones written
+    here: a reply handed to another provider keeps its origin when the host walks on."""
     try:
         from .core import fallback_chain
 
         ident = f"{str(provider or '').strip().lower()}:{str(model or '').strip().lower()}"
-        if not (fallback_chain.starts_on_main(ident) or reply_may_fall_back(provider, model) is True):
-            return
+        tables: List[Dict[str, Tuple[float, str]]] = [_HOST_WALK_PERMITS]
+        try:
+            from . import facade
+
+            tables.append(facade.TRANSPORT._walk_permits)
+        except Exception:   # no live transport (an import-time hook, a test): the module table alone
+            pass
+        origin = ident if _is_main_model(ident) else (_permit_origin(ident, *tables) or ident)
         until = time.time() + _WALK_PERMIT_S
-        for entry in fallback_chain.later_entries(ident):
-            _HOST_WALK_PERMITS[entry] = until
+        now = time.time()
+        for entry in fallback_chain.after(origin, ident):
+            if _is_main_model(entry):
+                continue
+            held = _HOST_WALK_PERMITS.get(entry)
+            if held is None or held[0] <= now:
+                _HOST_WALK_PERMITS[entry] = (until, origin)
     except Exception:  # pragma: no cover - bookkeeping must never break the hook
         logger.debug("kame: could not note Hermes' own fallback", exc_info=True)
+
+
+#: 1.8.3.1 (D3): a reply that waited at least this long for a key says so in the popover's Last replies.
+_REPLY_WAITED_NOTE_S = 5.0
+
+
+def _short_why(why: str) -> str:
+    """``busy`` / ``slow`` / ``resting`` / ``""``: the one word the Last replies sentence puts in brackets."""
+    text = str(why or "").lower()
+    if "slow" in text:
+        return "slow"
+    if "busy" in text:
+        return "busy"
+    if "resting" in text:
+        return "resting"
+    return ""
 
 
 #: 1.8.2.8 (D11): "Automatic" slow-model watch, ``(floor, ceiling, cold)`` in
@@ -1445,7 +1491,12 @@ class KameTransport:
         self._handover_later: Dict[str, Tuple[str, ...]] = {}
         #: 1.8.3.0 (decisions/0033 D1): chain entry -> until when a call arriving on it is the walk of a
         #: reply that started on the main model (set where a main reply is handed to Hermes).
-        self._walk_permits: Dict[str, float] = {}
+        self._walk_permits: Dict[str, Tuple[float, str]] = {}
+        #: 1.8.3.1 (review R4): origin identity -> the model string Hermes sent for the first call of a reply
+        #: that started there, as the user wrote it (the pill goes back to this, never to a lower-cased guess).
+        self._origin_written: Dict[str, str] = {}
+        #: 1.8.3.1 (review R8): ``conversation|model -> (when, row)`` of the failed-reply row written last.
+        self._failed_rows: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         #: Probe bursts started (decisions/0027).
         self.probe_bursts = 0
         #: ``(identity, key) -> when the provider said this key is back`` for the
@@ -2258,6 +2309,9 @@ class KameTransport:
             for item in self._drive(call, stream=False):
                 if isinstance(item, _Done):
                     return call.wire.result(item.value)
+        except Exception as error:
+            self._note_failed(call, error)
+            raise
         finally:
             _inflight_end(call)
         raise RuntimeError("kame: the transport ended without an answer")  # pragma: no cover
@@ -2281,6 +2335,9 @@ class KameTransport:
                     yield keepalive_chunk()
                     continue
                 yield item
+        except Exception as error:
+            self._note_failed(call, error)
+            raise
         finally:
             _inflight_end(call)
 
@@ -2304,10 +2361,8 @@ class KameTransport:
         # 1.8.2.7 (review H1): a call on a later entry of the fallback list proves
         # Hermes switched, whether or not KAME holds keys for that entry.
         self._note_chain_arrival(getattr(call, "identity", "") or "")
-        # 1.8.3.0 (decisions/0033 D1): where this reply started, decided before anything else happens
-        # (the classification hook reads it for the model that fails).
-        if getattr(call, "channel", "main") == "main":
-            self._reply_on_main(call)
+        # 1.8.3.1 (decisions/0034 D1): where this reply started, decided before anything else happens.
+        self._origin_of(call)
         if not keys:
             yield from self._plain(call, stream)
             return
@@ -2410,6 +2465,8 @@ class KameTransport:
         home_model = (call.kwargs or {}).get("model")
         try:   # the widen step must not ask a model that already refused this request (review, 2026-10-24)
             setattr(call, "_kame_avoid", excluded)
+            if home_model:      # 1.8.3.1 (review R4): the name as Hermes sent it, before any circle rewrites it
+                setattr(call, "_kame_home_model", home_model)
         except Exception:  # pragma: no cover - a test double without attributes
             pass
 
@@ -2417,6 +2474,10 @@ class KameTransport:
             nonlocal identity, label, busy_keys, busy_noted, verdicts, consecutive_timeouts
             nonlocal long_refusals, vigil
             self._announce_wrap(call, identity, wrapped[0], why)
+            try:
+                setattr(call, "_kame_standin_why", _short_why(why))
+            except Exception:  # pragma: no cover - a test double without attributes
+                pass
             visited.append(identity)
             identity = label = wrapped[0]
             call.kwargs = dict(call.kwargs, model=wrapped[1])      # a new dict: Hermes' own is never mutated
@@ -2619,7 +2680,7 @@ class KameTransport:
             )
             _publish(
                 self,
-                {
+                self._mark_stand_in(call, identity, {
                     "kind": "calling",
                     "identity": identity,
                     "model": model_label(identity),
@@ -2630,7 +2691,7 @@ class KameTransport:
                     # clock itself (no new write per second) and name the key on the ring.
                     "started_at": time.time() - (time.monotonic() - started),
                     "key": fingerprint(key),
-                },
+                }),
             )
 
             progress = _Progress()
@@ -3086,6 +3147,19 @@ class KameTransport:
                 # once every key rests - and a busy provider moves at once.
                 if self._busy_failure(identity, key, kind, status):
                     busy_keys.add(key)
+                    # 1.8.3.1 (D5, L7): the first busy answer after a busy window ended reopens it,
+                    # without waiting for a second busy key (Agent Zero's rule). Otherwise every
+                    # reply in the half minute after a window knocks once more on a model that is
+                    # still busy. The key itself still rests only the 1 s a 503 costs. Conversation
+                    # only, never under "Never switch", and not while the call is already hopping.
+                    if (len(busy_keys) == 1 and not busy_noted and not visited
+                            and getattr(call, "channel", "main") == "main"
+                            and not (settings.is_on(settings.NO_MODEL_FALLBACK)
+                                     or settings.model_switch_mode() == "never")
+                            and time.time() >= self._busy_until.get(identity, 0.0)
+                            and self._is_busy(identity, busy_keys)):
+                        busy_noted = True
+                        self._note_busy(identity)
                 if len(busy_keys) >= 2 and not busy_noted:
                     busy_noted = True
                     self._note_busy(identity)
@@ -3296,6 +3370,7 @@ class KameTransport:
                 # 1.8.2.4: one place learns latency (see ``_learn_latency``).
                 self._learn_latency(call, identity, key, stream=True, started=_call_started, progress=progress)
                 if seen:
+                    self._note_reply_facts(call, aux_requests, resumes, pool_waited)
                     self._after_answer(call, identity, progress)
                 if _pacer:
                     _pacer.stamp(identity, key)
@@ -3375,6 +3450,7 @@ class KameTransport:
             carried = (bool(answered_with_text or saw_tools or shown or seen) if stream
                        else not _result_is_empty(result))
             if carried:
+                self._note_reply_facts(call, aux_requests, resumes, pool_waited)
                 self._after_answer(call, identity, progress)
                 try:
                     runtime.note_answered(call.provider, identity, counted_as(call.entry(key), key))
@@ -3571,6 +3647,7 @@ class KameTransport:
                     _emit(call, "switch", identity=identity, key=fingerprint(hedge_key),
                           reason=(f"backup request sent — the first key passed {threshold:.1f}s"
                                   if first_wait else "backup request sent at once (Max mode)"))
+                    self._publish_backup(call, identity, attempt, keys, key, started)
             if hedge is None:
                 return primary.result(), key, started
 
@@ -3598,6 +3675,7 @@ class KameTransport:
                     for other in failed + empty + list(pending):
                         self._queue_hedge_loser(other, legs[other], call, identity, label, attempt, reasoning)
                     if win_is_hedge:
+                        setattr(call, "_kame_backup_won", True)       # 1.8.3.1
                         _emit(call, "switch", identity=identity, key=fingerprint(win_key),
                               reason=f"the backup answered first, {time.monotonic() - started:.1f}s after the first request")
                     return winner.result(), win_key, win_started
@@ -3828,6 +3906,8 @@ class KameTransport:
                           reason=("asking several keys at once — the last keys were out of quota" if burst
                                   else "Speed is Faster — a backup key joined a reply that was a little late" if now - race_started < 0.05
                                   else f"no first word after {now - race_started:.1f}s (slower than usual) — a backup key races it"))
+                    if not burst:
+                        self._publish_backup(call, identity, attempt, keys, key, race_started)
                 # -- 1.8.2.8 (D12): the next model races a silent one ----------------------
                 while (cross and winner is None and now - race_started >= cross[0][2]
                         and any(not leg.done for leg in legs)):
@@ -3857,7 +3937,7 @@ class KameTransport:
                             _emit(call, "switch", identity=identity, key=fingerprint(ckey),
                                   reason=f"no first word after {now - race_started:.1f}s — {model_label(target_id)} "
                                          "(your next model) races it; the first to answer is shown")
-                        self._publish_racing(identity, attempt, keys, key, race_started, cross_legs, probe)
+                        self._publish_racing(identity, attempt, keys, key, race_started, cross_legs, probe, call)
                 # -- a model that is slow today: the next model answers -------------------
                 if (slow_after is not None and slow_base is not None and not slow_extended and winner is None
                         and now - race_started >= slow_after):
@@ -3898,7 +3978,7 @@ class KameTransport:
                             _emit(call, "switch", identity=identity, key=fingerprint(wkey),
                                   reason=f"no first word from {model_label(identity)} after {now - race_started:.1f}s — "
                                          f"{model_label(w_id)} (your list) joins; the first to answer is shown")
-                            self._publish_racing(identity, attempt, keys, key, race_started, cross_legs, probe)
+                            self._publish_racing(identity, attempt, keys, key, race_started, cross_legs, probe, call)
                             slow_after = max(slow_after, _second_bound(
                                 slow_base, [leg.started - race_started for leg in cross_legs if not leg.done]))
                             continue
@@ -4054,6 +4134,7 @@ class KameTransport:
                         self._note_busy(lost)
             else:
                 self.handed_over += 1
+                setattr(call, "_kame_standin_why", "slow")        # 1.8.3.1: the reply row says why
                 if identity not in noted_slow:      # review finding 2: B3 already noted it, once
                     self._note_busy(identity)
                 for leg in legs:   # a model raced in before the winner and still silent lost too
@@ -4064,6 +4145,7 @@ class KameTransport:
                       reason=f"{model_label(identity)} was slower than usual -> {model_label(won_by)} "
                              f"answered first, {now - race_started:.1f}s after the request")
         elif winner.is_hedge and _carries_answer(winner.buffer[-1] if winner.buffer else None):
+            setattr(call, "_kame_backup_won", True)       # 1.8.3.1: "a backup key of <model> answered first"
             _emit(call, "switch", identity=identity, key=fingerprint(winner.key),
                   reason=f"the backup key answered first, {now - race_started:.1f}s after the first request — the slow one was cut")
         return _RaceStream(winner, race_q), winner.key, winner.started
@@ -4281,44 +4363,70 @@ class KameTransport:
         except Exception:  # pragma: no cover - bookkeeping must never break a call
             logger.debug("kame: could not note a fallback arrival", exc_info=True)
 
-    def _reply_on_main(self, call: "Call") -> bool:
-        """May this reply use the fallback list? True when it STARTED on the main model (D1).
+    def _origin_of(self, call: "Call", identity: str = "") -> str:
+        """The model this reply STARTED on (lower case): the root of its ladder. (1.8.3.1, decisions/0034 D1)
 
-        1.8.3.0 (decisions/0033). "Started" is the position of the first call of the reply: Hermes'
-        ``model.default``, when that model is not also in its own list (``fallback_chain.starts_on_main``).
-        A call on a list entry that KAME just handed a main-model reply to (``_walk_permits``) is the same
-        reply walking down the list and keeps the permission. Anything else - a model picked by hand, a
-        secondary tile, a list model chosen as the default - answers with its own keys alone.
-        Decided once per call and kept on it; a call that cannot hold the attribute (a test double)
-        is decided again, which gives the same answer.
+        The position of the first call of the reply: ``call.identity``, the model Hermes asked for - the
+        main model, a list model picked by hand, anything. A call on an entry that a hand-over (or Hermes'
+        own walk, noted by the classification hook) just moved a reply to is the SAME reply walking down
+        the list: a live permit names the model it started on. Decided once per call and kept on it; a
+        call that cannot hold the attribute (a test double) is decided again, which gives the same answer.
         """
-        cached = getattr(call, "_kame_on_main", None)
-        if isinstance(cached, bool):
+        cached = getattr(call, "_kame_origin", None)
+        if isinstance(cached, str) and cached:
             return cached
-        identity = str(getattr(call, "identity", "") or "").lower()
-        on_main = True
+        position = str(getattr(call, "identity", "") or identity or "").lower()
+        origin = position
         try:
-            from .core import fallback_chain
-
-            if fallback_chain.starts_on_main(identity):
-                # Not a reason to end other walks: another conversation's reply may be walking down the
-                # list at this moment, and its permits lapse on their own (``_WALK_PERMIT_S``).
-                on_main = True
-            else:
-                now = time.time()
-                permits = list(self._walk_permits.items()) + list(_HOST_WALK_PERMITS.items())
-                on_main = any(until > now and fallback_chain._same(identity, entry)
-                              for entry, until in permits)
+            # 1.8.3.1 (review R1): a call that IS on the main model is a fresh reply - Hermes never walks
+            # TO the main model, so no permit can name a reply that "arrived" there.
+            if not _is_main_model(position):
+                origin = _permit_origin(position, self._walk_permits, _HOST_WALK_PERMITS) or position
         except Exception:
             logger.debug("kame: could not tell where this reply started", exc_info=True)
-            on_main = True
         try:
-            setattr(call, "_kame_on_main", on_main)
+            # 1.8.3.1 (review R4): the model string Hermes sent for the FIRST call of a reply is how the user
+            # wrote its origin; keep it (also for the calls Hermes rebuilds on other entries of the walk).
+            if origin == position:
+                sent = str(getattr(call, "_kame_home_model", None) or (getattr(call, "kwargs", None) or {}).get("model") or "")
+                if sent:
+                    self._origin_written[origin] = sent
+                    while len(self._origin_written) > 32:
+                        self._origin_written.pop(next(iter(self._origin_written)))
+        except Exception:  # pragma: no cover - a test double
+            pass
+        try:
+            setattr(call, "_kame_origin", origin)
         except Exception:  # pragma: no cover - a test double without attributes
             pass
-        if identity:
-            _REPLY_ORIGIN[identity] = (on_main, time.time())
-        return on_main
+        return origin
+
+    def _ladder(self, call: "Call", identity: str = "") -> List[str]:
+        """``ladder(origin)``: the models this reply may use, in order (``fallback_chain.ladder``)."""
+        from .core import fallback_chain
+
+        return fallback_chain.ladder(self._origin_of(call, identity))
+
+    def _later(self, call: "Call", identity: str = "", *, local: bool = False) -> List[str]:
+        """The ladder entries after the CURRENT position (1.8.3.1, decisions/0034 D1).
+
+        The position is the one Hermes is on (``call.identity``): Hermes' chain only goes down inside a
+        reply, and a circle or a race win moves KAME's own model in place, so what Hermes can be handed
+        is decided from where Hermes is (1.8.2.9 review H1). ``local`` reads from the model KAME itself
+        is using instead (the legs KAME races beside it)."""
+        from .core import fallback_chain
+
+        position = (identity if local else (getattr(call, "identity", "") or identity))
+        return fallback_chain.after(self._origin_of(call, identity), position)
+
+    def _hermes_later(self, call: "Call", identity: str = "") -> List[str]:
+        """What HERMES can be handed after the current position (1.8.3.1, review R2).
+
+        ``_later`` without the main model unless it is the reply's origin: Hermes' walk is its own list
+        (``fallback_providers``) and never goes TO the main model, so the main model is a candidate for
+        KAME's own uses (stand-in, race, widen, circle back) but never for a hand-over. (When the main model
+        IS the origin the ladder does not hold it after the origin, so nothing is dropped.)"""
+        return [entry for entry in self._later(call, identity) if not _is_main_model(entry)]
 
     def _entry_usable(self, identity: str) -> bool:
         """Could a call on this chain entry be answered now, as far as KAME knows?
@@ -4350,7 +4458,7 @@ class KameTransport:
             from .core import fallback_chain
 
             return ((settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never")
-                    and bool(fallback_chain.later_entries(identity)))
+                    and bool(fallback_chain.ladder(identity)[1:]))      # 1.8.3.1: Hermes walks its list from any model
         except Exception:
             return False
 
@@ -4478,11 +4586,9 @@ class KameTransport:
             if getattr(call, "channel", "main") != "main" or settings.is_on(settings.NO_MODEL_FALLBACK):
                 return None
             mode = settings.model_switch_mode()
-            if mode == "never" or not self._reply_on_main(call):     # 1.8.3.0 (D1)
+            if mode == "never":
                 return None
-            from .core import fallback_chain
-
-            later = fallback_chain.later_entries(getattr(call, "identity", "") or identity)   # review H1
+            later = self._hermes_later(call, identity)     # review H1; 1.8.3.1: the ladder of the reply's origin; R2: what Hermes can be handed
             if not later or not any(self._entry_free(e) for e in later):
                 # decisions/0032 B4 (review M6): nothing after Hermes' position is free, but a model
                 # of the list (an earlier one, best first) could still join the race at the bound.
@@ -4529,13 +4635,10 @@ class KameTransport:
         try:
             if str(settings.text_value(settings.HEDGE_MODE) or "adaptive") == "off":
                 return None
-            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
-                return None
             from .core import fallback_chain
             from .core.hedging import HEDGE_TRACKER as _hedge
 
-            primary, chain = fallback_chain.read()
-            order = ([primary] if primary else []) + list(chain)
+            order = self._ladder(call, identity)      # 1.8.3.1: the ladder of the reply's origin
             mine = next((e for e in order if fallback_chain._same(identity, e)), None)
             if mine is None:
                 return None
@@ -4549,7 +4652,7 @@ class KameTransport:
                               0.5 * slow_s))
             step = max(_CROSS_STEP_S, 0.5 * after)
             out: List[Tuple[str, str, float]] = []
-            for entry in fallback_chain.later_entries(identity):
+            for entry in self._later(call, identity, local=True):
                 if entry.split(":", 1)[0] != provider:
                     continue
                 if not self._entry_free(entry):      # decisions/0032 B4: known busy is raced only when due
@@ -4590,18 +4693,15 @@ class KameTransport:
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
                 return None
-            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
-                return None
-            entry = self._chain_entry(identity)
+            entry = self._chain_entry(identity, self._ladder(call, identity))
             if entry is None:
                 return None
-            from .core import fallback_chain
-
-            later = fallback_chain.later_entries(getattr(call, "identity", "") or identity)
+            later = self._later(call, identity)
             target = next((e for e in later if self._entry_free(e)), None)
             if target is None:
                 return None
-            siblings = {e: (m, s) for e, m, s in (self._siblings(identity) or [])}
+            siblings = {e: (m, s) for e, m, s in
+                        (self._siblings(identity, origin=self._origin_of(call, identity)) or [])}
             if target not in siblings:
                 return None
             model, suffix = siblings[target]
@@ -4622,14 +4722,16 @@ class KameTransport:
             logger.debug("kame: could not plan a probe of the busy model", exc_info=True)
             return None
 
-    def _chain_entry(self, identity: str) -> Optional[str]:
-        """The user's list entry an identity (pool suffix and all) belongs to, or ``None``."""
+    def _chain_entry(self, identity: str, order: Optional[Sequence[str]] = None) -> Optional[str]:
+        """The entry of the user's list (or of ``order``, a reply's ladder) an identity - pool suffix and
+        all - belongs to, or ``None``."""
         try:
             from .core import fallback_chain
 
-            primary, chain = fallback_chain.read()
-            return next((e for e in ([primary] if primary else []) + list(chain)
-                         if fallback_chain._same(identity, e)), None)
+            if order is None:
+                primary, chain = fallback_chain.read()
+                order = ([primary] if primary else []) + list(chain)
+            return next((e for e in order if fallback_chain._same(identity, e)), None)
         except Exception:
             return None
 
@@ -4651,8 +4753,45 @@ class KameTransport:
         except Exception:  # pragma: no cover - a dict write
             return True
 
+    def _mark_stand_in(self, call: "Call", identity: str, activity: Dict[str, Any]) -> Dict[str, Any]:
+        """A reply answered by a model other than the one it started on says so (1.8.3.1, D2).
+
+        ``phase: "standin"`` rides beside ``kind: "calling"`` (every reader of the old kinds keeps working),
+        ``model`` names the model that cannot answer - the reply's origin - and ``other`` the one answering,
+        as the shared table of words asks. ``identity`` stays the model in use. Only a conversation's reply."""
+        try:
+            if getattr(call, "channel", "main") != "main":
+                return activity
+            from .core.fallback_chain import _same
+
+            origin = self._origin_of(call)
+            if origin and identity and not _same(identity, origin):
+                activity["phase"] = "standin"
+                activity["model"] = model_label(origin)
+                activity["other"] = model_label(identity)
+        except Exception:  # pragma: no cover - a readout must never cost a reply
+            logger.debug("kame: could not tell if a stand-in is answering", exc_info=True)
+        return activity
+
+    def _publish_backup(self, call: "Call", identity: str, attempt: int, keys: Sequence[str], key: str,
+                        race_started: float) -> None:
+        """A backup KEY of the same model was launched beside the first one: say so (1.8.3.1, D2 ``racing``).
+
+        Not for a burst of keys after a run of empty-quota answers (that model is not slow), and a
+        stand-in keeps its own line."""
+        try:
+            activity = {
+                "kind": "calling", "phase": "racing", "identity": identity, "model": model_label(identity),
+                "attempt": attempt, "healthy": self.engine.healthy_count(identity, keys), "keys": len(keys),
+                "started_at": time.time() - (time.monotonic() - race_started), "key": fingerprint(key),
+            }
+            _publish(self, self._mark_stand_in(call, identity, activity))
+        except Exception:  # pragma: no cover - a readout must never cost a reply
+            logger.debug("kame: could not say a backup key is asking", exc_info=True)
+
     def _publish_racing(self, identity: str, attempt: int, keys: Sequence[str], key: str,
-                        race_started: float, cross_legs: Sequence[Any], probe: Optional[str] = None) -> None:
+                        race_started: float, cross_legs: Sequence[Any], probe: Optional[str] = None,
+                        call: Optional["Call"] = None) -> None:
         """Tell the panel which models are racing this reply (``activity.racing``, 0032 B5).
 
         A busy model being asked again at the start (``probe``) is named apart: the home model is
@@ -4668,7 +4807,7 @@ class KameTransport:
             }
             if probe and any(not leg.done and getattr(leg, "cross", None) == probe for leg in cross_legs):
                 activity["probe"] = model_label(probe)
-            _publish(self, activity)
+            _publish(self, self._mark_stand_in(call, identity, activity) if call is not None else activity)
         except Exception:  # pragma: no cover - a readout must never cost a reply
             logger.debug("kame: could not say which models are racing", exc_info=True)
 
@@ -4679,7 +4818,7 @@ class KameTransport:
         try:
             from .core import fallback_chain
 
-            later = fallback_chain.later_entries(getattr(call, "identity", "") or identity)
+            later = self._hermes_later(call, identity)      # 1.8.3.1 (review R2): the hand-over is Hermes'
             return any(self._entry_free(e) and not any(fallback_chain._same(x, e) for x in taken)
                        for e in later)
         except Exception:
@@ -4702,18 +4841,15 @@ class KameTransport:
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
                 return None
-            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
-                return None
-            candidates = self._siblings(identity)
+            candidates = self._siblings(identity, origin=self._origin_of(call, identity))
             if not candidates:
                 return None
             from .core import fallback_chain
 
             _same = fallback_chain._same
             taken = list(taken) + list(getattr(call, "_kame_avoid", None) or [])
-            primary, chain = fallback_chain.read()
-            order = ([primary] if primary else []) + list(chain)
-            later = fallback_chain.later_entries(getattr(call, "identity", "") or identity)
+            order = self._ladder(call, identity)      # 1.8.3.1: best first = the ladder's own order
+            later = self._later(call, identity)
             outside = [order.index(e) for e in later
                        if e in order and self._entry_free(e) and not any(_same(x, e) for x in taken)]
             limit = min(outside) if outside else None
@@ -4742,7 +4878,8 @@ class KameTransport:
         except Exception:
             return False
 
-    def _siblings(self, identity: str, *, include_self: bool = False) -> Optional[List[Tuple[str, str, str]]]:
+    def _siblings(self, identity: str, *, include_self: bool = False,
+                  origin: Optional[str] = None) -> Optional[List[Tuple[str, str, str]]]:
         """``[(entry, model as written, suffix), ...]``: the models of the user's list this
         call could be asked on - same provider, same endpoint (only the model name
         changes), in the list's own order, best first; the model in use too when
@@ -4754,12 +4891,16 @@ class KameTransport:
         no ``base_url`` uses the provider's own endpoint, which is also where an entry that
         names one points in the owner's configuration, so an unnamed endpoint matches in
         BOTH directions (the draft excluded a primary that names one from a fallback that
-        does not)."""
+        does not).
+
+        1.8.3.1 (decisions/0034 D1): with ``origin`` the order is ``ladder(origin)`` - the model the
+        reply started on first, then the main model and the list - instead of the list's own order."""
         try:
             from .core import fallback_chain
 
             primary, chain = fallback_chain.read()
-            order = ([primary] if primary else []) + list(chain)
+            order = (fallback_chain.ladder(origin) if origin else
+                     ([primary] if primary else []) + list(chain))
             mine = next((e for e in order if fallback_chain._same(identity, e)), None)
             if mine is None or len(order) < 2:
                 return None
@@ -4815,8 +4956,8 @@ class KameTransport:
         try:
             from .core import fallback_chain
 
-            pos = getattr(call, "identity", "") or identity
-            return any(self._entry_free(entry) for entry in fallback_chain.later_entries(pos))
+            # 1.8.3.1 (review R2): Hermes' own walk never goes TO the main model.
+            return any(self._entry_free(entry) for entry in self._hermes_later(call, identity))
         except Exception:
             return True
 
@@ -4849,11 +4990,10 @@ class KameTransport:
                 return None
             if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
                 return None
-            if not self._reply_on_main(call):      # 1.8.3.0 (D1): the list is the main model's
-                return None
             if self._hermes_has_free_after(call, identity):
                 return None
-            candidates = self._siblings(identity, include_self=include_self)
+            candidates = self._siblings(identity, include_self=include_self,
+                                        origin=self._origin_of(call, identity))
             if not candidates:
                 return None
             from .core.fallback_chain import _same
@@ -5033,6 +5173,53 @@ class KameTransport:
         except Exception:
             return None
 
+    def _note_reply_facts(self, call: "Call", requests: int, resumes: int, waited: float) -> None:
+        """What this call went through before it answered, for the reply row (1.8.3.1, D3)."""
+        try:
+            setattr(call, "_kame_facts", {"attempts": int(requests), "resumes": int(resumes), "waited_s": float(waited)})
+        except Exception:  # pragma: no cover - a test double without attributes
+            pass
+
+    def _note_failed(self, call: "Call", error: BaseException) -> None:
+        """A reply that ended without an answer gets a row too (1.8.3.1, D3: ``no answer: <reason>``).
+
+        Only a conversation's reply, and not a hand-over (``KamePoolResting`` is a plan, not a failure).
+        The reason is one of a few fixed sentences - never the provider's own text, which can carry anything."""
+        try:
+            if getattr(call, "channel", "main") != "main" or isinstance(error, KamePoolResting):
+                return
+            status = getattr(error, "status_code", None)
+            name = type(error).__name__.lower()
+            if isinstance(status, int) and not isinstance(status, bool):
+                reason = f"the provider answered {status}"
+            elif "timeout" in name or "timed out" in str(error).lower():
+                reason = "it timed out"
+            elif "cancel" in name or "interrupt" in name:
+                return
+            else:
+                reason = "the request failed"
+            # review R8: Hermes retries a failed reply (agent.api_max_retries), each retry a new call - one reply,
+            # one row. The same conversation failing on the same model again within the window refreshes the row.
+            now = time.time()
+            try:
+                owner = call.status_owner()
+            except Exception:
+                owner = ""
+            key = f"{getattr(call, 'identity', '')}|{owner if isinstance(owner, str) else id(owner)}"
+            held = self._failed_rows.get(key)
+            if held is not None and now - held[0] < _FAILED_ROW_WINDOW_S:
+                held[1].update({"at": now, "reason": reason})
+                self._failed_rows[key] = (now, held[1])
+                return
+            row = {"at": now, "model": model_label(str(getattr(call, "identity", "") or "")),
+                   "for": "", "first_s": None, "total_s": None, "failed": True, "reason": reason}
+            self.replies.append(row)
+            self._failed_rows[key] = (now, row)
+            for old in [k for k, (at, _row) in self._failed_rows.items() if now - at >= _FAILED_ROW_WINDOW_S]:
+                self._failed_rows.pop(old, None)
+        except Exception:  # pragma: no cover - a readout must never cost a reply
+            logger.debug("kame: could not note a failed reply", exc_info=True)
+
     def _after_answer(self, call: "Call", identity: str, progress: "_Progress") -> None:
         """An answer: the provider is not busy any more, and the reply is named."""
         identity = getattr(call, "_kame_answered_by", None) or identity
@@ -5050,23 +5237,42 @@ class KameTransport:
             total = (now - started) if isinstance(started, (int, float)) else None
             first = progress.first_text_at or progress.first_sign_at
             first_s = (first - started) if (first and isinstance(started, (int, float))) else None
-            primary = fallback_chain.primary_identity()
-            # 1.8.3.0 (D1): only a reply that started on the main model can be answered "for" it. A model
-            # picked by hand answered for nobody, and the selector must stay on the user's pick.
-            on_main = getattr(call, "_kame_on_main", True) is not False
-            stand_in = on_main and bool(primary) and not fallback_chain._same(identity, primary)
+            # 1.8.3.1 (D1): a reply is a stand-in when it was answered by a model other than the one it
+            # STARTED on - the main model or a pick of the user's, whichever.
+            origin = self._origin_of(call, identity)
+            stand_in = bool(origin) and not fallback_chain._same(identity, origin)
             row = {"at": time.time(), "model": model_label(identity),
-                   "for": model_label(primary) if stand_in else "",
+                   "for": model_label(origin) if stand_in else "",
                    "first_s": first_s, "total_s": total}
             if stand_in:
-                # 1.8.3.0 (D2 b): which model the selector should show again, as the user wrote it, and
-                # whether Hermes itself moved off it (a hand-over to another provider). A sibling that
-                # answered inside KAME left Hermes on the main model: nothing to put back.
-                written = fallback_chain.entry_source(primary)
-                row["main"] = {"provider": primary.split(":", 1)[0],
-                               "model": written[0] if written else primary.split(":", 1)[-1]}
+                # 1.8.3.1 (D1): which model the selector should show again, as the user wrote it - the
+                # model the session was on, never "the main model" - and whether Hermes itself moved off
+                # it (a hand-over to another provider). A sibling that answered inside KAME left Hermes
+                # where it was: nothing to put back. ``main`` is the alias of 1.8.3.0, kept for one version.
+                # review R4: the entry as the config wrote it (unsuffixed), else the string Hermes sent for the
+                # reply's first call; with neither, no back_to - a lower-cased guess could name another model.
+                steps = fallback_chain.ladder(origin)
+                written = fallback_chain.entry_source(steps[0] if steps else origin)
+                name = written[0] if written else self._origin_written.get(origin)
+                if name:
+                    back_to = {"provider": origin.split(":", 1)[0], "model": name}
+                    row["back_to"] = back_to
+                    row["main"] = dict(back_to)
                 position = str(getattr(call, "identity", "") or "").lower()
-                row["switched"] = bool(position) and not fallback_chain._same(position, primary)
+                row["switched"] = bool(position) and not fallback_chain._same(position, origin)
+                why = str(getattr(call, "_kame_standin_why", "") or "")
+                if why:
+                    row["why"] = why
+            # 1.8.3.1 (D3): what the popover's "Last replies" tells besides the model and the time
+            facts = getattr(call, "_kame_facts", None) or {}
+            if int(facts.get("attempts") or 0) > 1:
+                row["attempts"] = int(facts["attempts"])        # answered on the Nth request of this call
+            if int(facts.get("resumes") or 0) > 0:
+                row["cut"] = True                                # the answer was cut off and finished on another key
+            if float(facts.get("waited_s") or 0.0) >= _REPLY_WAITED_NOTE_S:
+                row["waited_s"] = round(float(facts["waited_s"]), 1)
+            if getattr(call, "_kame_backup_won", False):
+                row["backup"] = True                             # a backup key of the same model answered first
             self.replies.append(row)
             mode = settings.reply_notice_mode()
             if mode == "never" or (mode == "switches" and not stand_in):
@@ -5097,7 +5303,8 @@ class KameTransport:
                            and not any(_same(x, e) for x in avoid)), None)
             if target is None:
                 return None
-            siblings = {e: (m, s) for e, m, s in (self._siblings(identity) or [])}
+            siblings = {e: (m, s) for e, m, s in
+                        (self._siblings(identity, origin=self._origin_of(call, identity)) or [])}
             if target not in siblings:
                 return None
             model, suffix = siblings[target]
@@ -5147,16 +5354,20 @@ class KameTransport:
             mode = settings.model_switch_mode()
             if mode == "never":
                 return None
-            if not self._reply_on_main(call):
-                return None  # 1.8.3.0 (decisions/0033 D1): the list is the main model's, not this reply's
             from .core import fallback_chain
 
             # 1.8.2.9 (decisions/0030, review H1): what Hermes can be handed is decided from
             # the position Hermes is on (``call.identity``), not from the local model, which
             # a circle or a race win may have moved - Hermes' chain only goes down.
-            later = fallback_chain.later_entries(getattr(call, "identity", "") or identity)
+            # 1.8.3.1 (decisions/0034 D1): the entries after that position in the ladder of the model
+            # the reply started on, whichever model that is.
+            origin = self._origin_of(call, identity)
+            later = self._later(call, identity)
             if not later:
                 return None
+            # 1.8.3.1 (review R2): what Hermes itself can be handed (its list, never the main model unless
+            # it is the origin); ``later`` stays whole for KAME's own stand-in.
+            hand = self._hermes_later(call, identity)
             # Only worth handing over if something after that position could answer - a
             # chain whose every later entry is known busy was walked down to its last, least
             # capable model. KAME circles back through the list instead (``_wrap_target``).
@@ -5186,17 +5397,18 @@ class KameTransport:
                 stand = self._stand_in_for(call, identity, later, avoid, why, slow, skipped)
                 if stand is not None:
                     return stand
+            if not any(self._entry_free(entry) for entry in hand):
+                return None         # only the main model is free, and Hermes cannot be handed to it
             now = time.time()
             memo_key = self._memo_key(call, identity)
             if now < self._handover_until.get(memo_key, 0.0):
                 return None
-            if not any(self._entry_usable(entry) for entry in later):
+            if not any(self._entry_usable(entry) for entry in hand):
                 return None
-            primary = fallback_chain.primary_identity()
             if why == "busy":
                 back = self._busy_window.get(identity, _BUSY_FIRST_S)
             else:
-                back = self._soonest_back_s(primary) if primary else None
+                back = self._soonest_back_s(origin) if origin else None
                 if back is None:
                     back = eta if eta is not None else 0.0
                 # A slow model gets a short break before it is asked again.
@@ -5210,10 +5422,11 @@ class KameTransport:
             # that reply hands over again before any request (see the call start).
             reset_at = now + _HANDOVER_HOST_BACK_S
             self._handover_until[memo_key] = min(back_at, now + _HANDOVER_MEMO_S)
-            self._handover_later[memo_key] = tuple(later)
+            self._handover_later[memo_key] = tuple(hand)
             # 1.8.3.0 (D1): the reply Hermes rebuilds on one of these entries is this reply's walk.
-            for entry in later:
-                self._walk_permits[entry] = now + _WALK_PERMIT_S
+            # 1.8.3.1 (review R1): never the main model - Hermes does not walk to it.
+            for entry in hand:
+                self._walk_permits[entry] = (now + _WALK_PERMIT_S, origin)
             healthy = self.engine.healthy_count(identity, keys)
             if skipped is not None:
                 said = (f"{model_label(identity)} was slow or busy moments ago - skipped for this "
@@ -5314,6 +5527,8 @@ class KameTransport:
                 self,
                 {
                     "kind": "waiting",
+                    "identity": identity,
+                    "model": model_label(identity),
                     "healthy": healthy,
                     "keys": total,
                     "eta_s": remaining,

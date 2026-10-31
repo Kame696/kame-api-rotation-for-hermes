@@ -209,7 +209,7 @@ def test_all_later_known_slow_but_an_earlier_model_free_still_gets_a_clock(fresh
     fresh._note_busy("gemini:gemini-race-four:global")
     call = R.FakeCall(silent_pool())
     call.identity = "gemini:gemini-race-two:global"
-    call._kame_on_main = True       # 1.8.3.0 (D1): Hermes walked here from the main model
+    call._kame_origin = R.IDENTITY  # 1.8.3.1 (D1): Hermes walked here from the main model
     call.kwargs["model"] = "gemini-race-two"
     assert fresh._slow_after(call, "gemini:gemini-race-two:global", False) is not None
 

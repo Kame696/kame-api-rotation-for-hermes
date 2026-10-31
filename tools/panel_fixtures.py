@@ -128,7 +128,15 @@ def build(name: str, home: Path, m) -> dict:
             engine.mark(MODELS[0], key, False, 3600.0 * 5, "daily")
         engine.mark(MODELS[0], pool_keys[12], False, 40.0, "per_minute")
         transport.replies.append({"at": now - 8, "model": "gemini-3.7-flash", "for": "gemini-3.8-flash", "first_s": 1.6, "total_s": 2.3,
-                                  "main": {"provider": "gemini", "model": "gemini-3.8-flash"}})
+                                  "main": {"provider": "gemini", "model": "gemini-3.8-flash"},
+                                  "back_to": {"provider": "gemini", "model": "gemini-3.8-flash"}})
+        # 1.8.3.1 (D3): the facts a reply row can carry besides the model and the time
+        transport.replies.append({"at": now - 30, "model": "gemini-3.8-flash", "for": "", "first_s": 2.0, "total_s": 4.1,
+                                  "attempts": 2, "backup": True, "cut": True, "waited_s": 40.0})
+        transport.replies.append({"at": now - 12, "model": "gemini-3.7-flash", "for": "gemini-3.8-flash", "first_s": 1.6,
+                                  "total_s": 3.0, "why": "busy"})
+        transport.replies.append({"at": now - 3, "model": "gemini-3.8-flash", "for": "", "first_s": None, "total_s": None,
+                                  "failed": True, "reason": "the request failed"})
         for _ in range(30):
             transport._tally(0)
         for _ in range(5):

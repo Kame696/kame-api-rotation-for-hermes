@@ -75,8 +75,9 @@ class ScriptCall(R.FakeCall):
     def __init__(self, model, script):
         super().__init__(R.Pool({}), kwargs=dict(R.REQUEST, model=model))
         self.identity = "gemini:" + model
-        # 1.8.3.0 (D1): a call on a later model is a reply Hermes walked down the list: it keeps its permission.
-        self._kame_on_main = True
+        # 1.8.3.1 (D1): a call on a later model is a reply Hermes walked down the list from the main
+        # model (1.8.3.0 called this "keeps its permission"): its origin is the main model.
+        self._kame_origin = FIRST
         self.script = {k: (list(v) if isinstance(v, list) else [v]) for k, v in script.items()}
         self.models_asked = []
 

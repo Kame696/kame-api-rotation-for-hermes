@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .region import _REGION_RE
+
 logger = logging.getLogger(__name__)
 
 _yaml_said = False
@@ -232,8 +234,18 @@ def forget() -> None:
 
 
 def _same(identity: str, entry: str) -> bool:
-    """KAME suffixes some identities (``gemini:m:global``); compare the prefix."""
-    return identity == entry or identity.startswith(entry + ":")
+    """KAME suffixes some identities (``gemini:m:us-central1``); compare the prefix.
+
+    1.8.3.1 (review R13): a suffix counts only when KAME itself adds it. The one KAME adds is the
+    region of ``Carousel.identity(provider, model, region)`` (``core/region.py``: ``global``, ``us-central1``,
+    a bare ``us`` / ``eu`` ..., ``az-<resource>``, ``xr-<prefix>``). A model's own colon tag
+    (``ollama:llama3:8b``) is another model than the listed ``ollama:llama3``."""
+    if identity == entry:
+        return True
+    if not identity.startswith(entry + ":"):
+        return False
+    suffix = identity[len(entry) + 1:]
+    return bool(_REGION_RE.match(suffix)) or suffix.startswith(("az-", "xr-"))
 
 
 def later_entries(identity: str, home: Optional[Path] = None) -> List[str]:
@@ -256,43 +268,39 @@ def primary_identity(home: Optional[Path] = None) -> Optional[str]:
     return read(home)[0]
 
 
-def _listed(config: Any) -> List[str]:
-    """Every identity written in the list itself, the main model included if it was written there."""
-    out: List[str] = []
-    if isinstance(config, dict):
-        for key in ("fallback_providers", "fallback_model"):
-            value = config.get(key)
-            rows = value if isinstance(value, list) else [value] if isinstance(value, dict) else []
-            for row in rows:
-                if isinstance(row, dict):
-                    ident = _identity(row.get("provider"), row.get("model"))
-                    if ident:
-                        out.append(ident)
-    return out
+def ladder(origin: str, home: Optional[Path] = None) -> List[str]:
+    """The models KAME may use for a reply that STARTS on ``origin``, in order. (1.8.3.1, decisions/0034 D1)
 
-
-def starts_on_main(identity: str, home: Optional[Path] = None) -> bool:
-    """May a reply that STARTS on ``identity`` use the fallback list? (1.8.3.0, decisions/0033 D1)
-
-    Only the main model may: Hermes' ``model.default``, and only when that model is not itself an
-    entry of ``fallback_providers`` - a list model chosen as the default has the rest of the list
-    "after" it only by accident. Anything else (a model picked by hand, a secondary tile) answers
-    with its own keys alone. With no main model known, or no model name to judge, there is nothing
-    to decide by and the answer is True: the 1.8.2.9 behaviour is kept.
+    ``ladder(X) = [X] + ([main] + list, in the user's order, X removed)``. For X = the main model this is
+    the order of 1.8.3.0 (``[main] + list``); for a list model picked by hand, or any model nobody
+    listed, the pick comes first and the rest of the user's own words follow. Identities are lower case;
+    an origin that carries a pool suffix (``gemini:m:global``) is written as the list entry it belongs
+    to. With no list known (no list, no config, a config that cannot be read) the ladder is ``[X]``: no
+    list means no switch, as before. An empty origin is not a model: the user's order alone.
     """
     home = home if home is not None else _home()
-    kind, config, memo = _config(home)
-    if kind != _OK:
-        return True
-    primary = read(home)[0]
-    if not primary or not identity:
-        return True
-    if not _same(identity, primary):
-        return False
-    listed = memo.get("listed")
-    if listed is None:
-        listed = memo["listed"] = tuple(_listed(config))
-    return primary not in listed
+    primary, chain = read(home)
+    order = ([primary] if primary else []) + list(chain)
+    origin = str(origin or "").strip().lower()
+    if not chain:
+        return [origin] if origin else []
+    if not origin:
+        return order
+    first = next((entry for entry in order if _same(origin, entry)), origin)
+    return [first] + [entry for entry in order if entry != first]
+
+
+def after(origin: str, position: str, home: Optional[Path] = None) -> List[str]:
+    """What follows ``position`` in ``ladder(origin)``.
+
+    ``[]`` at the last entry. A position the ladder does not hold (a model Hermes landed on by itself)
+    starts a ladder of its own: ``ladder(position)[1:]``."""
+    steps = ladder(origin, home)
+    position = str(position or "").strip().lower()
+    for index, entry in enumerate(steps):
+        if position and _same(position, entry):
+            return steps[index + 1:]
+    return ladder(position, home)[1:] if position else steps[1:]
 
 
 #: Hermes' own default for ``agent.api_max_retries`` (``hermes_cli/config_defaults.py``).
