@@ -60,6 +60,15 @@ jobs:
       - name: Install Hermes into its own venv
         run: |
           cd "$KAME_HERMES_ROOT"
+          if [ -f uv.lock ] && grep -q '^override-dependencies' pyproject.toml; then
+            # v0.23.1 and later resolve only with uv: [tool.uv] override-dependencies
+            # (Pillow over browser-harness's exact pin), which pip does not read.
+            python -m pip install uv
+            UV_PROJECT_ENVIRONMENT=venv uv sync --extra anthropic --extra messaging --group dev --group test
+            venv/bin/python -m pytest --version
+            venv/bin/python -m hermes_cli.main --version || true
+            exit 0
+          fi
           python -m venv venv
           venv/bin/python -m pip install --upgrade pip
           if grep -q '^\[dependency-groups\]' pyproject.toml; then
