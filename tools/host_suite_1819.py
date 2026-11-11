@@ -75,6 +75,13 @@ EXPECTED_DIVERGENCE = {
         "mocks agent.auxiliary_client.OpenAI; pinned by test_facade_1819::TestHermesHeadersReachKamesClient",
     "tests/hermes_cli/test_gemini_provider.py::TestGeminiAgentInit::test_gemini_resolve_provider_client_uses_native_client":
         "mocks GeminiNativeClient; KAME's client is a GeminiNativeClient subclass (test_facade_1819::TestTheShapeHermesExpects)",
+    # Hermes v0.23.1. Measured 2026-11-10 by running this one test three ways under the interposer: it
+    # fails with the gate's per-test re-registration below, and passes with KAME loaded and registered
+    # once, which is all real use ever does (``_REGISTERED = _register_all()`` at import, inside
+    # discovery). The re-registration lands between the test's fixtures and its body, a moment Hermes
+    # itself never registers a profile in. (The probe's gemini lookup alone does not cause it.)
+    "tests/providers/test_profile_home_layers.py::test_plugin_installed_after_discovery_is_found_without_a_restart":
+        "the gate's per-test _register_all, not KAME: passes with KAME registered once as in real use",
 }
 
 INTERPOSER = r'''

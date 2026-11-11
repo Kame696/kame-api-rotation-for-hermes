@@ -34,9 +34,12 @@ jobs:
       - name: Install pytest
         # pytest-timeout turns a test that never returns into a named failure
         # instead of a job cancelled at the time limit with no name on it.
-        # httpx is Hermes' own HTTP library; the speech provider (1.8.4.0) is built on it,
-        # as it runs inside Hermes. Everything else is the standard library.
-        run: python -m pip install pytest pytest-timeout httpx
+        # Two libraries Hermes itself provides, so the plugin finds them at runtime:
+        # httpx (the speech provider is built on it) and a YAML reader for config.yaml
+        # (Hermes' own hermes_yaml ships inside Hermes; PyYAML is the reader the plugin
+        # falls back to). Without a YAML reader the fallback list is never read and the
+        # tests of the fallback ladder wait for a key that never comes back.
+        run: python -m pip install pytest pytest-timeout httpx pyyaml
       - name: Run the offline suite
         env:
           PYTHONIOENCODING: utf-8

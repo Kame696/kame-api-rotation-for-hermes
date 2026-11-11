@@ -49,8 +49,9 @@ shipped on its own: everything it held is here, with what the second review corr
 - **A stray comma, space or line break around your key no longer breaks it.** `KEY,` and a key pasted
   with a line break are read as the key. A credential that has a separator of its own (`id|secret`,
   `Bearer ...`) is sent whole, as it always was.
-- **Checked against Hermes v0.23.0**, and `host_assumptions` now fails if Hermes adds a safety wording KAME does
-  not know.
+- **Checked against Hermes v0.23.0 and v0.23.1**: the host gates on both, Hermes' own provider and credential
+  suites with KAME's client on v0.23.1, a live reply on v0.23.0. `host_assumptions` now fails if Hermes adds a
+  safety wording KAME does not know.
 
 ---
 

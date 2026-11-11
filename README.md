@@ -532,7 +532,8 @@ The panel explains every one of them in full, with its environment variable.
 | Check | Result |
 |---|---|
 | Plugin suite | **0 failing**, 3,910 passing, 4 expected failures |
-| Host gates | `host_prose` ok; `host_assumptions` ok, and it now fails if Hermes adds a safety wording KAME does not know; `host_corpus` on Hermes v0.23.0: 200 of 200 alone, 196 of 200 with KAME (the verdicts KAME changes on purpose) |
+| Host gates | `host_prose` ok; `host_assumptions` ok, and it now fails if Hermes adds a safety wording KAME does not know; `host_corpus` on Hermes v0.23.0 and v0.23.1: 200 of 200 alone, 196 of 200 with KAME (the verdicts KAME changes on purpose); Hermes' own provider and credential suites on v0.23.1 answer the same with KAME's client (56 clients built) |
+| Live on Hermes v0.23.0 | real replies with real 503s on the main model: answered in 14 to 20 s; Hermes alone gave no answer in 200 s |
 | Fault injection | 5,000 calls with random refusals, cuts and timeouts (`tools/chaos.py`) and 300 raced replies, some of them repeating text (`tools/race_chaos.py`): 0 defects |
 | Installed | four Hermes profiles, the daily live check passing in each, real replies through the gateway |
 
