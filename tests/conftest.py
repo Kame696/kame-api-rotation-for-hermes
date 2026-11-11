@@ -114,7 +114,35 @@ _RETIRED_IDS = {
 }
 
 
+#: Tests of research tools and their data, which stay in the development tree and are not part of
+#: the published repository. In a tree without them each file is skipped and says what it reads;
+#: where they are present (the development tree) it runs as before. Found by the public CI of
+#: 1.8.4.1, the first run that reached the end of the suite.
+_DEV_ONLY_INPUTS = {
+    "tests/test_1_8_2_7_provider_gate_floor.py": ("tools/provider_doc_gate.py", "research/1.8.2.7/expected"),
+    "tests/test_provider_evidence_index.py": ("tools/provider_evidence_index.py",),
+    "tests/test_research_1818.py": ("tools/latency_research_1818.py", "tools/selection_research_1818.py",
+                                    "tools/summarize_research_1818.py"),
+    "tests/test_v1_7_0_6_catalogue.py": ("tools/export_error_catalogue.py",),
+    "tests/test_v1_7_0_7_audit.py": ("research/1.7.0.7/initial-cases.json",),
+}
+
+
+def _skip_dev_only(items) -> None:
+    root = Path(__file__).resolve().parents[1]
+    for item in items:
+        nodeid = item.nodeid.replace("\\", "/")
+        if not nodeid.startswith("tests/"):
+            nodeid = "tests/" + nodeid
+        needs = _DEV_ONLY_INPUTS.get(nodeid.split("::")[0])
+        missing = [rel for rel in needs or () if not (root / rel).exists()]
+        if missing:
+            item.add_marker(pytest.mark.skip(
+                reason="reads " + ", ".join(missing) + ", kept in the development tree, not published"))
+
+
 def pytest_collection_modifyitems(config, items):
+    _skip_dev_only(items)
     # KAME_RUN_RETIRED=1 runs the retired tests too: how a retirement is checked
     # to still be needed after its subject comes back.
     if os.environ.get("KAME_RUN_RETIRED") == "1":

@@ -451,8 +451,11 @@ def build(package: str) -> types.ModuleType:
     # pytest 9.2 reads a module's old value from its ``__dict__``. A forwarded
     # name is not there, so its undo became ``delattr``, which removed the real
     # function from ``transport`` for every later test. Deleting a name set
-    # through this module therefore puts the original back.
-    forwarded: Dict[str, Any] = {}
+    # through this module therefore puts back the value it replaced. A stack,
+    # not one slot: a test that patches the same name twice is undone twice,
+    # and with one slot the second undo deleted the real function again
+    # (``test_storm``'s two driven clocks, found by the public CI on pytest 9.2).
+    forwarded: Dict[str, List[Any]] = {}
 
     class _Forwarding(types.ModuleType):
         """Reads and ``monkeypatch.setattr`` both land on ``transport`` itself."""
@@ -462,14 +465,14 @@ def build(package: str) -> types.ModuleType:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if name not in self.__dict__ and hasattr(transport, name):
-                forwarded.setdefault(name, getattr(transport, name))
+                forwarded.setdefault(name, []).append(getattr(transport, name))
                 setattr(transport, name, value)
             else:
                 super().__setattr__(name, value)
 
         def __delattr__(self, name: str) -> None:
-            if name in forwarded:
-                setattr(transport, name, forwarded.pop(name))
+            if forwarded.get(name):
+                setattr(transport, name, forwarded[name].pop())
             elif name not in self.__dict__ and hasattr(transport, name):
                 delattr(transport, name)
             else:
