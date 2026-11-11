@@ -45,6 +45,8 @@ def load(home: Path):
         facade=importlib.import_module(f"{name}.facade"),
         chain=importlib.import_module(f"{name}.core.fallback_chain"),
         settings=importlib.import_module(f"{name}.settings"),
+        lifetime=importlib.import_module(f"{name}.core.lifetime"),
+        pacing=importlib.import_module(f"{name}.core.pacing"),
     )
     return mods
 
@@ -67,9 +69,19 @@ def build(name: str, home: Path, m) -> dict:
     config = ("model:\n  provider: gemini\n  default: gemini-3.8-flash\n" if name == "no-fallback-list"
               else long_list if name == "long-list" else CHAIN)
     (home / "config.yaml").write_text(config, encoding="utf-8")
-    m.settings.forget(); m.chain.forget()
     pool_keys = keys(14)
     activity = None
+    # 1.8.4.0: the lifetime counters and the reserve list belong to one situation each, never leak into
+    # the next. The counters are written to a throwaway home; the real ones are never touched.
+    life = m.lifetime.LIFETIME
+    life.reset_for_tests()
+    for stale in (home / "plugin-data").rglob("lifetime.json"):
+        stale.unlink()
+    os.environ.pop("KAME_KEY_RESERVE", None)
+    if name == "healthy-idle":
+        os.environ["KAME_KEY_RESERVE"] = m.carousel.fingerprint(pool_keys[13])
+    m.settings.forget(); m.chain.forget()
+    m.pacing.PACER.clear(); m.pacing.PACER._synced_at.clear()
 
     if name != "first-run":
         for model in MODELS:
@@ -84,6 +96,15 @@ def build(name: str, home: Path, m) -> dict:
         for _ in range(3):
             transport._tally(1)
         transport.replies.append({"at": now - 20, "model": "gemini-3.8-flash", "for": "", "first_s": 1.9, "total_s": 2.4})
+        # 1.8.4.0 (E5, E6, U6): what KAME did over time, and the provider's own daily number
+        life._clock = lambda: now - 26 * 86400        # the counters began 26 days ago
+        for index in range(1240):
+            life.reply(saved=index < 96, key_switches=1 if index < 96 else 0)
+        life._clock = time.time
+        for _ in range(143):
+            life.sent(MODELS[0])
+        life.note_limit(MODELS[0], {"error": {"details": [{"violations": [{
+            "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}]}})
     elif name == "answering":
         call = SimpleNamespace(channel="main", task="", identity=MODELS[0])
         m.events.INFLIGHT.start(call)
@@ -171,6 +192,10 @@ def main() -> None:
              "first-run", "sixty-keys", "no-fallback-list", "all-resting", "racing", "probing", "side-jobs", "long-list"]
     for name in names:
         document = build(name, home, m)
+        # The fixtures are published: a path of the machine that wrote them says whose machine it was.
+        ui = document.get("desktop_ui")
+        if isinstance(ui, dict) and ui.get("path"):
+            ui["path"] = "hermes-kame-api-rotation/desktop/plugin.js"
         (OUT / f"{name}.json").write_text(json.dumps(document, indent=1, sort_keys=True), encoding="utf-8")
         print(f"{name:18s} {len(json.dumps(document)):7d} bytes")
 

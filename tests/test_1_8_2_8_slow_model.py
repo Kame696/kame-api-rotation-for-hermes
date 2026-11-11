@@ -13,6 +13,7 @@ Run:  uv run --with pytest --with pyyaml python -m pytest tests/test_1_8_2_8_slo
 from __future__ import annotations
 
 import os
+import threading
 import time
 from types import SimpleNamespace
 
@@ -258,10 +259,27 @@ def test_when_the_raced_model_is_silent_too_the_one_after_it_joins(fresh, tmp_pa
     monkeypatch.setattr(transport, "_SLOW_S", {False: (5.0, 5.0, 5.0), True: (5.0, 5.0, 5.0)})
     monkeypatch.setattr(transport, "_CROSS_COLD_S", 0.2)
     monkeypatch.setattr(transport, "_CROSS_STEP_S", 0.2)
-    call = ModelAwareCall(silent_pool(), fast_model="gemini-race-three")
-    started = time.monotonic()
-    out = list(fresh.stream(call))
-    assert R.shown(out) == "fast answer" and time.monotonic() - started < 1.5
+    # 1.8.4.0 (C2): this used to assert "< 1.5 s" on the real clock and failed when the whole suite was
+    # running. The two silent models now stay silent for an hour, so a reply that waited for either of them
+    # cannot finish at all; the test waits on the reply being done (an event) and fails only if it never is.
+    call = ModelAwareCall(R.Pool({k: [[3600.0, R.chunk("late", finish="stop")]] * 3 for k in R.KEYS}),
+                          fast_model="gemini-race-three")
+    done = threading.Event()
+    box = {}
+
+    def reply():
+        try:
+            box["out"] = list(fresh.stream(call))
+        except BaseException as error:     # reported below, on the test's own thread
+            box["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=reply, daemon=True).start()
+    assert done.wait(60.0), "the reply was held for a silent model"
+    assert "error" not in box, box.get("error")
+    out = box["out"]
+    assert R.shown(out) == "fast answer"
     assert call.models_asked == ["gemini-race", "gemini-race-two", "gemini-race-three"]
     assert getattr(call, "_kame_answered_by") == "gemini:gemini-race-three"
     assert fresh._entry_busy("gemini:gemini-race-two")          # the silent one sits out too

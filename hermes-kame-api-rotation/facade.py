@@ -26,12 +26,14 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import settings, wires
 from .core import multikey
+from .core.keys import parse_keys
 from .core.carousel import Carousel, fingerprint
 from .core.region import parse_region, region_from_overrides
 from . import settings
@@ -177,6 +179,13 @@ def _note_shape(provider: str, rows: List[Any], keys: List[str]) -> None:
         logger.debug("kame: could not note the pool shape", exc_info=True)
 
 
+#: What makes a resolved credential a LIST: the separators ``core.keys`` splits on, and any whitespace
+#: (it separates candidates in a paste, and no key contains one).
+_SEPARATOR_IN_VALUE = re.compile(r"[,;|\s]")
+#: What may be left of a value once its key is taken out and still leave a plain key (1.8.4.1, K1).
+_ONLY_NOISE = re.compile(r"[,;|\s\"'\[\]()]*")
+
+
 class _KeySource:
     """Every key this client may send, refreshed on a short clock."""
 
@@ -198,8 +207,25 @@ class _KeySource:
         # The key Hermes resolved for this client is a working credential
         # whether or not the pool knows it — a comma-joined variable, a key
         # set by hand — and dropping it would narrow what Hermes would have sent.
-        parts, _rejected = multikey.split_value(self.api_key)
-        for part in (parts if len(parts) > 1 else ([self.api_key] if self.api_key else [])):
+        # 1.8.4.0 round 2 (F10): a line with a separator is never sent whole. It adds the keys the
+        # pool's own parser reads from it (none when it parses to none: ``"K1,"`` is ``K1``,
+        # ``",,"`` is nothing); only a value without a separator is kept as it is.
+        # 1.8.4.1 (K1): a credential is cut only when the cut loses nothing but noise. ``12|secret``,
+        # ``Bearer secret``, ``K1,short`` and ``short,tiny`` are one credential Hermes sends as it is
+        # (1.8.3.1 sent them whole; 1.8.4.0 cut them, and a pool row holding the whole value then
+        # added the cut piece as a phantom second key). A value with no separator is not looked at.
+        if _SEPARATOR_IN_VALUE.search(self.api_key):
+            parsed = parse_keys(self.api_key)[0]
+            rest = self.api_key
+            for part in parsed:
+                rest = rest.replace(part, "")
+            if len(parsed) >= 2 or _ONLY_NOISE.fullmatch(rest):
+                wanted = parsed
+            else:
+                wanted = [self.api_key]
+        else:
+            wanted = [self.api_key] if self.api_key else []
+        for part in wanted:
             if part not in entries:
                 entries[part] = None
                 keys.append(part)
@@ -210,6 +236,18 @@ class _KeySource:
     def entry(self, key: str) -> Any:
         with self._lock:
             return self._entries.get(key)
+
+
+def _api_key_type() -> str:
+    """The host's name for a plain API-key credential (``AUTH_TYPE_API_KEY``)."""
+    try:
+        from agent.credential_pool import AUTH_TYPE_API_KEY
+
+        return str(AUTH_TYPE_API_KEY)
+    except Exception:
+        # Without the host's constant the safe reading is its documented value;
+        # any other type stays un-raced, so a wrong guess costs a backup, not a plan.
+        return "api_key"
 
 
 class _FacadeCall(Call):
@@ -296,6 +334,18 @@ class _FacadeCall(Call):
 
     def entry(self, key: str) -> Any:
         return self._client._kame_keys.entry(key)
+
+    def may_back_up(self, key: str) -> bool:
+        """E3 (1.8.4.0): only a plain API key is raced; a subscription credential never is.
+
+        The rule is on the credential's TYPE as the host records it, never on the
+        provider. A key set by hand has no entry and is a plain key.
+        """
+        entry = self.entry(key)
+        if entry is None:
+            return True
+        kind = str(getattr(entry, "auth_type", "") or "")
+        return not kind or kind == _api_key_type()
 
     def client_for(self, key: str, attempt: int) -> Any:
         return self._client._kame_inner(key, attempt, self.identity, self.kwargs, self.streaming)

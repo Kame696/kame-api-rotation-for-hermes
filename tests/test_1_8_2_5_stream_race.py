@@ -193,13 +193,13 @@ def run(t, call):
 
 class TestTheRace:
     def test_a_slow_first_word_is_beaten_by_a_backup(self, fresh):
-        pool = Pool({KEYS[0]: [[3.0, chunk("slow")]],
+        pool = Pool({KEYS[0]: [[30.0, chunk("slow")]],
                      KEYS[1]: [[0.05, chunk("fast "), chunk("answer", finish="stop")]],
                      KEYS[2]: [[0.05, chunk("fast "), chunk("answer", finish="stop")]],
                      KEYS[3]: [[0.05, chunk("fast "), chunk("answer", finish="stop")]]})
         out, elapsed = run(fresh, FakeCall(pool))
         assert shown(out) == "fast answer"
-        assert elapsed < 1.0, elapsed
+        assert elapsed < 15.0, elapsed     # 1.8.4.0 (C2): against a 30 s leg, so a busy machine cannot fail it
         primary = pool.opened[0][1]
         assert primary.response.closed.is_set()  # the slow leg was cut, not left running
 

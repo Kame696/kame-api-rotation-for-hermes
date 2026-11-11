@@ -9,7 +9,7 @@ were cut from ``dispatch_binding`` verbatim.
 
 Hundreds of tests written against 1.8.1.8 pin those decisions. Rewriting them
 would mean the new code is checked by tests written *for* the new code, which
-is the trap ``kame-teste-escrito-pelo-proprio-erro`` describes. So instead
+is the trap of a test written by the same mistake it should catch. So instead
 they keep their own words: ``conftest.py`` answers ``<package>.dispatch_binding``
 with a module built here, whose names resolve to ``<package>.transport`` and
 whose ``DispatchBinding.run`` turns the old ``(original, agent, api_kwargs)``
@@ -448,6 +448,12 @@ def build(package: str) -> types.ModuleType:
             finally:
                 _AGENT.reset(token)
 
+    # pytest 9.2 reads a module's old value from its ``__dict__``. A forwarded
+    # name is not there, so its undo became ``delattr``, which removed the real
+    # function from ``transport`` for every later test. Deleting a name set
+    # through this module therefore puts the original back.
+    forwarded: Dict[str, Any] = {}
+
     class _Forwarding(types.ModuleType):
         """Reads and ``monkeypatch.setattr`` both land on ``transport`` itself."""
 
@@ -456,12 +462,15 @@ def build(package: str) -> types.ModuleType:
 
         def __setattr__(self, name: str, value: Any) -> None:
             if name not in self.__dict__ and hasattr(transport, name):
+                forwarded.setdefault(name, getattr(transport, name))
                 setattr(transport, name, value)
             else:
                 super().__setattr__(name, value)
 
         def __delattr__(self, name: str) -> None:
-            if name not in self.__dict__ and hasattr(transport, name):
+            if name in forwarded:
+                setattr(transport, name, forwarded.pop(name))
+            elif name not in self.__dict__ and hasattr(transport, name):
                 delattr(transport, name)
             else:
                 super().__delattr__(name)

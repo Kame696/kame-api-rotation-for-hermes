@@ -58,6 +58,7 @@ from .core.carousel import (
     is_terminal,
 )
 from .core.classify import classify, looks_like_upstream_wrapper, resolve_evidence_body
+from .core.lifetime import LIFETIME
 from .core.quota import QuotaScope
 
 logger = logging.getLogger(__name__)
@@ -1208,14 +1209,14 @@ class _ReplayStitcher:
             return buffered[len(self._seen):]
         return self._delegate.feed(buffered)
 
-    def flush(self) -> str:
+    def flush(self, *, cut: bool = False) -> str:
         if not self._resolved:
             buffered, self._buffer = self._buffer, ""
             self._resolved = True
             if self._seen.startswith(buffered):
                 return ""
-            return self._delegate.feed(buffered) + self._delegate.flush()
-        return self._delegate.flush()
+            return self._delegate.feed(buffered) + self._delegate.flush(cut=cut)
+        return self._delegate.flush(cut=cut)
 
 
 #: Identities whose provider refused a request ending in an assistant turn.
@@ -1341,6 +1342,57 @@ def attempt_read_timeout(base_url: Any, attempt: int, *, identity: str = "", kwa
     return float(seconds)
 
 
+def _backup_keys(call: "Call", keys: Sequence[str], all_keys: Optional[Sequence[str]] = None) -> List[str]:
+    """``keys`` without the ones that must never be raced as a backup (1.8.4.0).
+
+    Two reasons, both on the credential and never on the provider: the call says a
+    subscription credential is not raced (E3, ``Call.may_back_up``), and the user
+    listed the key as a reserve (E4, ``key_reserve``). When EVERY key of the model
+    is a reserve the setting is read as not set, the same as in ``select``.
+    """
+    try:
+        from .core.pacing import PACER as _pacer
+        every = list(all_keys) if all_keys is not None else list(keys)
+        spend_reserve = bool(every) and all(_pacer.is_reserve(k) for k in every)
+    except Exception:
+        _pacer, spend_reserve = None, True
+    out: List[str] = []
+    for key in keys:
+        try:
+            ok = bool(call.may_back_up(key))
+        except Exception:
+            ok = True   # a failing question never shrinks the pool
+        if ok and _pacer is not None and not spend_reserve:
+            try:
+                ok = not _pacer.is_reserve(key)
+            except Exception:
+                ok = True
+        if ok:
+            out.append(key)
+    return out
+
+
+def _race_keys(keys: Sequence[str], identity: str = "") -> List[str]:
+    """``keys`` a race leg on ANOTHER model of the list may be asked with (1.8.4.0 round 2, R1).
+
+    A cross-model leg, a widened leg and the start probe are backup requests, so E4 holds for
+    them: a reserve key is never one. Every key reserved reads the setting as not set, as in
+    ``select``. E3 (subscriptions) stays with the same-model backups: the cross-model race is
+    a closed rule of 1.8.2.8 (speed above the first model, decisions/0028 D12) and is not changed here.
+    ``identity`` brings the setting up to date first, as ``select`` does: the leg may be the
+    first thing this model is asked after an edit.
+    """
+    every = list(keys)
+    try:
+        from .core.pacing import PACER as _pacer
+        if identity:
+            _pacer.sync_identity_settings(identity)
+        ordinary = [k for k in every if not _pacer.is_reserve(k)]
+    except Exception:
+        return every    # a failing question never shrinks the pool
+    return ordinary or every
+
+
 class Call:
     """What one request needs from the client that is making it.
 
@@ -1374,6 +1426,15 @@ class Call:
     def entry_id(self, key: str) -> str:
         entry = self.entry(key)
         return str(getattr(entry, "id", "") or "") if entry is not None else ""
+
+    def may_back_up(self, key: str) -> bool:
+        """Whether ``key`` may be asked as a BACKUP of a request already going out.
+
+        1.8.4.0 (E3): a subscription credential is never raced - a second request on
+        it spends the user's plan for nothing. The primary key of a call is never
+        asked about this: a subscription still answers its own reply.
+        """
+        return True
 
     def client_for(self, key: str, attempt: int) -> Any:  # pragma: no cover - interface
         raise NotImplementedError
@@ -1715,6 +1776,9 @@ class KameTransport:
             error=exc,
             error_type=type(exc).__name__,
         )
+        # 1.8.4.0 (E6): the daily limit a refusal states is kept for the ring's detail line.
+        # Display only: nothing in selection, rest or wait reads it.
+        LIFETIME.note_limit(identity, ev.body)
 
         if ev.status_code == 421:
             from .core.provider_rules import api_surface
@@ -2503,14 +2567,22 @@ class KameTransport:
         # KAME still knows busy (inside its busy window) is passed down the
         # chain at once, without spending a request on it.
         probe_leg: Optional[Tuple[str, str]] = None      # (busy model, its name as Hermes wrote it)
-        if time.time() < self._busy_until.get(identity, 0.0):
+        _start_now = time.time()
+        _start_until = self._busy_until.get(identity, 0.0)
+        _in_window = _start_now < _start_until
+        # 1.8.4.0 (E8): the TAIL of a storm - after the window, within max(first window, window) more -
+        # is raced like the window: where the start probe is allowed, the reply starts on the next model
+        # and the busy one is asked beside it. Where it is not, the tail is the sequential knock of 1.8.3.1.
+        _in_tail = (_start_until > 0.0 and not _in_window and
+                    _start_now < _start_until + max(_BUSY_FIRST_S, self._busy_window.get(identity, 0.0)))
+        if _in_window or _in_tail:
             plan = self._start_probe_plan(call, identity, stream, keys) if home_model else None
             if plan is not None and home_model:
                 # decisions/0032 C: start on the next model at once (as the hand-over would have), and
                 # ask the busy one again beside it - first sign of work wins; nothing waits for it.
                 probe_leg = (identity, str(home_model))
                 circle_to(plan, "probe")
-            else:
+            elif _in_window:
                 handover = self._maybe_hand_over(call, identity, keys, 0.0, False, waited=0.0, busy=True,
                                                  skipped=self._busy_until.get(identity, 0.0) - time.time(),
                                                  stand_in_ok=True, avoid=visited + excluded)
@@ -2926,7 +2998,7 @@ class KameTransport:
                     # they vanish between this key and the next (1.8.1.8 kept
                     # them through the cut response's own content).
                     try:
-                        tail = stitcher.flush()
+                        tail = stitcher.flush(cut=True)
                     except Exception:  # pragma: no cover - a pure string function
                         tail = ""
                     if tail:
@@ -3263,7 +3335,7 @@ class KameTransport:
                 # would build a partial stub from it; KAME continues it on
                 # another key first (1.1.1, 1.6.0.0 progress rule).
                 if stitcher is not None:
-                    tail = stitcher.flush()
+                    tail = stitcher.flush(cut=True)
                     if tail:
                         shown += tail
                         yield _text_chunk(tail)
@@ -3632,8 +3704,8 @@ class KameTransport:
                                    under_pressure=under_pressure, stream=False,
                                    reasoning=reasoning,
                                    est_prompt_tokens=_estimate_prompt_tokens(request)):
-                others = [k for k in keys if k != key
-                          and not (_pacer is not None and _pacer.same_scope(k, key))]
+                others = _backup_keys(call, [k for k in keys if k != key
+                                             and not (_pacer is not None and _pacer.same_scope(k, key))], keys)
                 hedge_key, hedge_status = self.engine.select(identity, others) if others else (None, "")
                 if hedge_key and hedge_status == "SUCCESS":
                     _hedge.note_hedge(identity)
@@ -3884,7 +3956,7 @@ class KameTransport:
                        and any(not leg.done for leg in legs)):
                     triggers.pop(0)
                     used = {leg.key for leg in legs}
-                    others = [k for k in keys if k not in used and not _pacer.same_scope(k, key)]
+                    others = _backup_keys(call, [k for k in keys if k not in used and not _pacer.same_scope(k, key)], keys)
                     healthy = self.engine.healthy_count(identity, keys)
                     if not others or (not burst and not _hedge.may_start_backup(
                             identity, healthy_count=healthy, under_pressure=self._quota_pressure(identity, keys),
@@ -3912,10 +3984,12 @@ class KameTransport:
                 while (cross and winner is None and now - race_started >= cross[0][2]
                         and any(not leg.done for leg in legs)):
                     target_id, target_model, _at = cross.pop(0)
+                    if target_id != probe and not self._race_ready(target_id, keys):
+                        continue    # 1.8.4.0 round 2 (R1): only its reserve key is free; nothing is claimed
                     if target_id != probe and not self._claim_probe(target_id):
                         continue    # another conversation asked this busy model a moment ago (0032 B4)
                     try:
-                        ckey, cstatus = self.engine.select(target_id, list(keys))
+                        ckey, cstatus = self.engine.select(target_id, _race_keys(keys, target_id))
                     except Exception:
                         ckey, cstatus = None, ""
                     if ckey and cstatus == "SUCCESS":
@@ -3924,6 +3998,7 @@ class KameTransport:
                         self._tally(_SPEED_RACE)
                         self._count_request(call, target_id)
                         cross_leg = _StreamLeg(race_q, ckey, call.client_for(ckey, attempt), is_hedge=True)
+                        cross_leg.race_kind = "probe" if (probe and target_id == probe) else "cross"
                         cross_leg.cross = target_id  # type: ignore[attr-defined]
                         cross_leg.cross_model = target_model  # type: ignore[attr-defined]
                         cross_leg.start(call.wire, crequest)
@@ -3954,13 +4029,16 @@ class KameTransport:
                     # the user's list joins, nothing already paid for is cut.
                     widen = (self._widen_candidate(call, identity, keys, taken)
                              if (widened < _WIDEN_MAX and slow_base is not None and not burst) else None)
+                    # 1.8.4.0 round 2 (F1): R1 does not apply to the widen. A widen it turned down fell
+                    # through to the hand-over below (every running leg cut, the best model marked
+                    # slow, and the hand-over's own request took that model's reserve key anyway).
                     if widen is not None and not self._claim_probe(widen[0] + widen[2]):
                         widen = None    # another conversation asked this busy model a moment ago
                     if widen is not None:
                         w_entry, w_model, w_suffix = widen
                         w_id = w_entry + w_suffix
                         try:
-                            wkey, wstatus = self.engine.select(w_id, list(keys))
+                            wkey, wstatus = self.engine.select(w_id, list(keys))   # E4 inside select puts a reserve key last
                         except Exception:
                             wkey, wstatus = None, ""
                         widened += 1
@@ -3970,6 +4048,7 @@ class KameTransport:
                             self._tally(_SPEED_RACE)
                             self._count_request(call, w_id)
                             wide_leg = _StreamLeg(race_q, wkey, call.client_for(wkey, attempt), is_hedge=True)
+                            wide_leg.race_kind = "widen"
                             wide_leg.cross = w_id  # type: ignore[attr-defined]
                             wide_leg.cross_model = w_model  # type: ignore[attr-defined]
                             wide_leg.start(call.wire, wrequest)
@@ -4291,8 +4370,8 @@ class KameTransport:
             _pacer = None
         chosen = [key]
         while len(chosen) < legs:
-            others = [k for k in keys if k not in chosen
-                      and not (_pacer is not None and _pacer.same_scope(k, key))]
+            others = _backup_keys(call, [k for k in keys if k not in chosen
+                                         and not (_pacer is not None and _pacer.same_scope(k, key))], keys)
             if not others:
                 break
             extra, status = self.engine.select(identity, others)
@@ -4696,6 +4775,11 @@ class KameTransport:
             entry = self._chain_entry(identity, self._ladder(call, identity))
             if entry is None:
                 return None
+            if not self._race_ready(identity, keys):
+                # 1.8.4.0 round 2 (R1): the probe is a race leg, and only a reserve key of this model is
+                # free. No probe: the window hands over as D8 does, the tail knocks as before E8, and
+                # either way the reserve key is spent only on this reply's own request.
+                return None
             later = self._later(call, identity)
             target = next((e for e in later if self._entry_free(e)), None)
             if target is None:
@@ -4721,6 +4805,28 @@ class KameTransport:
         except Exception:
             logger.debug("kame: could not plan a probe of the busy model", exc_info=True)
             return None
+
+    def _race_ready(self, identity: str, keys: Sequence[str]) -> bool:
+        """A race leg on ``identity`` could go out on a key that is not a reserve (1.8.4.0 round 2, R1).
+
+        True when no key is reserved, when every key is (the setting reads as not set), or when a
+        key outside the reserve is healthy for this model now. Never raises; a failing question
+        answers True, as it did before R1."""
+        try:
+            every = list(keys)
+            race = _race_keys(every, identity)
+            if len(race) == len(every):
+                return True
+            # F3: retirement is read over the whole pool, as select reads it: a retired ordinary
+            # key does not count while a reserve key stands (healthy_count over the race keys alone
+            # would fall back to the retired ones and call them ready).
+            race_set = set(race)
+            ordinary = [k for k in self.engine.standing(identity, every) if k in race_set]
+            if not ordinary:
+                return False
+            return self.engine.healthy_count(identity, ordinary) > 0
+        except Exception:
+            return True
 
     def _chain_entry(self, identity: str, order: Optional[Sequence[str]] = None) -> Optional[str]:
         """The entry of the user's list (or of ``order``, a reply's ladder) an identity - pool suffix and
@@ -5070,6 +5176,7 @@ class KameTransport:
 
     def _count_request(self, call: "Call", identity: str) -> None:
         """One integer add at every request start: the chat's or a background job's (decisions/0032 A7)."""
+        LIFETIME.sent(identity)     # 1.8.4.0 (E6): the same request, counted per hour for the last 24 hours
         try:
             hour = int(time.time() // 3600)
             bucket = self._requests.get(hour)
@@ -5274,6 +5381,14 @@ class KameTransport:
             if getattr(call, "_kame_backup_won", False):
                 row["backup"] = True                             # a backup key of the same model answered first
             self.replies.append(row)
+            # 1.8.4.0 (E5): the lifetime line. "Saved" = a chat reply answered after at least one failed
+            # attempt in this call (another key, a stand-in model, or a cut finished elsewhere) - the
+            # same definition as audit probes/time_lost.py. A race the next model won by being faster
+            # is a stand-in, but nothing failed, and the line says "provider error". Display only.
+            attempts = int(facts.get("attempts") or 0)
+            failed_over = stand_in and str(getattr(call, "_kame_standin_why", "") or "") != "slow"
+            LIFETIME.reply(saved=attempts > 1 or failed_over or int(facts.get("resumes") or 0) > 0,
+                           key_switches=max(0, attempts - 1), model_switches=1 if stand_in else 0)
             mode = settings.reply_notice_mode()
             if mode == "never" or (mode == "switches" and not stand_in):
                 return
@@ -5723,6 +5838,9 @@ class _StreamLeg:
         self.key = key
         self.client = client
         self.is_hedge = is_hedge
+        #: 1.8.4.0 round 2 (F4): ``"cross"``, ``"probe"`` or ``"widen"`` for a leg that asks another
+        #: model of the list; ``None`` for the reply's own legs. Read by ``tools/race_chaos.py``.
+        self.race_kind: Optional[str] = None
         self.started = time.monotonic()
         self.buffer: List[Any] = []
         self.done = False

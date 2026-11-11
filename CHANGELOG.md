@@ -7,6 +7,53 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.4.1] — 2026-11-10 — a blocked prompt stops at once, one number on the screen
+
+**What drove it.** A full audit of 1.8.3.1: 4,000 fault-injected calls found no crash, and 11,512 real attempts
+showed that rate limits are not where replies lose time. The cracks were in what the screen says, and in refusals
+no key can fix.
+
+1.8.4.0 was the build that came out of that audit. It was reviewed once more before release and never
+shipped on its own: everything it held is here, with what the second review corrected.
+
+- **A prompt no key can answer stops at once.** A provider's safety refusal on a 403 used to be read as a
+  refused key: every key was tried and rested, and two wordings never stopped at all. KAME now knows every
+  wording Hermes lists, so the refusal goes straight back and no key is punished. The same goes for
+  Anthropic's "extra usage is required for long context" 429, which only a shorter request can cure.
+- **One number on the screen.** The header, the chip and the sentence now give the same count: the keys of
+  the model your next reply goes to. It used to be possible to read "14 of 14" above "8 of 14", or "0 of 56"
+  with 14 keys.
+- **The empty line tells the truth.** "What KAME did" no longer says "every reply went straight out" before
+  any reply, or under a red banner. It says `No replies yet.`, or `Waiting for your keys. Nothing went wrong
+  on your side.`, or `Nothing to report: every reply went straight out.`
+- **What KAME did for you, over time.** The panel keeps a quiet line: `Since 12 Oct: 1,240 replies, 96 saved
+  from a provider error.` The counters stay on your machine and survive a restart and Clear pool.
+- **Sent in the last 24 hours.** Each model's detail shows how many requests went out and, when the provider
+  stated it, its own daily limit: `Sent in the last 24 hours: 143. The provider's own limit: 20 a day per
+  project.` Display only: nothing reads these numbers to pick a key, and there is no "left today" figure,
+  because the moment a provider's day ends has not been measured.
+- **Quick controls fit on a screen.** One line each, with the rest behind a `Why?` toggle.
+- **A very short cut answer is no longer repeated.** "Hello" cut and answered again as "Hello world" showed
+  "Hello Hello world". Longer answers were already clean.
+- **Subscriptions are never raced.** A backup request is sent only on a plain API key. A credential Hermes
+  records as a subscription still answers its own reply, but a second request on it would spend your plan for
+  nothing. The rule reads the credential's type, never the provider.
+- **A reply soon after your model was busy does not wait for it to refuse again.** It starts on the next model of
+  your list and asks yours beside it; whichever starts answering first is shown, yours included.
+- **Speech with your Gemini keys.** KAME registers a speech provider, `kame-gemini`. Every sentence goes to
+  the healthiest Gemini key; a refused key rests as long as Google said, and the same sentence goes to the next
+  one. It never waits for a rested key: with every key resting it fails at once and says when the first is back.
+  A short sentence Gemini mistakes for a chat message is asked again as a transcript to read aloud. Off until
+  you set `tts.provider: kame-gemini` in the profile's `config.yaml` (see the plugin's README). Hermes' live
+  voice mode is OpenAI only, so it cannot use these keys.
+- **A stray comma, space or line break around your key no longer breaks it.** `KEY,` and a key pasted
+  with a line break are read as the key. A credential that has a separator of its own (`id|secret`,
+  `Bearer ...`) is sent whole, as it always was.
+- **Checked against Hermes v0.23.0**, and `host_assumptions` now fails if Hermes adds a safety wording KAME does
+  not know.
+
+---
+
 ## [1.8.3.1] — 2026-10-30 — the fallback ladder starts on any model, one live line, a popover on the chip
 
 **What drove it.** 1.8.3.0 made the fallback list belong to the main model only: pick another model and

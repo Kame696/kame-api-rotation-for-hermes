@@ -240,6 +240,16 @@ KEY_REGION_OVERRIDES = "key_region_overrides"
 # old configuration that sets it keeps working.
 KEY_QUOTA_GROUPS = "key_quota_groups"
 
+# 1.8.4.0 (E4). Keys named here are the last to be used: only when every other
+# key of the model cannot answer, and never as a backup request. A comma list of
+# the short key labels the panel shows (same labels as KEY_QUOTA_GROUPS).
+#
+# Hidden before it shipped (see :data:`HIDDEN`). The owner, 2026-11-08: a box someone
+# must fill in before it does anything goes against "nothing to configure", and his
+# fallback list already covers a paid key on another provider. Still read, from the
+# config and from KAME_KEY_RESERVE; empty (the default) leaves every pick as in 1.8.3.1.
+KEY_RESERVE = "key_reserve"
+
 # 1.8.2.3. Adaptive hedging: send a backup request when the current call is
 # slower than the learned p95 TTFT for this pool:model.
 HEDGING_DISABLED = "hedging_disabled"
@@ -290,6 +300,7 @@ ALL_STRINGS: Dict[str, str] = {
     PACING_RPM_OVERRIDES: "",
     KEY_REGION_OVERRIDES: "",
     KEY_QUOTA_GROUPS: "",
+    KEY_RESERVE: "",
 }
 
 #: Environment variables for string settings.
@@ -301,6 +312,7 @@ _STRING_ENV_FOR: Dict[str, str] = {
     PACING_RPM_OVERRIDES: "KAME_PACING_RPM_OVERRIDES",
     KEY_REGION_OVERRIDES: "KAME_KEY_REGION_OVERRIDES",
     KEY_QUOTA_GROUPS: "KAME_KEY_QUOTA_GROUPS",
+    KEY_RESERVE: "KAME_KEY_RESERVE",
 }
 
 #: String settings loaded from config.yaml, filled once at registration.
@@ -1434,6 +1446,13 @@ META = {
         "real answers and refusals.",
         "Leave empty unless you know the provider's exact limit.",
     ),
+    KEY_RESERVE: (
+        "Reserve keys",
+        "Keys listed here are used only when every other key of that model cannot "
+        "answer, and are never used for a backup request. Put your paid keys here "
+        "to spend your free quota first.",
+        "Leave empty unless some of your keys are paid.",
+    ),
     KEY_REGION_OVERRIDES: (
         "Region per key",
         "For regional providers (Vertex, Bedrock), name a key's region, "
@@ -1552,6 +1571,7 @@ _ADVANCED = frozenset({
     NO_MODEL_FALLBACK,
     MAX_TOTAL_WAIT,  # 1.8.2.8 (owner): a chat never gives up; few want an error instead
     KEY_QUOTA_GROUPS,
+    KEY_RESERVE,
     PROBE_BURST,
     HEDGE_MAX_LEGS, HEDGE_BUDGET_PCT, HEDGE_BURST, HEDGE_QUANTILE, HEDGE_COLD_S,
     HEDGE_COLD_REASONING_S, HEDGE_MAX_PROMPT_TOKENS, PACING_INTERVAL, SHARE_POOL_HEALTH,
@@ -1736,6 +1756,8 @@ def describe(key: str) -> Dict[str, object]:
         # 1.8.2.7: the long text (tooltip) and whether a beginner may skip it.
         "detail": _DETAIL.get(key, ""),
         "advanced": key in _ADVANCED,
+        # 1.8.4.0 (U5): the one line of a quick control; empty for every other setting.
+        "line": LINE.get(key, ""),
     }
 
 
@@ -1769,6 +1791,7 @@ IMPACT: Dict[str, str] = {
     DAILY_COOLDOWN: "medium",
     MAX_HOLD: "medium",
     KEY_QUOTA_GROUPS: "low",
+    KEY_RESERVE: "low",
     HEDGE_BURST: "low",
     HEDGE_QUANTILE: "low",
     HEDGE_COLD_S: "low",
@@ -1801,6 +1824,7 @@ _WHEN: Dict[str, str] = {
     PROBE_BURST: "Rarely. Lower it if every request costs you money; 0 asks keys one by one.",
     DAILY_COOLDOWN: "Only if your provider's daily quota resets at a known time KAME cannot read.",
     MAX_HOLD: "The longest any key is ever benched. Lower it to retry spent keys sooner.",
+    KEY_RESERVE: "Only if some of your keys are paid and the others are free.",
     KEY_QUOTA_GROUPS: "Rarely. Each key is normally its own account; only if two keys share one account's quota.",
     HEDGE_BURST: "Rarely. How many backups may go out back to back.",
     HEDGE_QUANTILE: "Rarely. Lower = backups sooner.",
@@ -1813,6 +1837,16 @@ _WHEN: Dict[str, str] = {
     UNSIZED_BACKOFF_MAX: "Rarely. Where the 1, 2, 4… ladder stops.",
     KEY_REGION_OVERRIDES: "Only if one key must be treated as a different region (Vertex, Bedrock).",
     PACING_INTERVAL: "Never — no longer used. Kept so an older config still loads.",
+}
+
+
+#: 1.8.4.0 (U5). The ONE line a quick control shows under its title; everything else moves
+#: behind its "Why?" toggle. Only the three quick controls have one. The words are identical in
+#: the Agent Zero port (settings words are shared, agent-zero/decisions/0015).
+LINE: Dict[str, str] = {
+    HEDGE_MODE: "How hard KAME works to answer sooner.",
+    MODEL_SWITCH: "When your model cannot answer, the next one on your list does.",
+    REPLY_NOTICE: "A short notice after each reply.",
 }
 
 
@@ -1937,8 +1971,9 @@ def groups() -> Tuple[Dict[str, object], ...]:
 #: 1.8.2.7. Settings that still load from an old configuration but are never
 #: shown: one does nothing since 1.8.2.3 (``PACING_INTERVAL``), one asks a
 #: question the plugin's own design answers (``KEY_QUOTA_GROUPS``, see its comment).
+#: 1.8.4.0: ``KEY_RESERVE`` too, a box to fill in before it does anything (see its comment).
 #: ``/kame get`` still reads them.
-HIDDEN = frozenset({KEY_QUOTA_GROUPS, PACING_INTERVAL})
+HIDDEN = frozenset({KEY_QUOTA_GROUPS, PACING_INTERVAL, KEY_RESERVE})
 
 
 def describe_all() -> Tuple[Dict[str, object], ...]:

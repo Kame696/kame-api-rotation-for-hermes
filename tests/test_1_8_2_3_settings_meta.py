@@ -177,6 +177,11 @@ class TestSettingsWiringMeta(unittest.TestCase):
         # Settings whose consumer arrives in a later build step are listed
         # in BUILD-V3-CONTRACT.md; the test reads that file so a setting
         # can never be silently abandoned.
+        # The contract is a build note that is not published: it is read only
+        # when a setting actually lacks a reader, so the published suite passes
+        # on its own and an unread setting still fails here.
+        if not pending:
+            return
         contract = os.path.join(os.path.dirname(__file__), "..", "BUILD-1.8.2.3-CONTRACT.md")
         with open(contract, encoding="utf-8") as fh:
             contract_text = fh.read()
@@ -268,8 +273,8 @@ class TestSettingsWiringMeta(unittest.TestCase):
 
     def test_module_version_mentions_v3(self):
         from core import __version__  # noqa: E402
-        # 1.8.2.4: the v3 line, whatever its last number. 1.8.3.0 is still that line.
-        self.assertTrue(__version__.startswith(("1.8.2.", "1.8.3.")), __version__)
+        # 1.8.2.4: the v3 line, whatever its last number. 1.8.3.x and 1.8.4.x are still that line.
+        self.assertTrue(__version__.startswith(("1.8.2.", "1.8.3.", "1.8.4.")), __version__)
 
 
 if __name__ == "__main__":

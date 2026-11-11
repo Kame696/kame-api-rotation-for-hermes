@@ -44,6 +44,10 @@ const ONLY = argOf('--tab')
 
 const NOW = Math.floor(Date.now() / 1000)
 
+// 1.8.4.0 (U7): the version a fixture shows is the plugin's own, never typed by hand.
+const PLUGIN_VERSION =
+  /__version__\s*=\s*"([^"]+)"/.exec(fs.readFileSync(path.join(HERE, '..', 'hermes-kame-api-rotation', 'core', '__init__.py'), 'utf8'))?.[1] ?? ''
+
 const SECTION = {
   activity: { attempt: 2, healthy: 12, keys: 17, kind: 'calling', model: 'gemini-3.6-flash' },
   build: { complete: true, fingerprint: 'bfe8506235e6', guidance: 'host:2', missing: [] },
@@ -194,7 +198,7 @@ const SECTION = {
   },
   totals: { healthy: 17, keys: 17, ready: 15, rejected: 2, retired: 1, resting: 0, soonest_s: 38 },
   updated_at: Date.now() / 1000,
-  version: '1.6.0.1'
+  version: PLUGIN_VERSION
 }
 
 const DOCUMENT = {
@@ -477,7 +481,28 @@ if (FIXTURE) {
   for (const key of Object.keys(SECTION)) {
     delete SECTION[key]
   }
-  Object.assign(SECTION, real, { pid: 9164, updated_at: Date.now() / 1000 })
+  // 1.8.4.0 (U7): a fixture is a moment frozen when it was written, and every deadline in it is an
+  // absolute epoch. Drawn later, "first key back in 70 s" had already passed and read "0s" beside a
+  // banner that said "1m 10s". It was the stale fixture, not a rounding path in the page. Every
+  // epoch-sized number (the ones between 2017 and 2033) moves by the age of the fixture.
+  const shift = Date.now() / 1000 - (real.updated_at ?? Date.now() / 1000)
+  const rebase = node => {
+    if (typeof node === 'number') {
+      return node > 1.5e9 && node < 2.0e9 ? node + shift : node
+    }
+
+    if (Array.isArray(node)) {
+      return node.map(rebase)
+    }
+
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, rebase(value)]))
+    }
+
+    return node
+  }
+
+  Object.assign(SECTION, rebase(real), { pid: 9164, updated_at: Date.now() / 1000 })
 }
 const OPEN_RING = argOf('--open')
 const WIDTH = argOf('--width')

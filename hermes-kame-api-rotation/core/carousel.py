@@ -775,11 +775,32 @@ TIMEOUT_INDICATORS = (
 #: policy" also name key denials ("API key blocked by admin", "key suspended
 #: for violating our content policy"), which the next key may answer. The Agent
 #: Zero port uses exactly this list.
+#:
+#: 1.8.4.0 (E7). The second group is the host's own list, verbatim
+#: (``_CONTENT_POLICY_BLOCKED_PATTERNS``, Hermes v0.23.0): on a 403 each of these
+#: walked every key, and two of them never stopped. Each phrase is one provider's
+#: exact wording, never a generic word. ``tools/host_assumptions.py`` fails when
+#: the host's list holds one this list does not. The last entry is a 429 no key
+#: can answer: Anthropic wants a shorter request, and Hermes compresses for it
+#: only if the error reaches it.
 REQUEST_CONTENT_BLOCK_INDICATORS = (
     "content_policy_violation",
     "content filter",
     "content_filter",
     "safety filter",
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
+    "violates our usage policies",
+    "violates openai's usage policies",
+    "your request was flagged by",
+    "prompt was flagged by our safety",
+    "responses cannot be generated due to safety",
+    "responsibleaipolicyviolation",
+    "new_sensitive",
+    "content exists risk",
+    "data may contain inappropriate content",
+    "data_inspection_failed",
+    "extra usage is required for long context",
 )
 
 CONTENT_POLICY_INDICATORS = (
@@ -1795,6 +1816,15 @@ class Carousel:
             except Exception:
                 _pacing_ready = lambda k: 0  # noqa: E731
                 _latency_score = lambda k: 0.0  # noqa: E731
+                PACER = None
+
+            # 1.8.4.0 (E4): a reserve key is a candidate only when no other key is
+            # healthy. Inside each group every rule below is untouched. All keys
+            # reserved leaves the list as it was, so the setting can never empty a pool.
+            if PACER is not None:
+                spend_first = [k for k in healthy if not PACER.is_reserve(k)]
+                if spend_first:
+                    healthy = spend_first
 
             chosen = min(
                 healthy,
@@ -2528,6 +2558,17 @@ class Carousel:
             ]
         soonest = min(deadlines) if deadlines else 0.0
         return None if soonest <= now else soonest - now
+
+    def standing(self, identity: str, keys: Sequence[str]) -> List[str]:
+        """``keys`` that are not retired; every key when all are retired.
+
+        1.8.4.0 round 2 (F3). The same escape ``select`` and ``healthy_count`` have, so a question
+        about a part of the pool can be answered against the retirement of the whole pool."""
+        usable = [k for k in keys if k]
+        with self._lock:
+            pool = self._pools.get(identity) or {}
+            standing = [k for k in usable if not pool.get(k, {}).get("retired")]
+        return standing or usable
 
     def healthy_count(
         self, identity: str, keys: Sequence[str], now: Optional[float] = None

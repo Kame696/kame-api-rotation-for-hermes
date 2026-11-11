@@ -372,8 +372,21 @@ def _pool_rows() -> List[Dict[str, Any]]:
         on_wire = _inflight.keys_on_the_wire()
     except Exception:
         on_wire = {}
+    try:    # 1.8.4.0 (E6): requests sent in the last 24 hours and the provider's own daily number
+        from .core.lifetime import LIFETIME as _lifetime
+
+        _lifetime_view = _lifetime.snapshot()
+    except Exception:
+        _lifetime_view = {"sent_24h": {}, "limits": {}}
+    try:    # 1.8.4.0 (E4): the key rows that carry the word "reserve"
+        from .core.pacing import PACER as _pacer
+
+        _reserve = _pacer.reserve_labels()
+    except Exception:
+        _reserve = frozenset()
     for identity in sorted(pools):
         row = pools[identity]
+        _limit = (_lifetime_view.get("limits") or {}).get(identity) or {}
         live = {fp for owner, fps in on_wire.items()
                 if owner == identity or identity.startswith(owner + ":") or owner.startswith(identity + ":")
                 for fp in fps}
@@ -419,6 +432,14 @@ def _pool_rows() -> List[Dict[str, Any]]:
                 # it never has been. The status bar shows what is in use and
                 # leaves out what is not.
                 "idle_for_s": row.get("idle_for"),
+                # 1.8.4.0 (E6), display only: nothing in selection, rest or wait reads these.
+                # ``daily_limit`` is the number the provider's own refusal stated, ``daily_scope``
+                # says whose it is ("project" or "key"); null when no refusal has stated one.
+                "reserve_keys": [fp for fp, *_rest in key_states
+                                 if str(fp).lower() in _reserve or str(fp).lower().replace("key:", "", 1) in _reserve],
+                "sent_24h": int((_lifetime_view.get("sent_24h") or {}).get(identity, 0)),
+                "daily_limit": _limit.get("value"),
+                "daily_scope": _limit.get("scope"),
             }
         )
     return rows
@@ -447,9 +468,23 @@ def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     # ready while it does.
     rejected = sum(r.get("invalid", 0) for r in rows)
     retired = sum(r.get("retired", 0) for r in rows)
+    # 1.8.4.0 (U1): the same physical key serves several models, so ``keys`` above counts it once per
+    # model (14 keys over 4 models read "0 of 56"). These count each key once, by the fingerprint the
+    # rows already hold; a key is ready when it is ready for at least one model. ``keys`` and
+    # ``healthy`` stay for old readers.
+    physical: Dict[str, bool] = {}
+    for r in rows:
+        for key_state in r.get("key_states") or []:
+            try:
+                fingerprint_, code = key_state[0], key_state[1]
+            except Exception:
+                continue
+            physical[fingerprint_] = physical.get(fingerprint_, False) or code in ("r", "f")
     waiting = [r["soonest_s"] for r in rows if r["soonest_s"] is not None]
     return {
         "keys": keys,
+        "physical_keys": len(physical),
+        "physical_ready": sum(1 for ready_ in physical.values() if ready_),
         "healthy": healthy,
         # What is actually available to serve a call, which is the number the
         # header shows. Floored at zero: a pool where every key was rejected
@@ -466,6 +501,19 @@ def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # be served — which is exactly when an ETA would be a lie.
         "soonest_s": min(waiting) if waiting else None,
     }
+
+
+def _lifetime_totals() -> Dict[str, Any]:
+    """The lifetime counters for the panel (E5). Never raises; zeros when nothing is readable."""
+    try:
+        from .core.lifetime import LIFETIME
+
+        snap = LIFETIME.snapshot()
+        return {"since": snap.get("since"), "replies": int(snap.get("replies", 0)),
+                "saved": int(snap.get("saved", 0)), "key_switches": int(snap.get("key_switches", 0)),
+                "model_switches": int(snap.get("model_switches", 0))}
+    except Exception:
+        return {"since": None, "replies": 0, "saved": 0, "key_switches": 0, "model_switches": 0}
 
 
 def _reply_rows(binding: Any) -> List[Dict[str, Any]]:
@@ -553,6 +601,8 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # plugin can do its job. See `integrity.py`.
         "build": _integrity(),
         "counters": counters,
+        # 1.8.4.0 (E5): what KAME did over time - replies, saved from a provider error, switches.
+        "lifetime": _lifetime_totals(),
         "pools": rows,
         "totals": _totals(rows),
         # What KAME is doing *right now*, or null between calls. The chip reads

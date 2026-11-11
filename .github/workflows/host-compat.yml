@@ -35,14 +35,19 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # Hermes v0.23.0 pins its runtime for Python 3.14 only (every pin carries
+          # `python_version >= '3.14'`); on 3.12 it installs almost nothing and nothing imports.
+          python-version: "3.14"
 
       - name: Fetch Hermes
         run: |
           REF="${{ github.event.inputs.hermes_ref || 'latest' }}"
           if [ "$REF" = "latest" ]; then
+            # The newest STABLE release: vMAJOR.MINOR.PATCH only. Hermes also pushes date tags
+            # (v2026.9.24) and release candidates; sorted together, an old date tag won "latest"
+            # and this check ran against Hermes 0.21.5 while v0.23.0 was out.
             REF=$(git ls-remote --tags --refs https://github.com/NousResearch/hermes-agent.git \
-                  | awk -F/ '{print $3}' | sort -V | tail -1)
+                  | awk -F/ '{print $3}' | grep -E '^v0\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           fi
           echo "Hermes ref: $REF"
           HOME_DIR="$RUNNER_TEMP/hermes-home"
@@ -57,8 +62,14 @@ jobs:
           cd "$KAME_HERMES_ROOT"
           python -m venv venv
           venv/bin/python -m pip install --upgrade pip
-          venv/bin/python -m pip install -e ".[dev,anthropic,messaging]"
-          grep -m1 '^version' pyproject.toml
+          if grep -q '^\[dependency-groups\]' pyproject.toml; then
+            # v0.23.0 and later: the test tools live in a dependency group, not in an extra.
+            venv/bin/python -m pip install -e ".[anthropic,messaging]" --group dev --group test
+          else
+            venv/bin/python -m pip install -e ".[dev,anthropic,messaging]"
+          fi
+          venv/bin/python -m pytest --version
+          venv/bin/python -m hermes_cli.main --version || true
 
       - name: Host facts, runtime and Gemini contracts
         run: $KAME_HERMES_ROOT/venv/bin/python -B tools/host_assumptions.py

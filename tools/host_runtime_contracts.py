@@ -392,7 +392,8 @@ def off_event_loop(broken=False):
         require(released.wait(2), "event loop remains responsive while worker waits")
         return {"final_response": "done"}
     agent = NS(run_conversation=blocking_turn)
-    adapter = NS(_profile_scope=lambda *args: nullcontext(),
+    # Hermes 0.23.0 reads gateway_runner in the turn; older hosts ignore it.
+    adapter = NS(gateway_runner=None, _profile_scope=lambda *args: nullcontext(),
         _bind_api_server_session=lambda **kwargs: {}, _create_agent=lambda **kwargs: agent,
         _active_run_agents={}, _shutdown_interruptible_agents={}, _inflight_agent_runs=0,
         _activate_admitted_request=lambda: None,
@@ -533,7 +534,9 @@ def install_guards(host):
                 if (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
                     isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)):
                     raise RuntimeError("host write blocked")
-                if path.name in {".env", "auth.json", "credentials.json"}:
+                # Hermes 0.23.0 probes for a project .env. A file that is not
+                # there holds no credential, so only a real one is blocked.
+                if path.name in {".env", "auth.json", "credentials.json"} and path.exists():
                     raise RuntimeError("host credential read blocked")
         if event in {"os.remove", "os.rmdir", "os.mkdir", "os.rename"}:
             for value in args[:2 if event == "os.rename" else 1]:

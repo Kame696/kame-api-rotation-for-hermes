@@ -509,6 +509,19 @@ def register(ctx) -> None:
     # the name the readouts have always looked for (``_binding``).
     globals()["_binding"] = _install_journal(ctx)
 
+    # 1.8.4.0 (V1): speech through KAME's keys, on a Hermes that has the speech-provider seam.
+    # Guarded like the hooks above: a host without the seam loads this plugin as before.
+    try:
+        register_tts = getattr(ctx, "register_tts_provider", None)
+        if callable(register_tts):
+            from . import voice
+
+            speech = voice.make_provider()
+            if speech is not None:
+                register_tts(speech)
+    except Exception:
+        logger.debug("%s: speech provider unavailable", PLUGIN_NAME, exc_info=True)
+
     # The carousel itself. ``hermes-kame-provider`` finds this package through
     # the registry and asks ``facade.make_client`` for every API-key provider's
     # client; without that companion installed nothing here is ever asked, and

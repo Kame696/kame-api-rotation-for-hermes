@@ -127,6 +127,10 @@ class Pacer:
         # deleting an entry in the panel takes it out — 1.8.2.3 only ever
         # added to the map.
         self._setting_groups: Dict[str, str] = {}
+        # 1.8.4.0 (E4): labels (lower case) named in the ``key_reserve`` setting.
+        # Display and ordering only: a reserve key is offered last, never as a backup.
+        # Rebuilt on every sync so deleting an entry in the panel takes it out.
+        self._setting_reserve: frozenset = frozenset()
         # 1.8.2.3: per-identity resolution of the settings overrides,
         # re-read on a short clock so a panel edit lands without a restart
         # and the hot path pays one dict read when nothing changed.
@@ -154,6 +158,17 @@ class Pacer:
                 if group:
                     return group
         return key
+
+    def reserve_labels(self) -> frozenset:
+        """The labels (lower case) the ``key_reserve`` setting names, for the panel's key rows."""
+        return self._setting_reserve
+
+    def is_reserve(self, key: str) -> bool:
+        """Whether the ``key_reserve`` setting names this key (any spelling the panel shows)."""
+        reserve = self._setting_reserve
+        if not reserve:
+            return False
+        return any(label.lower() in reserve for label in key_labels(key))
 
     def same_scope(self, a: str, b: str) -> bool:
         """Whether two keys draw on one quota (same key, or one named group)."""
@@ -328,6 +343,7 @@ class Pacer:
                 _settings.text_value(_settings.PACING_RPM_OVERRIDES), provider, model
             )
             raw_groups = _settings.text_value(_settings.KEY_QUOTA_GROUPS)
+            raw_reserve = _settings.text_value(_settings.KEY_RESERVE)
         except Exception:
             self._synced_at[identity] = now
             return
@@ -350,6 +366,12 @@ class Pacer:
                 if label and group:
                     fresh[label] = group
             self._setting_groups = fresh
+            # An unknown label matches no key and is ignored silently (the key may be
+            # on another machine). "label=anything" is read as the label.
+            self._setting_reserve = frozenset(
+                part.partition("=")[0].strip().lower()
+                for part in str(raw_reserve or "").split(",")
+                if part.partition("=")[0].strip())
         # The learned RPM for scopes seen later must start from the override
         # too: keep it as the identity's known limit until a 429 says less.
         if rpm:
@@ -363,6 +385,7 @@ class Pacer:
             self._not_before.clear()
             self._groups.clear()
             self._setting_groups.clear()
+            self._setting_reserve = frozenset()
 
     def snapshot(self) -> Dict[str, object]:
         """For the panel: per-scope limit, window occupancy, next-free.

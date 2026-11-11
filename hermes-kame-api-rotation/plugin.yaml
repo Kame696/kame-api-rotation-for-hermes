@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.8.3.1"
+version: "1.8.4.1"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -215,6 +215,10 @@ config_schema:
     type: str
     default: ""
     description: "When several keys belong to one provider project they share one quota. Name the group for each key, e.g. 'key:a1b2c3=proj1, key:d4e5f6=proj1' — the keys as the Events tab shows them (the six characters alone also work). KAME then counts them together, and never sends a backup request to a key of the same group. Same as KAME_KEY_QUOTA_GROUPS."
+  key_reserve:
+    type: str
+    default: ""
+    description: "Keys listed here are used only when every other key of that model cannot answer, and are never used for a backup request. Put your paid keys here to spend your free quota first. A comma list of the keys as the panel shows them (e.g. 'key:a1b2c3, key:d4e5f6'; the six characters alone also work). Same as KAME_KEY_RESERVE."
 hooks:
   - transform_api_error_classification
   - post_api_request

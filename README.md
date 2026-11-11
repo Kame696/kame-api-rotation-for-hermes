@@ -6,10 +6,10 @@
 
 ### What API key rotation should have been: all your keys and models, one agent that never waits.
 
-[![Version](https://img.shields.io/badge/version-1.8.3.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.4.1-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/local_tests-3543_passing-brightgreen.svg)](#verified)
-[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed_(1.8.2.9)_·_1.8.3.1_submitted-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
+[![Tests](https://img.shields.io/badge/local_tests-3800%2B_passing-brightgreen.svg)](#verified)
+[![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Kame696/kame-api-rotation-for-hermes?style=social)](https://github.com/Kame696/kame-api-rotation-for-hermes/stargazers)
@@ -29,7 +29,7 @@
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.8.3.1-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.8.4.1-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -140,6 +140,26 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 | All keys resting | error, turn over | **waits for the first one back, and says so** |
 | Longest a healthy key can be lost | whatever the provider claimed | **1 hour** (`max_hold_seconds`) |
 
+<a id="gateways"></a>
+## 🧭 KAME and the big gateways
+
+LiteLLM, CLIProxyAPI, new-api, Portkey and Bifrost are **gateways**: a server you run, which any client then
+calls through one URL. KAME is a **plugin**: it lives inside Hermes, so there is nothing else to start, and it
+sees what only the agent sees — the model you picked, your fallback list, the reply already on screen.
+
+| | Gateways | **KAME** |
+|---|---|---|
+| Runs inside the agent, nothing else to start | no | **yes** |
+| Tells throttle, daily quota, outage, dead key and no credit apart | partly (cooldowns in LiteLLM and Mirrowel's key proxy) | **yes, 82 providers mapped from their own docs** |
+| Waits the provider's own retry time | yes in CLIProxyAPI, LiteLLM and new-api | **yes** |
+| Races a second key when the first word is late | none found by a search of their code (Nov 2026) | **yes** |
+| Tokens and cost per key | **yes** | no |
+| Any client, through one URL | **yes** | no: Agent Zero and Hermes only |
+
+<sub>Where they are ahead, the table says so. Searched in the public repositories of LiteLLM, Bifrost, Portkey,
+CLIProxyAPI, new-api and Mirrowel's LLM-API-Key-Proxy in November 2026; "none found" means the search found none, not
+that none can exist.</sub>
+
 <a id="how"></a>
 ## 🔬 How it works
 
@@ -172,7 +192,26 @@ flowchart TD
 </table>
 
 <details>
-<summary><b>📣 What's new in 1.8.3.1 and the versions before it</b></summary>
+<summary><b>📣 What's new in 1.8.4.1 and the versions before it</b></summary>
+
+**1.8.4.1 — a blocked prompt stops at once, one number on the screen.**
+
+- **A prompt no key can answer stops at once.** A provider's safety refusal used to be read as a refused
+  key: every key was tried and rested, and two wordings never stopped at all. Now it goes straight back and no
+  key is punished. The same for Anthropic's "extra usage is required for long context", which only a shorter
+  request can cure.
+- **A reply soon after your model was busy does not wait for it to refuse again.** It starts on the next model
+  of your list and asks yours beside it; whichever starts answering first is shown, yours included.
+- **One number on the screen.** The header, the chip and the sentence give the same count.
+- **What KAME did for you, over time.** `Since 12 Oct: 1,240 replies, 96 saved from a provider error.` Kept on
+  your machine; it survives a restart and Clear pool.
+- **Sent in the last 24 hours**, beside the provider's own daily limit when it states one. Display only.
+- **A very short cut answer is no longer repeated** ("Hello Hello world").
+- **Subscriptions are never raced.** A backup request goes out only on a plain API key; the rule reads the
+  credential's type, never the provider.
+- **Speech with your Gemini keys.** Set `tts.provider: kame-gemini` and Hermes speaks through your Gemini
+  keys, rotated like the chat's: a refused key rests and the same sentence goes to the next one. Off until you
+  set it.
 
 **1.8.3.1 — any model has a way down, one live line, a popover on the chip.**
 
@@ -488,7 +527,16 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
-**1.8.3.0** (2026-10-29), see the [changelog](CHANGELOG.md):
+**1.8.4.1** (2026-11-10), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite | **0 failing**, 3,910 passing, 4 expected failures |
+| Host gates | `host_prose` ok; `host_assumptions` ok, and it now fails if Hermes adds a safety wording KAME does not know; `host_corpus` on Hermes v0.23.0: 200 of 200 alone, 196 of 200 with KAME (the verdicts KAME changes on purpose) |
+| Fault injection | 5,000 calls with random refusals, cuts and timeouts (`tools/chaos.py`) and 300 raced replies, some of them repeating text (`tools/race_chaos.py`): 0 defects |
+| Installed | four Hermes profiles, the daily live check passing in each, real replies through the gateway |
+
+**1.8.3.0** (2026-10-29):
 
 | Check | Result |
 |---|---|
@@ -635,6 +683,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.4.1** | A blocked prompt stops at once | A safety refusal or Anthropic's long-context 429 goes straight back instead of walking every key; a subscription is never raced; one key count everywhere on the page; what KAME did over time and the requests of the last 24 hours; speech with your Gemini keys (`kame-gemini`) |
 | **1.8.3.1** | Any model has a ladder | A reply that starts on model X falls back X, then your main model, then the rest of the list; the live line has seven states with the same words as Agent Zero; a popover on the status-bar chip; the first busy answer after a busy window reopens it. |
 | **1.8.3.0** | Fallback belongs to the main model | The fallback list is used only for a reply that started on your main model; a same-provider next model answers inside KAME so the selector never moves, and the page sets the main model back after a switch to another provider; request-shape 400s are not blamed on keys; NVIDIA 402 reads as a spent account; the two instrument logs rotate instead of going silent. |
 | **1.8.2.9** | Best model first again, quiet gateway, side jobs on a budget | The busy best model is asked again, beside the reply; no long wait behind two silent models; titles and other side jobs stop after a few requests and move down your list; the panel shows where your quota went; the idle gateway uses about a fifth of the CPU; speed words with multipliers and *Faster* instead of *Fastest*; a readable rotation page; the fallback list is read on a stock Hermes. |

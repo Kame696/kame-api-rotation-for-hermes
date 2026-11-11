@@ -34,7 +34,9 @@ def rows():
 
 def test_four_settings_are_visible_to_every_user_and_the_rest_are_advanced():
     advanced = [key for key, row in rows().items() if row["advanced"]]
-    assert len(advanced) == 19   # 1.8.2.8 (owner): 'Give up after' joined them
+    # 1.8.2.8 (owner): 'Give up after' joined them. 1.8.4.0 added 'Reserve keys', then hid it
+    # before it shipped (settings.HIDDEN, owner 2026-11-08), so the count is back to 19.
+    assert len(advanced) == 19
     visible_main = [key for key, row in rows().items()
                     if not row["advanced"] and row["group"] != "off"]
     # switch-after, stop-waiting, speed boost, silent-key skip (owner, 2026-10-16/17:

@@ -43,6 +43,8 @@ const SDK = {
   useValue: source => source.get()
 }
 
+// `globalThis.__KAME_FORCE_STATE__ = initial => value` shows a state the stub cannot reach by clicking
+// (1.8.4.0: the "Why?" toggle open). Unset, `useState` keeps the initial value, as before.
 export async function loadPlugin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kame-ui-'))
   const source = fs
@@ -56,7 +58,7 @@ export async function loadPlugin() {
     path.join(dir, 'sdk.mjs'),
     'const S = globalThis.__KAME_SDK__\n' + Object.keys(SDK).map(name => `export const ${name} = S.${name}`).join('\n')
   )
-  fs.writeFileSync(path.join(dir, 'react.mjs'), 'export const useState = i => [i, () => {}]\nexport const useEffect = () => {}\n')
+  fs.writeFileSync(path.join(dir, 'react.mjs'), 'export const useState = i => [globalThis.__KAME_FORCE_STATE__ ? globalThis.__KAME_FORCE_STATE__(i) : i, () => {}]\nexport const useEffect = () => {}\n')
   fs.writeFileSync(path.join(dir, 'jsx.mjs'), 'export const jsx = (type, props, key) => ({ key: key ?? null, props, type })\nexport const jsxs = jsx\n')
   globalThis.__KAME_SDK__ = SDK
   globalThis.document = { visibilityState: 'visible' }

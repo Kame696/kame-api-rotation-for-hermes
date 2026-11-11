@@ -74,7 +74,10 @@ assert.equal(v.title, 'API Rotation')
 assert.equal(v.version, 'KAME 1.8.3.1')
 assert.equal(v.button, 'Open API Rotation')
 assert.equal(v.sentence, 'Ready - next reply: main-model')
-assert.equal(v.keysLine, '7 of 7 keys ready · Speed: Balanced')
+// 1.8.4.0 (U1): ONE count on the screen - the keys of the model the next reply goes to. This line used
+// to say '7 of 7' (the sum over three models, one physical key counted once per model); the strip above
+// it says '3 of 3 keys ready' for main-model, and the two now agree.
+assert.equal(v.keysLine, '3 of 3 keys ready · Speed: Balanced')
 assert.deepEqual(v.models.map(m => m.name), ['main-model', 'second', 'third'])
 assert.deepEqual(v.models[0].tags, ['main'])
 assert.equal(v.models[0].status, '3 of 3 ready')

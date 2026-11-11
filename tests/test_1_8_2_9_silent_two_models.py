@@ -131,11 +131,11 @@ def test_the_second_bound_is_never_longer_than_1_8_2_8(monkeypatch):
 
 # --- B2: the race widens at the slow bound --------------------------------------------------------
 def test_widening_adds_the_next_free_model_at_the_slow_bound(fresh):
-    call = ByModel(silent_pool(), quick={"gemini-race-four": 0.05})
+    call = ByModel(silent_pool(30.0), quick={"gemini-race-four": 0.05})
     started = time.monotonic()
     out = list(fresh.stream(call))
     assert R.shown(out) == "fast answer"
-    assert 1.0 <= time.monotonic() - started < 3.0, "joined at about 1.2 s, not after a restart"
+    assert 1.0 <= time.monotonic() - started < 15.0, "joined at about 1.2 s, not after a 30 s leg ended"
     assert call.models_asked == ["gemini-race", "gemini-race-two", "gemini-race-three", "gemini-race-four"]
     assert getattr(call, "_kame_answered_by") == "gemini:gemini-race-four"
     assert fresh.handed_over == 1
@@ -288,11 +288,24 @@ def test_a_failed_raced_leg_does_not_hold_the_reply(fresh, tmp_path):
     # Finding 1: a raced model whose request already FAILED is not in the race. The primary is silent;
     # Hermes can still be handed to that model (and to the groq tail), as in 1.8.2.8.
     only_two(tmp_path)
-    call = ByModel(silent_pool(3.0), scripts={"gemini-race-two": [0.02, R.per_minute()]})
-    started = time.monotonic()
-    with pytest.raises(transport.KamePoolResting):
-        list(fresh.stream(call))
-    assert time.monotonic() - started < 1.9, "handed over at the slow bound, not held for the primary"
+    # 1.8.4.0 (C2): this used to assert "< 1.9 s" on the real clock and failed when the whole suite was
+    # running. The primary now stays silent for an hour, so a reply held for it would never come back; the
+    # test waits on the hand-over (an event) and fails only if it never happens.
+    call = ByModel(silent_pool(3600.0), scripts={"gemini-race-two": [0.02, R.per_minute()]})
+    done = threading.Event()
+    box = {}
+
+    def reply():
+        try:
+            list(fresh.stream(call))
+        except BaseException as error:
+            box["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=reply, daemon=True).start()
+    assert done.wait(60.0), "handed over at the slow bound, not held for the primary"
+    assert isinstance(box.get("error"), transport.KamePoolResting), box.get("error")
 
 
 def test_a_raced_leg_that_ended_empty_does_not_hold_the_reply(fresh, tmp_path):

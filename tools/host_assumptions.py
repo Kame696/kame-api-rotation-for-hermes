@@ -611,6 +611,9 @@ def the_sdk_still_exports_what_the_chip_imports(_=None):
     sdk = _desktop("sdk/index.ts")
     if not sdk:
         return "sdk/index.ts not found", True
+    # Hermes 0.23.0 moved area constants to sdk/areas.ts behind ``export *``.
+    for barrel in re.findall(r"""export\s+\*\s+from\s+['"]\./([\w./-]+)['"]""", sdk):
+        sdk += "\n" + (_desktop(f"sdk/{barrel}.ts") or "")
     exported = set(re.findall(r"\b([A-Za-z_$][\w$]*)\b", sdk))
     missing = sorted(name for name in wanted if name not in exported)
     if missing:
@@ -837,6 +840,39 @@ def the_error_hook_still_hands_over_type_and_code(_=None):
 
 
 
+def every_safety_phrase_of_the_host_is_known(_=None):
+    """Why a filtered prompt stops at one attempt (1.8.4.0, E7).
+
+    KAME reads a 403 as auth first, so a safety refusal it does not recognise walks every key,
+    and the host's own check never gets to run. The host keeps the list of provider wordings;
+    KAME keeps a copy, because this hook has to decide before the host does. A phrase the host
+    adds and KAME lacks is a prompt that burns the pool again.
+    """
+    import ast
+
+    path = AGENT / "agent/error_classifier.py"
+    if not path.is_file():
+        return "error_classifier.py not found", True
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    theirs = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "_CONTENT_POLICY_BLOCKED_PATTERNS" for t in node.targets):
+            theirs = ast.literal_eval(node.value)
+    if theirs is None:
+        return "the host's list of safety phrases moved", True
+    ours_path = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/core/carousel.py"
+    ours = None
+    for node in ast.parse(ours_path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "REQUEST_CONTENT_BLOCK_INDICATORS" for t in node.targets):
+            ours = ast.literal_eval(node.value)
+    missing = sorted(set(theirs) - set(ours or ()))
+    if missing:
+        return f"KAME does not know these safety phrases: {missing}", True
+    return True, True
+
+
 def the_error_factory_is_still_one_function(_=None):
     """Exercise both real client entrypoints with an unread simulated HTTP error body."""
     return _gemini_executed_contract("factory_paths")
@@ -889,13 +925,34 @@ def a_stopped_background_job_still_moves_down_the_users_list(text=None):
     same-provider retry; the credential rungs accept only auth, payment and rate-limit words; the
     request carries its own ``timeout`` (which KAME reads as the job's budget)."""
     joined = _text_of(text)
-    ok = bool(
-        '_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})' in joined
+    tasks = '_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})' in joined
+    up_to_0230 = bool(
+        tasks
         and '"Timeout" in type(exc).__name__ or "timed out" in str(exc).lower()' in joined
         and "return _is_auth_error(exc) or _is_payment_error(exc) or _is_rate_limit_error(exc)" in joined
         and "def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:" in joined
         and "_FALLBACK_REASONS" in joined)
-    return ok, True
+    if up_to_0230:
+        return True, True
+    # v0.23.1 reads an auxiliary failure through the error classifier (agent/auxiliary_error_policy.py):
+    # a TimeoutError is reason `timeout` with transport "timeout"; the three critical tasks skip the
+    # same-provider retry on that transport; `fallback_label` sends a timeout to the next provider; a
+    # timeout never rotates a credential. Measured with KAME's own KameAuxTimeout on v0.23.1 (2026-11-10).
+    root = HERMES_HOME / "hermes-agent" / "agent"
+    try:
+        policy = (root / "auxiliary_error_policy.py").read_text(encoding="utf-8")
+        classifier = (root / "error_classifier.py").read_text(encoding="utf-8")
+    except OSError:
+        return False, True
+    from_0231 = bool(
+        tasks
+        and "def _should_skip_same_provider_retry(task: Optional[str], failure: aux_errors.Failure) -> bool:" in joined
+        and 'failure.verdict.error_context.get("transport") == "timeout"' in joined
+        and 'if isinstance(c.error, TimeoutError) or "Timeout" in c.error_type or "timed out" in c.msg:' in classifier
+        and 'extra["transport"] = "timeout"' in classifier
+        and "if reason is _R.timeout:" in policy
+        and '"request timed out"' in policy)
+    return from_0231, True
 
 
 def the_aux_request_still_carries_the_tasks_timeout(text=None):
@@ -974,6 +1031,8 @@ CHECKS = (
     ("agent/turn_response_intake.py", "the success hook still carries the two counts (1.8.1.9)", the_success_hook_still_carries_the_two_counts_1819),
     # 1.8.2.9. A stopped background job: its error shape and its budget.
     ("agent/auxiliary_client.py", "a stopped background job still moves down the user's list", a_stopped_background_job_still_moves_down_the_users_list),
+    # 1.8.4.0 (E7). A filtered prompt stops at one attempt only while KAME knows the wording.
+    ("agent/error_classifier.py", "every safety phrase of the host is known to KAME", every_safety_phrase_of_the_host_is_known),
     ("agent/auxiliary_client.py", "the auxiliary request still carries the task's timeout", the_aux_request_still_carries_the_tasks_timeout),
 )
 

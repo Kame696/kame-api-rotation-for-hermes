@@ -217,7 +217,8 @@ class TestARefusedKeyIsAnsweredByTheNext:
             assert [k for _, k in p.seen] == [K1, K2]
             # The daily quota window was read, so the refused key rests for
             # the day-shaped hold rather than Google's per-minute retryDelay.
-            identity = carousel_mod.Carousel.identity("gemini", "gemini-3.6-flash")
+            # Since 1.8.2.3 the facade's identity carries the region.
+            identity = carousel_mod.Carousel.identity("gemini", "gemini-3.6-flash", "global")
             assert facade.TRANSPORT.engine.next_recovery_seconds(identity, [K1]) > 120
             client.close()
         finally:

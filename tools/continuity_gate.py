@@ -90,8 +90,8 @@ PACKAGE = "kame_continuity_gate_under_test"
 
 #: The one real directory this gate must never touch, whatever else goes
 #: wrong. Hard-coded rather than derived, so a bug in path derivation cannot
-#: quietly compute its way into the owner's real install — see CLAUDE.md
-#: "before touching Hermes" and `_assert_appdata_untouched` below.
+#: quietly compute its way into the owner's real install — see
+#: `_assert_appdata_untouched` below.
 REAL_HERMES_APPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "hermes"
 
 # --- scaled-down but real timing -------------------------------------------

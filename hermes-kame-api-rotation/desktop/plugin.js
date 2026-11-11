@@ -264,7 +264,9 @@ function toneFor(snap, now) {
 
   const totals = snap.totals ?? {}
 
-  if (!totals.keys) {
+  // 1.8.4.0 (U3): a dot only means something when there is something. At 0 of 0 keys there is
+  // nothing to be well or unwell, so it is the neutral grey, never a live colour.
+  if (!(totals.physical_keys ?? totals.keys)) {
     return 'muted'
   }
 
@@ -809,6 +811,7 @@ function KameChip() {
   const age = ageSeconds(snap, now)
   const stale = age > STALE_AFTER_S
   const tone = toneFor(snap, now)
+  const one = oneCount(snap, now)
   const pools = snap?.installed ? chipPools(snap) : []
   const shown = pools.slice(0, CHIP_POOLS)
   const hidden = pools.length - shown.length
@@ -822,11 +825,13 @@ function KameChip() {
   } else if (!totals.keys) {
     lines.push(`${PRODUCT} is running. No pooled key has been used yet.`)
   } else {
+    const where = one.model ? `for ${modelOnly(one.model)}` : 'across every model'
+
     lines.push(
       totals.rejected
-        ? `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready, across every pool ` +
+        ? `${one.ready} of ${one.total} keys ready ${where} ` +
             `(${totals.rejected} the provider rejected — replace them, waiting will not help)`
-        : `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready, across every pool`
+        : `${one.ready} of ${one.total} keys ready ${where}`
     )
 
     for (const pool of snap.pools ?? []) {
@@ -889,7 +894,7 @@ function KameChip() {
           : h(
               'span',
               { className: 'shrink-0 text-(--ui-text-quaternary)' },
-              snap?.installed ? (totals.keys ? `${totals.healthy}/${totals.keys}` : 'ready') : '—'
+              snap?.installed ? (one.total ? `${one.ready}/${one.total}` : 'ready') : '—'
             ),
         hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
       )
@@ -1230,12 +1235,19 @@ const PANEL_READS = [
   'fallback.state',
   'fallback.warning',
   'fallback.why',
+  'lifetime.replies',
+  'lifetime.saved',
+  'lifetime.since',
+  'pools[].daily_limit',
+  'pools[].daily_scope',
   'pools[].healthy',
   'pools[].identity',
   'pools[].idle_for_s',
   'pools[].in_flight',
   'pools[].key_states',
   'pools[].keys',
+  'pools[].reserve_keys',
+  'pools[].sent_24h',
   'pools[].soonest_s',
   'quota_use.models',
   'quota_use.since',
@@ -1260,7 +1272,9 @@ const PANEL_READS = [
   'speed.hour.replies',
   'speed.mode',
   'speed.paused_until',
-  'speed.since_start.extra_pct'
+  'speed.since_start.extra_pct',
+  'totals.physical_keys',
+  'totals.physical_ready'
 ]
 
 /** Which model's key table is open. A module atom, like the tab: it survives a re-render. */
@@ -1412,6 +1426,29 @@ function keyCounts(pool) {
   }
 
   return out
+}
+
+/**
+ * 1.8.4.0 (U1). The ONE fraction the header, the chip and the strip all say: the keys of the model
+ * the next reply goes to. When there is no such model (nothing ready, or nothing asked yet), the
+ * physical keys over all models, each key counted once. Pure; exported for the node checks.
+ */
+function oneCount(snap, nowMs) {
+  const totals = snap?.totals ?? {}
+  const models = snap?.installed ? ringModels(snap).main : []
+  const usable = models.find(model => model.pool && modelState(model, snap, nowMs).tone === 'good')
+
+  if (usable) {
+    const counts = keyCounts(usable.pool)
+
+    return { model: usable.identity, ready: counts.r + counts.f, total: usable.pool.keys ?? 0 }
+  }
+
+  return {
+    model: null,
+    ready: totals.physical_ready ?? totals.ready ?? totals.healthy ?? 0,
+    total: totals.physical_keys ?? totals.keys ?? 0
+  }
 }
 
 /** What a model is doing, in a few words: `{ word, tone }`. Pure; exported for the node checks. */
@@ -1912,11 +1949,14 @@ function KeyTable({ model, snap }) {
   }
 
   const keys = pool.key_states ?? []
+  const reserve = new Set(pool.reserve_keys ?? [])
+  const sent = sentLine(pool)
 
   return h(
     'div',
     { className: 'rounded-lg border border-(--ui-stroke-tertiary) p-3', key: `keys-${model.identity}` },
     h(PoolRow, { compact: true, key: 'summary', pool, snap }),
+    sent ? h('p', { className: 'mt-2 text-xs text-(--ui-text-secondary)', key: 'sent' }, sent) : null,
     keys.length
       ? h(
           'ul',
@@ -1940,7 +1980,9 @@ function KeyTable({ model, snap }) {
                 style.label,
                 // a refused credential does not come back by waiting: no countdown for it
                 left && code !== 'o' && code !== 'x' ? ` · back in ${duration(left)}` : '',
-                kind && code !== 'r' && code !== 'f' ? ` · ${KIND_SHORT[kind] ?? kind}` : ''
+                kind && code !== 'r' && code !== 'f' ? ` · ${KIND_SHORT[kind] ?? kind}` : '',
+                // 1.8.4.0 (E4): a key listed in "Reserve keys" is used last
+                reserve.has(fingerprint) ? ' · reserve' : ''
               )
             )
           })
@@ -2055,12 +2097,31 @@ function ModelRings({ snap }) {
   )
 }
 
+/**
+ * 1.8.4.0 (E6). The ring detail's one line about volume. Display only: no percentage and no "left"
+ * number, because the moment the provider's day resets is not known. Empty for a snapshot that does
+ * not carry the number (an older backend).
+ */
+function sentLine(pool) {
+  if (typeof pool?.sent_24h !== 'number') {
+    return ''
+  }
+
+  const limit = Number(pool.daily_limit)
+
+  return (
+    `Sent in the last 24 hours: ${pool.sent_24h.toLocaleString()}.` +
+    (limit > 0 ? ` The provider's own limit: ${limit.toLocaleString()} a day per ${pool.daily_scope === 'key' ? 'key' : 'project'}.` : '')
+  )
+}
+
 /** The last few moves KAME made, in plain words - the story the rings only point at. */
 function Moves({ snap }) {
   const now = useValue($now)
   const moves = (snap?.events ?? [])
     .filter(event => ['handover', 'wait', 'switch', 'gave_up', 'surfaced'].includes(event.kind))
     .slice(0, 6)
+  const lifetime = lifetimeLine(snap?.lifetime)
 
   return Card(
     { key: 'moves', title: 'What KAME did' },
@@ -2083,13 +2144,81 @@ function Moves({ snap }) {
             )
           )
         )
-      : h('p', { className: 'text-sm text-(--ui-text-tertiary)', key: 'none' }, 'Nothing to report — every reply went straight out.'),
+      : h('p', { className: 'text-sm text-(--ui-text-tertiary)', key: 'none' }, movesEmptyLine(snap)),
+    lifetime
+      ? h(
+          'p',
+          { className: 'mt-2 text-xs text-(--ui-text-tertiary)', key: 'lifetime' },
+          lifetime.text,
+          lifetime.star
+            ? [
+                ' ',
+                h(
+                  'button',
+                  {
+                    className: 'text-(--ui-text-secondary) underline decoration-dotted underline-offset-2 hover:text-(--ui-text-primary)',
+                    key: 'star',
+                    onClick: () => openLink(REPO_URL),
+                    title: REPO_URL,
+                    type: 'button'
+                  },
+                  lifetime.starText
+                )
+              ]
+            : null
+        )
+      : null,
     h(
       Button,
       { key: 'all', onClick: () => $tab.set('events'), size: 'sm', variant: 'ghost' },
       'All events →'
     )
   )
+}
+
+/**
+ * 1.8.4.0 (U2). What "What KAME did" says when there is no move to list. The state decides, so the
+ * line is never a claim the screen contradicts. Pure; exported for the node checks.
+ */
+function movesEmptyLine(snap) {
+  const totals = snap?.totals ?? {}
+  const replied = (snap?.replies ?? []).length > 0 || Number(snap?.lifetime?.replies ?? 0) > 0
+
+  if (!replied) {
+    return 'No replies yet.'
+  }
+
+  if ((totals.physical_keys ?? 0) > 0 && !(totals.physical_ready ?? 0)) {
+    return 'Waiting for your keys. Nothing went wrong on your side.'
+  }
+
+  return 'Nothing to report: every reply went straight out.'
+}
+
+/**
+ * 1.8.4.0 (U6). The lifetime line under "What KAME did", or null before the first reply. `star` is
+ * true from 10 saved replies on: the line then ends with a plain link, in this panel only.
+ */
+function lifetimeLine(lifetime, locale) {
+  const replies = Number(lifetime?.replies ?? 0)
+
+  if (!(replies >= 1)) {
+    return null
+  }
+
+  const saved = Number(lifetime?.saved ?? 0)
+  const since =
+    typeof lifetime?.since === 'number' && lifetime.since > 0
+      ? new Date(lifetime.since * 1000).toLocaleDateString(locale, { day: 'numeric', month: 'short' })
+      : ''
+
+  return {
+    star: saved >= 10,
+    starText: 'A star helps others find it.',
+    text:
+      `${since ? `Since ${since}: ` : ''}${replies.toLocaleString(locale)} ${replies === 1 ? 'reply' : 'replies'}, ` +
+      `${saved.toLocaleString(locale)} saved from a provider error.`
+  }
 }
 
 const MOVE_ICON = { gave_up: '■', handover: '→', surfaced: '!', switch: '↻', wait: '⏸' }
@@ -2176,11 +2305,11 @@ function QuickControls({ snap }) {
 
   return Card(
     { key: 'quick', note: 'The three you may want to change often. Everything else is in Settings.', title: 'Quick controls' },
-    speed ? h(StringSetting, { busy, key: 'quick-speed', setting: speed }) : null,
+    speed ? h(StringSetting, { busy, key: 'quick-speed', quick: true, setting: speed }) : null,
     speed ? h(SpeedCost, { key: 'quick-cost', snap }) : null,
-    fallback ? h(StringSetting, { busy, key: 'quick-fallback', setting: fallback }) : null,
+    fallback ? h(StringSetting, { busy, key: 'quick-fallback', quick: true, setting: fallback }) : null,
     fallback && timed && fallback.value === 'timed' ? h(NumberSetting, { busy, key: 'quick-timed', setting: timed }) : null,
-    notice ? h(StringSetting, { busy, key: 'quick-notice', setting: notice }) : null,
+    notice ? h(StringSetting, { busy, key: 'quick-notice', quick: true, setting: notice }) : null,
     h(Button, { key: 'all', onClick: () => $tab.set('settings'), size: 'sm', variant: 'ghost' }, 'All settings →')
   )
 }
@@ -2250,8 +2379,14 @@ function Source({ setting }) {
  * not the default is marked in the margin — which is the one thing a person
  * scanning this page is actually looking for.
  */
-function SettingShell({ setting, control, error, note, footnote }) {
+function SettingShell({ setting, control, error, note, footnote, quick }) {
   const changed = setting.source !== 'default'
+  // 1.8.4.0 (U5): a quick control shows its title, the buttons and ONE line; what it does and when to
+  // change it open behind the "Why?" toggle, closed by default. No word is deleted, it moves behind the toggle. The
+  // Settings tab (quick unset) shows all of it, as before. A snapshot without the line shows all too.
+  const [why, setWhy] = useState(false)
+  const compact = Boolean(quick && setting.line)
+  const details = !compact || why
 
   return h(
     'div',
@@ -2272,7 +2407,7 @@ function SettingShell({ setting, control, error, note, footnote }) {
           'p',
           { className: 'flex items-center gap-2 text-sm text-(--ui-text-primary)', key: 'title' },
           setting.title,
-          IMPACT_TAG[setting.impact]
+          IMPACT_TAG[setting.impact] && !compact
             ? h(
                 'span',
                 {
@@ -2296,23 +2431,44 @@ function SettingShell({ setting, control, error, note, footnote }) {
               )
             : null
         ),
-        h(
-          'p',
-          {
-            className: 'mt-0.5 text-xs leading-relaxed text-(--ui-text-tertiary)',
-            key: 'help',
-            title: setting.detail || setting.help
-          },
-          setting.help
-        ),
+        compact
+          ? h(
+              'p',
+              { className: 'mt-0.5 text-xs leading-relaxed text-(--ui-text-tertiary)', key: 'line' },
+              setting.line,
+              ' ',
+              h(
+                'button',
+                {
+                  'aria-expanded': why,
+                  className: 'text-(--ui-text-secondary) underline decoration-dotted underline-offset-2 hover:text-(--ui-text-primary)',
+                  key: 'why',
+                  onClick: () => setWhy(!why),
+                  type: 'button'
+                },
+                'Why?'
+              )
+            )
+          : null,
+        details
+          ? h(
+              'p',
+              {
+                className: 'mt-0.5 text-xs leading-relaxed text-(--ui-text-tertiary)',
+                key: 'help',
+                title: setting.detail || setting.help
+              },
+              setting.help
+            )
+          : null,
         // 1.8.2.7: whether *you* need this one, in one sentence.
-        setting.when
+        details && setting.when
           ? h('p', { className: 'mt-0.5 text-xs text-(--ui-text-secondary)', key: 'when' }, `When to change it: ${setting.when}`)
           : null,
         // 1.8.2.7: the key and the environment name are for people who edit files;
         // they show with "Show advanced settings", or when the value was changed
         // (so the source of a change is never hidden).
-        $advanced.get() || changed
+        details && ($advanced.get() || changed)
           ? h(
               'p',
               { className: 'mt-1 flex flex-wrap items-center gap-2 font-mono text-[0.625rem] text-(--ui-text-quaternary)', key: 'names' },
@@ -2325,8 +2481,8 @@ function SettingShell({ setting, control, error, note, footnote }) {
       h('div', { className: 'flex shrink-0 items-center gap-2', key: 'control' }, control)
     ),
     // 1.8.2.9: one plain sentence for the chosen answer, and what the percentages leave out.
-    note ? h('p', { className: 'mt-1 text-xs text-(--ui-text-secondary)', key: 'note' }, note) : null,
-    footnote ? h('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', key: 'footnote' }, footnote) : null,
+    details && note ? h('p', { className: 'mt-1 text-xs text-(--ui-text-secondary)', key: 'note' }, note) : null,
+    details && footnote ? h('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', key: 'footnote' }, footnote) : null,
     error ? h('p', { className: 'mt-2 text-xs text-destructive', key: 'error' }, error) : null
   )
 }
@@ -2530,7 +2686,7 @@ function NumberSetting({ setting, busy }) {
  */
 const CHOICE_ORDER = { off: 0, adaptive: 1, max: 2 }
 
-function StringSetting({ setting, busy }) {
+function StringSetting({ setting, busy, quick }) {
   const [draft, setDraft] = useState(String(setting.value ?? ''))
   const [dirty, setDirty] = useState(false)
   const [sent, setSent] = useState(null)
@@ -2614,6 +2770,7 @@ function StringSetting({ setting, busy }) {
         reset
       ],
       error,
+      quick,
       // The sentence for the answer in force; the footnote is not shown for the cheapest answer.
       footnote: setting.choice_footnote && draft !== setting.choice_order?.[0] ? setting.choice_footnote : '',
       note: setting.choice_help?.[draft] ?? '',
@@ -4170,6 +4327,7 @@ function HeaderStatus({ snap }) {
   const now = useValue($now)
 
   const totals = snap.totals ?? {}
+  const one = oneCount(snap, now)
   const age = ageSeconds(snap, now)
   const stale = age > STALE_AFTER_S
 
@@ -4185,7 +4343,7 @@ function HeaderStatus({ snap }) {
       // screen as a banner saying waiting will not repair one. The two numbers
       // contradicted each other and the large one was wrong.
       snap.installed
-        ? `${totals.ready ?? totals.healthy} of ${totals.keys} keys ready`
+        ? `${one.ready} of ${one.total} keys ready`
         : 'not rotating'
     ),
     totals.rejected
@@ -4782,8 +4940,9 @@ function chipPopoverModel(snap, nowMs) {
   }
 
   const speed = SPEED_LABEL[snap?.speed?.mode]
-  const keysLine = totals.keys
-    ? `${totals.ready ?? totals.healthy ?? 0} of ${totals.keys} keys ready${speed ? ` · Speed: ${speed}` : ''}`
+  const one = oneCount(snap, nowMs)
+  const keysLine = one.total
+    ? `${one.ready} of ${one.total} keys ready${speed ? ` · Speed: ${speed}` : ''}`
     : 'No pooled key has been used yet'
 
   const models = all.slice(0, CHIP_MODELS_MAX).map(model => {
@@ -5055,7 +5214,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, nowSentences, ordinal, pillRestorePlan, quotaShare, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, sideJobsLine, watchPillRestore }
+export const panelHelpers = { KEY_STATE, PANEL_READS, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, pillRestorePlan, quotaShare, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, toneFor, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

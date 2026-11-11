@@ -21,6 +21,7 @@ Nothing is installed into the user's Hermes; every run gets a throwaway
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -95,8 +96,15 @@ def pytest_configure(config):
     importlib.import_module("kame_suite_plugin.transport").configure(facade.TRANSPORT)
     real = facade.make_client
 
-    def counted(provider, client_kwargs):
-        client = real(provider, client_kwargs)
+    # The provider calls make_client(name, client_kwargs, api_mode) since 1.8.1.9. A counter that
+    # took two arguments raised inside the provider's try, the provider fell back to Hermes' own
+    # client, and this gate counted zero KAME clients for weeks: whatever it takes, pass it on.
+    def counted(provider, client_kwargs, *rest, **named):
+        try:
+            client = real(provider, client_kwargs, *rest, **named)
+        except Exception:
+            _BUILT["raised"] = _BUILT.get("raised", 0) + 1
+            raise
         _BUILT["kame_clients" if client is not None else "declined"] += 1
         return client
 
@@ -157,7 +165,12 @@ def run(hermes: Path, suites, kame: bool, work: Path) -> dict:
                PYTHONIOENCODING="utf-8")
     paths = [str(hermes)]
     args = [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
-            "-p", "no:randomly", "-o", "addopts=", "--timeout", "120", "-rfE"]
+            "-p", "no:randomly", "-o", "addopts=", "-rfE"]
+    # Hermes v0.23.0 moved its test tools to a dependency group without pytest-timeout. Passing
+    # `--timeout` to a pytest that lacks the plugin ends the run before one test, and both runs then
+    # come back empty: the gate read that as "KAME built no client". The subprocess has its own limit.
+    if importlib.util.find_spec("pytest_timeout") is not None:
+        args += ["--timeout", "120"]
     report = work / ("kame.json" if kame else "clean.json")
     if kame:
         (work / "kame_suite_interposer.py").write_text(INTERPOSER, encoding="utf-8")
@@ -172,7 +185,9 @@ def run(hermes: Path, suites, kame: bool, work: Path) -> dict:
     failed = set(re.findall(r"^(?:FAILED|ERROR) (\S+)", out, re.M))
     summary = next((l for l in reversed(out.splitlines()) if re.search(r"\d+ (passed|failed)", l)), "")
     built = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
-    return {"failed": failed, "summary": summary.strip("= "), "built": built, "code": proc.returncode}
+    tail = "" if summary else "\n".join(out.strip().splitlines()[-12:])
+    return {"failed": failed, "summary": summary.strip("= "), "built": built, "code": proc.returncode,
+            "tail": tail}
 
 
 def main() -> int:
@@ -191,7 +206,8 @@ def main() -> int:
     print(f"clean:     {clean['summary']}")
     print(f"with KAME: {kame['summary']}")
     print(f"           KAME profiles registered: {kame['built'].get('profiles')}, "
-          f"KAME clients built: {kame['built'].get('kame_clients')}, declined: {kame['built'].get('declined')}")
+          f"KAME clients built: {kame['built'].get('kame_clients')}, declined: {kame['built'].get('declined')}, "
+          f"raised: {kame['built'].get('raised', 0)}")
     diverged_all = sorted(kame["failed"] - clean["failed"])
     for name in diverged_all:
         if name in EXPECTED_DIVERGENCE:
@@ -204,6 +220,12 @@ def main() -> int:
     for name in healed:
         print(f"  (passes only with KAME)  {name}")
     measured = bool(kame["built"].get("profiles")) and kame["built"].get("kame_clients", 0) > 0
+    for label, result in (("clean", clean), ("with KAME", kame)):
+        if not result["summary"]:
+            print(f"GATE FAIL: the {label} run ran no test (pytest exit {result['code']}); its last lines:")
+            for line in result["tail"].splitlines():
+                print("    " + line)
+            return 1
     if not measured:
         print("GATE FAIL: the KAME run built no KAME client, so it measured nothing")
         return 1
