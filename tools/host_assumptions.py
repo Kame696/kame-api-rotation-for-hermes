@@ -31,6 +31,7 @@ _os.environ.setdefault("KAME_RECORDER_DISABLED", "1")
 _os.environ.setdefault("KAME_CALL_TIMINGS_DISABLED", "1")
 # ---------------------------------------------------------------------------
 
+import importlib.util
 import os
 import re
 import sys
@@ -955,6 +956,43 @@ def a_stopped_background_job_still_moves_down_the_users_list(text=None):
     return from_0231, True
 
 
+def a_lane_of_the_walk_is_not_held_out_as_a_provider_outage(text=None):
+    """1.8.4.2 (A1): KAME's lane error is a plain failure of that lane; the host's walk quarantines nothing for it.
+
+    The host decides what to hold out in ``fallback_candidate_unavailable_reason`` (v0.22.x,
+    ``agent/auxiliary_health.py``, with a ten-minute default hold) or ``fallback_label`` (v0.23.x,
+    ``agent/auxiliary_error_policy.py``). Both read the same capacity words. This check confirms the function
+    still exists in the host and that a copy of its predicates (tests/fixtures/host_aux_predicates_20261015.py)
+    gives "request timed out" for KAME's first stop and None for the lane error."""
+    root = HERMES_HOME / "hermes-agent" / "agent"
+    found = False
+    for name, needle in (("auxiliary_health.py", "def fallback_candidate_unavailable_reason"),
+                         ("auxiliary_error_policy.py", "def fallback_label")):
+        try:
+            if needle in (root / name).read_text(encoding="utf-8"):
+                found = True
+        except OSError:
+            pass
+    if not found:
+        return False, True
+    here = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "host_aux_predicates_for_a1", here / "tests" / "fixtures" / "host_aux_predicates_20261015.py")
+    replica = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(replica)
+    pkg = here / "hermes-kame-api-rotation" / "core" / "aux_budget.py"
+    spec2 = importlib.util.spec_from_file_location("aux_budget_for_a1", pkg)
+    budget = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(budget)
+
+    class Timeout(Exception):
+        pass
+
+    first = replica.fallback_reason(Timeout(budget.stop_message("compression", "gemini-3-flash", 2, 12.0)))
+    lane = replica.fallback_reason(RuntimeError(budget.lane_message("compression", "gemini-3-flash")))
+    return (first, lane), ("request timed out", None)
+
+
 def the_aux_request_still_carries_the_tasks_timeout(text=None):
     """1.8.2.9: the budget of a background job is the ``timeout`` Hermes puts in the request."""
     joined = _text_of(text)
@@ -1034,6 +1072,8 @@ CHECKS = (
     # 1.8.4.0 (E7). A filtered prompt stops at one attempt only while KAME knows the wording.
     ("agent/error_classifier.py", "every safety phrase of the host is known to KAME", every_safety_phrase_of_the_host_is_known),
     ("agent/auxiliary_client.py", "the auxiliary request still carries the task's timeout", the_aux_request_still_carries_the_tasks_timeout),
+    # 1.8.4.2 (A1). A lane of the host's own walk is a plain failure, not a provider outage.
+    ("agent/auxiliary_health.py", "a lane of the host's walk is not held out as a provider outage", a_lane_of_the_walk_is_not_held_out_as_a_provider_outage),
 )
 
 

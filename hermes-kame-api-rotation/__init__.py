@@ -522,6 +522,32 @@ def register(ctx) -> None:
     except Exception:
         logger.debug("%s: speech provider unavailable", PLUGIN_NAME, exc_info=True)
 
+    # 1.8.4.2 (V2): listening on the user's Gemini keys, used only when ``stt.provider: kame-gemini`` is set.
+    # Guarded the same way: a host without the transcription seam loads this plugin as before.
+    try:
+        register_stt = getattr(ctx, "register_transcription_provider", None)
+        if callable(register_stt):
+            from . import listen
+
+            listening = listen.make_provider()
+            if listening is not None:
+                register_stt(listening)
+        else:
+            logger.debug("%s: this Hermes has no transcription-provider seam", PLUGIN_NAME)
+    except Exception:
+        logger.debug("%s: listening provider unavailable", PLUGIN_NAME, exc_info=True)
+
+    # 1.8.4.2 (S1, review): read the record of which models keep failing now, off the first reply's path - a
+    # profile with no record yet learns it from calls.jsonl on that first read (135 ms on a 4 MB file, measured).
+    try:
+        import threading
+
+        from .core.model_health import HEALTH
+
+        threading.Thread(target=HEALTH.ensure_loaded, name="kame-health-load", daemon=True).start()
+    except Exception:
+        logger.debug("%s: could not read the remembered trouble early", PLUGIN_NAME, exc_info=True)
+
     # The carousel itself. ``hermes-kame-provider`` finds this package through
     # the registry and asks ``facade.make_client`` for every API-key provider's
     # client; without that companion installed nothing here is ever asked, and

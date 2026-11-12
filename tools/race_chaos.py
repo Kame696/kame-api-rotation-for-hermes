@@ -16,6 +16,9 @@ request in a random shape, and checks after every reply:
       read from ``leg.race_kind``). A widened leg may (F1), so it is not checked here.
   I4  an exception that reaches the caller is a provider refusal or one of KAME's own,
       never an internal error (AttributeError, KeyError, TypeError, ...)
+  I5  (1.8.4.2, S1e) every ``kame-probe-judge`` thread - the one that hears a start probe that lost the race
+      to its end - has ended when the run ends. The start decision also reads random remembered trouble
+      (S1c), so the start probe lane runs from windows, tails AND the record.
 
 Offline. HERMES_HOME is a temp folder; nothing reaches the owner's logs. Constants are the
 scaled ones of ``tests/test_1_8_2_9_silent_two_models.py`` (race at 0.3 s, slow bound 1 s).
@@ -322,6 +325,9 @@ def setup_state(t, rng, reserve=()):
                 t.engine.mark(ident, k, False, 600.0, "server")
     for m in MODELS:
         ident = "gemini:" + m
+        if rng.random() < 0.25:                            # remembered trouble (1.8.4.2, S1c): failing for days
+            for n in range(rng.choice([2, 3])):
+                transport.HEALTH.note(ident, False, now=now - 3600.0 - n)
         roll = rng.random()
         if roll < 0.2:
             t._note_busy(ident)
@@ -344,6 +350,7 @@ def run_one(seed):
     chain_mod.forget()
     hedging_mod.HEDGE_TRACKER.clear()
     pacing_mod.PACER.clear()
+    transport.HEALTH.configure(directory=Path(HOME) / f"health-{seed}", calls_path=Path(HOME) / "no-calls.jsonl")
     reserve = [KEYS[0]] if rng.random() < 0.5 else []
     if reserve:
         os.environ["KAME_KEY_RESERVE"] = ", ".join(label(k) for k in reserve)
@@ -413,6 +420,7 @@ def main():
     transport._CROSS_COLD_S = 0.3
     transport._CROSS_STEP_S = 0.4
     transport._CROSS_MIN_S = 0.3
+    transport._PROBE_JUDGE_S = 1.5           # scaled like the rest: a judge ends 1.5 s after its leg started
     outcomes = collections.Counter()
     times = []
     bad = []
@@ -427,6 +435,14 @@ def main():
         if problems:
             bad.append((seed, problems, asked))
             print(f"seed {seed}: " + " | ".join(p.splitlines()[0] for p in problems), flush=True)
+    # I5: no probe judge left behind (each ends by its own deadline)
+    end = time.monotonic() + 15.0
+    while time.monotonic() < end and any(t.name == "kame-probe-judge" for t in threading.enumerate()):
+        time.sleep(0.1)
+    left = sum(1 for t in threading.enumerate() if t.name == "kame-probe-judge")
+    if left:
+        bad.append((-1, [f"I5 {left} kame-probe-judge thread(s) still alive 15 s after the run"], []))
+        print(f"I5 {left} kame-probe-judge thread(s) still alive", flush=True)
     times.sort()
     print(f"seeds {args.seeds}, defects {len(bad)}, outcomes {dict(outcomes)}, "
           f"p50 {times[len(times) // 2]:.2f}s, max {times[-1]:.2f}s, "

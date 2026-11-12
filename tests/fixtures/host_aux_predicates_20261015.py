@@ -92,3 +92,20 @@ def credential_rung_accepts(exc):
 
 def should_skip_same_provider_retry(task, exc):
     return task in TIMEOUT_NO_RETRY_TASKS and is_timeout_error(exc) and "no-progress timeout" not in str(exc)
+
+
+def fallback_reason(exc):
+    """``fallback_candidate_unavailable_reason`` of the host (``agent/auxiliary_health.py``): the first label of
+    ``_FALLBACK_REASONS`` that is not "auth error", or ``None`` - the walk then re-raises that lane's error and
+    no candidate is quarantined. Added 2026-11-11 (1.8.4.2, A1). The three predicates this copy leaves out
+    (model incompatible with the route, invalid provider response, status-less structured provider error) read
+    response bodies and attributes a plain ``RuntimeError`` does not have."""
+    for predicate, label in (
+        (is_payment_error, "payment error"),
+        (is_rate_limit_error, "rate limit"),
+        (is_timeout_error, "request timed out"),
+        (is_connection_error, "connection error"),
+    ):
+        if predicate(exc):
+            return label
+    return None

@@ -256,8 +256,10 @@ def test_a_stopped_job_is_not_asked_again_for_thirty_seconds(fresh):
         fresh.complete(compression(plan))
     seen = len(plan.asked)
     # the host's own retry (1 s later) and the next attempt of the job cost nothing
+    # (1.8.4.2, A1: the second stop of the same job is a lane of the host's walk, a plain failure that
+    # is no longer timeout-shaped, so the host does not hold the provider out)
     fresh.clock.sleep(1.0)
-    with pytest.raises(transport.KameAuxTimeout):
+    with pytest.raises(transport.KameAuxStopped):
         fresh.complete(compression(plan))
     assert len(plan.asked) == seen
     # the chat is not held back by it (the two busy keys opened the model's busy window: clear it)

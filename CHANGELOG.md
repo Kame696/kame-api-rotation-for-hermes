@@ -7,6 +7,42 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.8.4.2] - 2026-11-11 - a model that keeps failing stops making you wait
+
+**What drove it.** The first reply after a pause waited about 20 s, every session: the best model of the list
+hangs or answers 503 on almost every request, and KAME forgot that between pauses and restarts.
+
+- **Remembered trouble.** KAME keeps, across restarts and profiles, the last judged outcomes of each model
+  (`model-health.json`). A model whose latest outcome is a failure, with at least two failures in its last ten
+  within seven days, no longer leads the reply: the reply starts on the next model of your list and the failing
+  one is still asked beside it, so it leads again the moment it answers. Only the provider saying busy (or
+  making you wait past the race trigger) counts; a 429, a quota, a bad request or a stop does not. Nothing new
+  is sent while the best model is healthy. `KAME_NO_REMEMBERED_TROUBLE=1` turns it off.
+- **A probe that lost is heard to its end.** The ask beside the reply is no longer cut when the reply speaks; it is
+  heard for its first word (or 30 s), so a recovered model is noticed.
+- **A model refused busy is not handed the same reply again.** Within one reply, every hand-over now skips the
+  models whose race leg was refused busy.
+- **A background job stopped on one lane no longer benches the provider.** The second stop of the same job in the
+  host's own walk is a plain failure of that lane, so the host stops holding the whole provider out of
+  background tasks for ten minutes.
+- **A background title skips a model that keeps failing.** A title (or another cosmetic background job) is not
+  sent to a model remembered as failing; the host moves it down your list at once instead of waiting on it.
+  Compression and other important jobs are still sent.
+- **Listening on your Gemini keys.** A speech-to-text provider `kame-gemini` (off unless `stt.provider:
+  kame-gemini` is set in Hermes' config) sends the recording to Gemini on the keys you already keep.
+- **Speech language.** `tts.kame-gemini.language` (else `tts.language`), empty by default, sets the language of
+  the spoken reply.
+
+**Measured on the installed copy (2026-11-11, base profile, real keys).** First reply after a Hermes restart: the
+reply started on gemini-3.6-flash with no pool wait and its first text in 2.9 s, while gemini-3.8-flash was asked
+beside it, heard, and recorded as failing again (1.8.4.1 waited about 18 s on 3.8 first). A warm voice turn
+through the gateway: first token 7.6 s, of which the model took 3.0 s; listening transcribed 18 of 18 words. The
+first turn after a restart spent about 17 s inside Hermes before it called the model; KAME's own attempt started
+0.55 s after Hermes asked. While 3.8 and 3.7 are both remembered as failing, the chat title is not generated
+(the host's walk reaches only 3.7); the reply is not affected.
+
+---
+
 ## [1.8.4.1] — 2026-11-10 — a blocked prompt stops at once, one number on the screen
 
 **What drove it.** A full audit of 1.8.3.1: 4,000 fault-injected calls found no crash, and 11,512 real attempts

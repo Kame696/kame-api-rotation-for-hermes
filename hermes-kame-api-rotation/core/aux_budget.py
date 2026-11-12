@@ -94,6 +94,24 @@ def stop_message(task: str, model: str, tries: int, seconds: float) -> str:
             f"tries in {max(0, int(seconds))}s - its keys are kept for your chat")
 
 
+def lane_message(task: str, model: str) -> str:
+    """The text of the error a LANE of the host's own walk raises (1.8.4.2, A1).
+
+    A background job KAME stopped is moved down the user's list by the host; every later model of that
+    walk asks KAME again within the same minute. Raising the timeout-shaped :func:`stop_message` for each
+    makes the host hold the whole provider out of every background task for ten minutes. This text names
+    no timeout, limit, quota, overload, connection or status code, and none of the host's words
+    (``_HOST_WORDS``): to the host it is an ordinary failure of that one lane and nothing is quarantined."""
+    def clean(text: Any) -> str:
+        kept = "".join(c for c in str(text or "") if c.isalnum() or c in "._-/:")[:60]
+        if not kept or any(word in kept.lower() for word in _HOST_WORDS):
+            return "?"
+        return kept
+
+    return (f"kame: background job {clean(task)} not sent to {clean(model)} - KAME stopped it a moment ago; "
+            "its keys are kept for your chat")
+
+
 #: The suggestion appears only when background jobs are a real share of the best model's requests.
 SUGGEST_MIN_SHARE = 0.15
 SUGGEST_MIN_SIDE = 20

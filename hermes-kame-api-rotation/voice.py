@@ -201,12 +201,32 @@ def _http(base_url: str) -> Any:
         return client
 
 
-def _payload(text: str, voice: str) -> dict:
+def _language() -> str:
+    """The speech language the user set, or ``""`` (the model picks, as before 1.8.4.2).
+
+    ``tts.kame-gemini.language`` beats ``tts.language``. Only a plausible language tag is kept: at most 35
+    characters, letters, digits and ``-`` (``pt-BR``, ``en-US``, ``cmn-CN``); anything else is ignored."""
+    config = _tts_config()
+    own = config.get(PROVIDER_NAME)
+    for value in ((own.get("language") if isinstance(own, dict) else None), config.get("language")):
+        if isinstance(value, str):
+            tag = value.strip()
+            if tag and len(tag) <= 35 and all(c.isascii() and (c.isalnum() or c == "-") for c in tag):
+                return tag
+            if tag:
+                return ""       # a value was set and it is not a tag: ignored, the next key is not tried
+    return ""
+
+
+def _payload(text: str, voice: str, language: str = "") -> dict:
+    speech: dict = {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}
+    if language:
+        speech["languageCode"] = language       # 1.8.4.2 (V3): live, Gemini speech accepts "pt-BR"
     return {
         "contents": [{"parts": [{"text": text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+            "speechConfig": speech,
         },
     }
 
@@ -277,6 +297,7 @@ def _speak(text: str, voice: str, model: str) -> bytes:
     deadline = _monotonic() + SENTENCE_BUDGET_S
     base = _base_url()
     url = f"{base}/models/{model}:generateContent"
+    language = _language()
     framing = 0
     attempt, waited, last, unreachable = 0, False, "", 0
     # A reframed try is not a key's turn (F12): the key was not at fault. The framings and the
@@ -298,7 +319,7 @@ def _speak(text: str, voice: str, model: str) -> bytes:
             raise SpeechUnavailable(f"every Gemini key is resting; the first is back in {when}")
         attempt += 1
         _count_request(transport, identity)
-        body = _payload(_FRAMINGS[framing](text), voice)
+        body = _payload(_FRAMINGS[framing](text), voice, language)
         try:
             left = max(0.001, deadline - _monotonic())
             response = _http(base).post(

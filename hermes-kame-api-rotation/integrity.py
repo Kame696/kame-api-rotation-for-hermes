@@ -250,6 +250,10 @@ def check_host_seams() -> Dict[str, object]:
         # 1.8.4.0 (V1): the speech-provider base class. Missing means the Gemini speech
         # provider (voice.py) is simply not offered; rotation is untouched.
         ("speech provider (agent.tts_provider.TTSProvider)", "agent.tts_provider", "TTSProvider", False, {}),
+        # 1.8.4.2 (V2): the transcription-provider base class. Missing means the Gemini listening
+        # provider (listen.py) is simply not offered; rotation is untouched.
+        ("listening provider (agent.transcription_provider.TranscriptionProvider)",
+         "agent.transcription_provider", "TranscriptionProvider", False, {}),
     ]
     import inspect
 

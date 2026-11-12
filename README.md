@@ -6,9 +6,9 @@
 
 ### What API key rotation should have been: all your keys and models, one agent that never waits.
 
-[![Version](https://img.shields.io/badge/version-1.8.4.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.4.2-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
-[![Tests](https://img.shields.io/badge/local_tests-3800%2B_passing-brightgreen.svg)](#verified)
+[![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey.svg)](#privacy)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -29,7 +29,7 @@
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.8.4.1-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.8.4.2-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -192,7 +192,22 @@ flowchart TD
 </table>
 
 <details>
-<summary><b>📣 What's new in 1.8.4.1 and the versions before it</b></summary>
+<summary><b>📣 What's new in 1.8.4.2 and the versions before it</b></summary>
+
+**1.8.4.2 — a model that keeps failing stops making you wait.**
+
+- **Your best model still leads, unless it keeps failing.** KAME remembers, across restarts, the last outcomes
+  of each model. When your main model's latest outcome is a failure and it failed at least twice in its last ten
+  tries (seven days), a reply no longer waits on it: it starts on the next model of your list, and your main
+  model is asked beside it. If your main model answers first, the reply is its own; if it speaks again while the
+  other one answers, the next reply starts on it. While your main model is healthy nothing changes and nothing
+  extra is sent. `KAME_NO_REMEMBERED_TROUBLE=1` turns it off.
+- **A model refused busy is not handed the same reply again**, and a background job stopped once no longer
+  keeps the provider out of background tasks for ten minutes.
+- **A background title skips a model that keeps failing**, instead of waiting on it.
+- **Listening with your Gemini keys.** Set `stt.provider: kame-gemini` and Hermes transcribes your voice through
+  your Gemini keys, rotated like the chat's. Off until you set it.
+- **Speech language.** `tts.kame-gemini.language` (for example `pt-BR`) sets the language of the spoken reply.
 
 **1.8.4.1 — a blocked prompt stops at once, one number on the screen.**
 
@@ -527,7 +542,18 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
-**1.8.4.1** (2026-11-10), see the [changelog](CHANGELOG.md):
+**1.8.4.2** (2026-11-11), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite | **0 failing**, 4,034 passing |
+| Host gates | `host_prose` ok; `host_assumptions` ok; `host_corpus` on the installed Hermes: 200 of 200 alone, 196 of 200 with KAME (the verdicts KAME changes on purpose); Hermes' own provider and credential suites on the installed Hermes and on v0.23.1 answer the same with KAME's client (56 clients built) |
+| Live, main model failing | first reply after a restart: first text in 2.9 s on the next model, with no wait for a key, while the main model was asked beside it (1.8.4.1: about 20 s waiting on it first) |
+| Live voice | a spoken Portuguese question transcribed word for word (18 of 18) on the Gemini keys; a voice turn through the gateway: first token in 7.6 s, 3.0 s of it the model |
+| Fault injection | random refusals, cuts and timeouts (`tools/chaos.py`) and 150 raced replies (`tools/race_chaos.py`): 0 defects |
+| Installed | four Hermes profiles, the daily live check passing in each |
+
+**1.8.4.1** (2026-11-10):
 
 | Check | Result |
 |---|---|
@@ -684,6 +710,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.8.4.2** | A model that keeps failing stops making you wait | A model that keeps failing no longer leads the reply (it is asked beside it and leads again when it answers); a model refused busy is not handed the same reply twice; a background job stopped once no longer benches the provider; listening on your Gemini keys (`stt.provider: kame-gemini`); a speech language setting |
 | **1.8.4.1** | A blocked prompt stops at once | A safety refusal or Anthropic's long-context 429 goes straight back instead of walking every key; a subscription is never raced; one key count everywhere on the page; what KAME did over time and the requests of the last 24 hours; speech with your Gemini keys (`kame-gemini`) |
 | **1.8.3.1** | Any model has a ladder | A reply that starts on model X falls back X, then your main model, then the rest of the list; the live line has seven states with the same words as Agent Zero; a popover on the status-bar chip; the first busy answer after a busy window reopens it. |
 | **1.8.3.0** | Fallback belongs to the main model | The fallback list is used only for a reply that started on your main model; a same-provider next model answers inside KAME so the selector never moves, and the page sets the main model back after a switch to another provider; request-shape 400s are not blamed on keys; NVIDIA 402 reads as a spent account; the two instrument logs rotate instead of going silent. |

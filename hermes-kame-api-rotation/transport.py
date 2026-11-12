@@ -28,6 +28,7 @@ the request comes from and where the answer goes:
 
 from __future__ import annotations
 
+import itertools
 import contextvars
 import json
 import logging
@@ -59,6 +60,7 @@ from .core.carousel import (
 )
 from .core.classify import classify, looks_like_upstream_wrapper, resolve_evidence_body
 from .core.lifetime import LIFETIME
+from .core.model_health import HEALTH
 from .core.quota import QuotaScope
 
 logger = logging.getLogger(__name__)
@@ -159,6 +161,27 @@ class KameAuxTimeout(TimeoutError):
     task's fallback, then the user's own fallback list. KAME never picks that model. Never use
     ``KamePoolResting`` here: a 429 shape is retried and rotates the host's pool.
     """
+
+
+class KameAuxStopped(RuntimeError):
+    """A background job KAME stopped moments ago, asked again by a LATER lane of the host's own walk.
+
+    1.8.4.2 (A1). :class:`KameAuxTimeout` makes the host move the job down the user's list once. Every
+    further model of that walk asks KAME again; answering each with the same timeout-shaped error made the
+    host hold the whole provider out of every background task for ten minutes
+    (``auxiliary_health._CANDIDATE_QUARANTINE_TTL``). This one is a plain failure of that lane: no
+    timeout, connection, DNS or SSL in its name, no ``status_code``, no ``response``, no ``body``, and
+    a text with none of the host's words (``aux_budget.lane_message``).
+    """
+
+
+#: 1.8.4.2 (A1): ``(task, monotonic stamp, transport id)`` of the last background job KAME stopped in this context.
+#: The host's walk runs in the context of the job that started it, so a second call of the same task
+#: inside ``WALK_WINDOW_S`` is a lane of that walk.
+_AUX_WALK: "contextvars.ContextVar[Optional[Tuple[str, float, int]]]" = contextvars.ContextVar(
+    "kame_aux_walk", default=None)
+WALK_WINDOW_S = 60.0
+_WALK_TOKENS = itertools.count(1)
 
 
 class _StandIn:
@@ -931,6 +954,10 @@ _HANDOVER_MIN_BACK_S = 30.0
 #: most this often by a circle. Between circles the model in use still rotates its own keys
 #: (D2, unchanged), so this bounds the circle, not the request rate on that model.
 _PROBE_EVERY_S = 20.0
+#: 1.8.4.2 (S1e): a start-probe leg that lost the race is heard to its first chunk, its end, its error or
+#: this long, then cut; ``_PROBE_JUDGE_STEP_S`` is how often its judge looks.
+_PROBE_JUDGE_S = 30.0
+_PROBE_JUDGE_STEP_S = 0.2
 #: Columns of the cost readout (``KameTransport._speed``): replies, then the extra requests by kind.
 _SPEED_REPLIES, _SPEED_BACKUP, _SPEED_RACE, _SPEED_BURST, _SPEED_CIRCLE = 0, 1, 2, 3, 4
 #: Rests that are not quota: they never count as "429 pressure" (D5).
@@ -1490,6 +1517,10 @@ class KameTransport:
         # on the thread that drives calls (``_drain_hedge_losers``). A deque:
         # ``append`` from a worker thread and ``popleft`` here are atomic.
         self._hedge_losers: "deque[Tuple[Any, ...]]" = deque()
+        # 1.8.4.2 (S1e): the verdicts of probe legs that lost the race and were heard to their end, waiting
+        # to be accounted for on the thread that drives calls (``_drain_probe_verdicts``).
+        self._walk_token = next(_WALK_TOKENS)       # not id(self): a freed transport's id can come back
+        self._probe_verdicts: "deque[Tuple[Any, ...]]" = deque()
         # 1.8.2.5: models whose stream trigger was seeded from calls.jsonl,
         # and that file's first-word history, read once.
         self._race_seeded: set = set()
@@ -2439,6 +2470,10 @@ class KameTransport:
         started = time.monotonic()
         pool_waited = 0.0
         call_id = f"{os.getpid()}-{time.time_ns()}"
+        try:
+            setattr(call, "_kame_call_id", call_id)      # 1.8.4.2 (S1b): one remembered outcome per call
+        except Exception:  # pragma: no cover - a test double without attributes
+            pass
         self.calls += 1
         self.last_call_at = time.time()
 
@@ -2519,6 +2554,17 @@ class KameTransport:
                   identity=identity,
                   reason=f"background job {task or 'unnamed'} stopped: {why} - Hermes decides what is next")
             _publish(self, None)
+            # 1.8.4.2 (A1): a second stop of the same task in this context within a minute is a lane of the
+            # host's own walk after the first stop: a plain failure of that lane, never the timeout shape the
+            # host turns into a ten-minute quarantine of the provider.
+            try:
+                _walk = _AUX_WALK.get()
+                if (_walk is not None and _walk[0] == task and _walk[2] == self._walk_token
+                        and 0.0 <= time.monotonic() - _walk[1] <= WALK_WINDOW_S):
+                    return KameAuxStopped(aux_budget.lane_message(task, model_label(identity)))
+                _AUX_WALK.set((task, time.monotonic(), self._walk_token))
+            except Exception:  # pragma: no cover - a contextvar that cannot be set
+                logger.debug("kame: could not read the host's walk", exc_info=True)
             return KameAuxTimeout(aux_budget.stop_message(
                 task, model_label(identity), aux_requests, time.monotonic() - started))
 
@@ -2526,6 +2572,7 @@ class KameTransport:
         # user's list in place - also what the all-keys-resting and the busy paths use.
         visited: List[str] = []     # models left in this call (gated like a busy one: review H4)
         excluded: List[str] = []    # models that refused Hermes' request shape (review M3)
+        leg_busy: List[str] = []    # 1.8.4.2 (L1): other models whose race leg was refused busy in this reply
         home_model = (call.kwargs or {}).get("model")
         try:   # the widen step must not ask a model that already refused this request (review, 2026-10-24)
             setattr(call, "_kame_avoid", excluded)
@@ -2534,10 +2581,11 @@ class KameTransport:
         except Exception:  # pragma: no cover - a test double without attributes
             pass
 
-        def circle_to(wrapped: Tuple[str, str], why: str) -> None:
+        def circle_to(wrapped: Tuple[str, str], why: str, announce: bool = True) -> None:
             nonlocal identity, label, busy_keys, busy_noted, verdicts, consecutive_timeouts
             nonlocal long_refusals, vigil
-            self._announce_wrap(call, identity, wrapped[0], why)
+            if announce:
+                self._announce_wrap(call, identity, wrapped[0], why)
             try:
                 setattr(call, "_kame_standin_why", _short_why(why))
             except Exception:  # pragma: no cover - a test double without attributes
@@ -2575,21 +2623,39 @@ class KameTransport:
         # and the busy one is asked beside it. Where it is not, the tail is the sequential knock of 1.8.3.1.
         _in_tail = (_start_until > 0.0 and not _in_window and
                     _start_now < _start_until + max(_BUSY_FIRST_S, self._busy_window.get(identity, 0.0)))
-        if _in_window or _in_tail:
+        # 1.8.4.2 (S1): a model that keeps failing is remembered across pauses and restarts. Outside the
+        # window a reply starts like one inside it: on the next model, the failing one asked beside it.
+        self._drain_probe_verdicts()
+        _risky = (not _in_window) and self._remembered_risky(identity, call)
+        if _in_window or _in_tail or _risky:
             plan = self._start_probe_plan(call, identity, stream, keys) if home_model else None
+            _failed, _tried = HEALTH.summary(identity) if _risky else (0, 0)
+            _orig = identity
+
+            def say_risky(target: str, beside: bool) -> None:
+                # ONE event per reply, in place of the "busy moments ago" line (it was not busy, it keeps failing)
+                _emit(call, "switch", identity=_orig,
+                      reason=f"{model_label(_orig)} failed {_failed} of its last "
+                             f"{_tried} tries - this reply starts on {model_label(target)}"
+                             + (" and asks it beside" if beside else ""))
+
             if plan is not None and home_model:
                 # decisions/0032 C: start on the next model at once (as the hand-over would have), and
                 # ask the busy one again beside it - first sign of work wins; nothing waits for it.
                 probe_leg = (identity, str(home_model))
-                circle_to(plan, "probe")
-            elif _in_window:
+                circle_to(plan, "probe", announce=not _risky)
+                if _risky:
+                    say_risky(plan[0], True)
+            elif _in_window or _risky:
                 handover = self._maybe_hand_over(call, identity, keys, 0.0, False, waited=0.0, busy=True,
-                                                 skipped=self._busy_until.get(identity, 0.0) - time.time(),
-                                                 stand_in_ok=True, avoid=visited + excluded)
+                                                 skipped=max(0.0, self._busy_until.get(identity, 0.0) - time.time()),
+                                                 stand_in_ok=True, avoid=visited + excluded + leg_busy)
                 if isinstance(handover, _StandIn):
                     # 1.8.3.0 (decisions/0033 D2 a): a sibling of the same provider answers, here,
                     # on the keys KAME holds - Hermes is not asked to switch.
-                    circle_to(handover.target(), handover.why)
+                    circle_to(handover.target(), handover.why, announce=not _risky)
+                    if _risky:
+                        say_risky(handover.identity, False)
                 else:
                     if handover is not None:
                         raise handover
@@ -2598,7 +2664,9 @@ class KameTransport:
                     # this busy one while a better is due, nor on the last.
                     wrapped = self._wrap_target(call, identity, seen=False, include_self=True)
                     if wrapped is not None and wrapped[0] != identity:
-                        circle_to(wrapped, "was busy moments ago")
+                        circle_to(wrapped, "was busy moments ago", announce=not _risky)
+                        if _risky:
+                            say_risky(wrapped[0], False)
 
         while True:
             attempt += 1
@@ -2656,7 +2724,7 @@ class KameTransport:
                     handover = self._maybe_hand_over(
                         call, identity, keys, pool_waited, bool(seen),
                         waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
-                        stand_in_ok=True, avoid=visited + excluded)
+                        stand_in_ok=True, avoid=visited + excluded + leg_busy)
                     if isinstance(handover, _StandIn):
                         circle_to(handover.target(), handover.why)      # 1.8.3.0 (D2 a)
                         continue
@@ -3188,6 +3256,13 @@ class KameTransport:
                     self.rotations += 1
                     continue
                 verdicts[key] = (kind, status)
+                # 1.8.4.2 (L1): a model whose race leg was refused busy in this very reply is not handed the
+                # same reply again (the leg rows above are keyed by key, and the keys are shared by every
+                # model of the provider, so ``_drain_hedge_losers`` keeps this list by model).
+                for _busy_model in list(getattr(call, "_kame_leg_busy", None) or []):
+                    if _busy_model != identity and _busy_model not in leg_busy:
+                        leg_busy.append(_busy_model)
+                        HEALTH.note(_busy_model, False, call_id=call_id)
                 _legs_seen = getattr(call, "_kame_leg_verdicts", None)
                 if _legs_seen:
                     for _leg_key, _leg_row in list(_legs_seen.items()):
@@ -3231,15 +3306,15 @@ class KameTransport:
                             and time.time() >= self._busy_until.get(identity, 0.0)
                             and self._is_busy(identity, busy_keys)):
                         busy_noted = True
-                        self._note_busy(identity)
+                        self._note_busy(identity, call=call)
                 if len(busy_keys) >= 2 and not busy_noted:
                     busy_noted = True
-                    self._note_busy(identity)
+                    self._note_busy(identity, call=call)
                 handover = self._maybe_hand_over(
                     call, identity, keys, pool_waited, bool(seen),
                     waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
                     after_failure=True,
-                    stand_in_ok=stitcher is None and not replay_tool_request, avoid=visited + excluded)
+                    stand_in_ok=stitcher is None and not replay_tool_request, avoid=visited + excluded + leg_busy)
                 if isinstance(handover, _StandIn):
                     circle_to(handover.target(), handover.why)          # 1.8.3.0 (D2 a)
                     continue
@@ -3798,6 +3873,7 @@ class KameTransport:
         answered spent quota and is a true latency sample: the pacer counts
         it and both latency trackers learn from it.
         """
+        self._drain_probe_verdicts()
         while self._hedge_losers:
             try:
                 (identity, key, call, label, attempt, exc, elapsed, is_hedge,
@@ -3821,7 +3897,7 @@ class KameTransport:
                         identity, key, kind, _status):
                     # decisions/0032 C: the probe of a busy model was refused as busy again: the WINDOW
                     # doubles (D2). The key still rests one second - the 503 rule is untouched.
-                    self._note_busy(identity)
+                    self._note_busy(identity, call=call)
                 # 1.8.2.7 (decisions/0027): a leg is a key tried this run, so the
                 # unanimity rules in ``_drive`` must see its verdict too, or a pool
                 # probed several keys at once could never prove "every key refused".
@@ -3833,6 +3909,17 @@ class KameTransport:
                     except Exception:  # pragma: no cover - a call that refuses attributes
                         pass
                 legs_seen[key] = (kind, _status, identity)  # review R2: whose pool it was
+                if self._busy_failure(identity, key, kind, _status):
+                    # 1.8.4.2 (L1): this model was refused busy in this reply (read by the hand-overs of it)
+                    try:
+                        busy_models = getattr(call, "_kame_leg_busy", None)
+                        if busy_models is None:
+                            busy_models = []
+                            setattr(call, "_kame_leg_busy", busy_models)
+                        if identity not in busy_models:
+                            busy_models.append(identity)
+                    except Exception:  # pragma: no cover - a call that refuses attributes
+                        pass
                 if kind in _HEDGE_QUOTA_KINDS:
                     from .core.hedging import HEDGE_TRACKER as _hedge_q
                     _hedge_q.note_quota_refusal(identity)   # 1.8.2.9: any leg, on its own model
@@ -3841,6 +3928,75 @@ class KameTransport:
                     _hedge.note_hedge_429(identity)
             except Exception:
                 logger.debug("kame: could not account for a hedge leg", exc_info=True)
+
+    def _judge_probe(self, leg: "_StreamLeg", leg_id: str, call: "Call", label: str, attempt: int,
+                     reasoning: bool) -> None:
+        """1.8.4.2 (S1e): hear a probe leg that lost the race to its end, off the reply's thread.
+
+        A daemon thread waits (a short step at a time) until the leg shows a chunk or ends (``ok``), fails
+        (``failed``), or ``_PROBE_JUDGE_S`` pass from its start (``silent``); then cuts it and files the
+        verdict for :meth:`_drain_probe_verdicts`. Never raises."""
+        def run() -> None:
+            try:
+                deadline = leg.started + _PROBE_JUDGE_S
+                while True:
+                    if leg.word_at is not None or leg.ended_at is not None:
+                        verdict = "ok"
+                        break
+                    if leg.failed is not None:
+                        verdict = "failed"
+                        break
+                    if time.monotonic() >= deadline:
+                        verdict = "silent"
+                        break
+                    time.sleep(_PROBE_JUDGE_STEP_S)
+                exc = leg.failed if verdict == "failed" else None
+                leg.abort()
+                try:
+                    from .core.pacing import PACER as _pacer
+                    _pacer.stamp(leg_id, leg.key)
+                except Exception:  # pragma: no cover - a dict write
+                    logger.debug("kame: could not stamp a judged probe", exc_info=True)
+                self._probe_verdicts.append((leg_id, leg.key, verdict, exc, time.monotonic() - leg.started,
+                                             call, label, attempt, reasoning))
+            except Exception:  # pragma: no cover - a judge must never raise
+                logger.debug("kame: a probe judge failed", exc_info=True)
+
+        threading.Thread(target=run, name="kame-probe-judge", daemon=True).start()
+
+    def _drain_probe_verdicts(self) -> None:
+        """1.8.4.2 (S1e): account for the probes that were heard to their end, on the thread that drives calls.
+
+        ``ok``: the model answered again - its window and probe stamp end, the record gets a success.
+        ``failed``: the loser path of :meth:`_drain_hedge_losers`, then a busy failure opens its window.
+        ``silent``: thirty seconds without a word opens its window."""
+        pending = getattr(self, "_probe_verdicts", None)
+        while pending:
+            try:
+                (leg_id, key, verdict, exc, _elapsed, call, label, attempt, _reasoning) = pending.popleft()
+            except IndexError:  # pragma: no cover - another drain emptied it
+                return
+            try:
+                if verdict == "ok":
+                    self._busy_until.pop(leg_id, None)
+                    self._busy_window.pop(leg_id, None)
+                    self._busy_kind.pop(leg_id, None)
+                    self._probed_at.pop(leg_id, None)
+                    HEALTH.note(leg_id, True, call_id=self._call_id_of(call))
+                    _emit(call, "switch", identity=leg_id,
+                          reason=f"{model_label(leg_id)} answered again beside the last reply - "
+                                 "the next reply starts on it")
+                elif verdict == "failed":
+                    _verdict, kind, _status = self._on_failure(
+                        leg_id, key, exc, label, attempt, False, False,
+                        call=call, credential_id=counted_as(call.entry(key), key),
+                    )
+                    if self._busy_failure(leg_id, key, kind, _status):
+                        self._note_busy(leg_id, call=call)
+                else:
+                    self._note_busy(leg_id, call=call)
+            except Exception:
+                logger.debug("kame: could not account for a judged probe", exc_info=True)
 
     # -- 1.8.2.5: the stream race -------------------------------------------
 
@@ -4069,12 +4225,12 @@ class KameTransport:
                         # decisions/0032 B3: every model that could take this reply is already in the
                         # race and silent. Cutting them would hand Hermes one of the same models:
                         # note them slow for the next reply (once) and keep waiting for the first to speak.
-                        self._note_busy(identity, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S)
+                        self._note_busy(identity, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S, call=call)
                         noted_slow.add(identity)
                         for cross_leg in cross_legs:
                             if not cross_leg.done:
                                 self._note_busy(getattr(cross_leg, "cross"), first=_SLOW_FIRST_S,
-                                                ceiling=_SLOW_MAX_S)
+                                                ceiling=_SLOW_MAX_S, call=call)
                                 noted_slow.add(getattr(cross_leg, "cross"))
                         _emit(call, "switch", identity=identity,
                               reason="every model of your list is slow right now - KAME keeps waiting for "
@@ -4082,9 +4238,11 @@ class KameTransport:
                         slow_after = None
                         handover = None
                     else:
-                        handover = self._maybe_hand_over(call, identity, keys, 0.0, False,
-                                                         waited=now - race_started, busy=True,
-                                                         slow=now - race_started)
+                        handover = self._maybe_hand_over(
+                            call, identity, keys, 0.0, False, waited=now - race_started, busy=True,
+                            slow=now - race_started,
+                            avoid=[getattr(leg, "cross") for leg in cross_legs
+                                   if leg.error is not None and getattr(leg, "cross", None)])
                         if handover is None:
                             slow_after = None  # nothing could take it: keep waiting, as before
                     if handover is not None:
@@ -4096,10 +4254,10 @@ class KameTransport:
                                                       reasoning=reasoning, censored=True)
                             except Exception:
                                 logger.debug("kame: could not account for a slow leg", exc_info=True)
-                        self._note_busy(identity, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S)
+                        self._note_busy(identity, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S, call=call)
                         for cross_leg in cross_legs:  # the models raced in were silent too
                             self._note_busy(getattr(cross_leg, "cross"), first=_SLOW_FIRST_S,
-                                            ceiling=_SLOW_MAX_S)
+                                            ceiling=_SLOW_MAX_S, call=call)
                         raise handover
                 # -- wait for the next event -------------------------------------------
                 wait = 0.25
@@ -4162,7 +4320,17 @@ class KameTransport:
                 continue
             elapsed = now - leg.started
             leg_id = getattr(leg, "cross", None) or identity  # D12: a raced-in model is its own pool
-            if not leg.done:
+            # 1.8.4.2 (S1e, review): a probe that lost after its stream ended normally proved its model is
+            # serving again: that is the "ok" the judge would have filed, known now. A probe still open is
+            # heard by the judge even when it holds word-less chunks (a role chunk is not an answer: a model
+            # can send one and hang).
+            probe_alive = (getattr(leg, "race_kind", None) == "probe" and winner is not None
+                           and leg.done and leg.error is None)
+            if not leg.done and getattr(leg, "race_kind", None) == "probe" and winner is not None:
+                # 1.8.4.2 (S1e): the best model asked beside the reply is heard to its end - cut now, it
+                # could never show a recovered model (its first word comes after the reply's own).
+                self._judge_probe(leg, leg_id, call, label, attempt, reasoning)
+            elif not leg.done:
                 leg.abort()
                 try:
                     _pacer.stamp(leg_id, leg.key)
@@ -4178,6 +4346,9 @@ class KameTransport:
                     _pacer.stamp(leg_id, leg.key)
                 except Exception:  # pragma: no cover — a dict append
                     pass
+            if probe_alive:
+                self._probe_verdicts.append((leg_id, leg.key, "ok", None, elapsed, call, label, attempt,
+                                             reasoning))
         self._drain_hedge_losers()
         if probe:
             setattr(call, "_kame_probe_id", None)   # decided: a later 503 on that model is not this probe's
@@ -4210,16 +4381,16 @@ class KameTransport:
                 for leg in legs:
                     lost = getattr(leg, "cross", None)
                     if lost and leg is not winner and not leg.buffer and lost not in noted_slow:
-                        self._note_busy(lost)
+                        self._note_busy(lost, call=call)
             else:
                 self.handed_over += 1
                 setattr(call, "_kame_standin_why", "slow")        # 1.8.3.1: the reply row says why
                 if identity not in noted_slow:      # review finding 2: B3 already noted it, once
-                    self._note_busy(identity)
+                    self._note_busy(identity, call=call)
                 for leg in legs:   # a model raced in before the winner and still silent lost too
                     lost = getattr(leg, "cross", None)
                     if lost and leg is not winner and not leg.buffer and lost not in noted_slow:
-                        self._note_busy(lost)
+                        self._note_busy(lost, call=call)
                 _emit(call, "handover", identity=identity,
                       reason=f"{model_label(identity)} was slower than usual -> {model_label(won_by)} "
                              f"answered first, {now - race_started:.1f}s after the request")
@@ -4570,12 +4741,24 @@ class KameTransport:
                 return False
         return False
 
+    @staticmethod
+    def _call_id_of(call: Any) -> Optional[str]:
+        """The id the recorder writes for this call (``calls.jsonl``), or ``None``."""
+        try:
+            return getattr(call, "_kame_call_id", None) if call is not None else None
+        except Exception:  # pragma: no cover - a test double that refuses attributes
+            return None
+
     def _note_busy(self, identity: str, *, first: float = _BUSY_FIRST_S,
-                   ceiling: float = _BUSY_MAX_S) -> None:
+                   ceiling: float = _BUSY_MAX_S, call: Any = None) -> None:
         """This call just proved the provider busy (or slow): open, or double, its window.
 
         It doubles when the model is caught again within one window of the last
-        one ending (a reply a minute later in the same storm), not only 30 s."""
+        one ending (a reply a minute later in the same storm), not only 30 s.
+
+        1.8.4.2 (S1b): every such proof is also a failure of that model in the remembered record
+        (``core/model_health``), once per call."""
+        HEALTH.note(identity, False, call_id=self._call_id_of(call))
         now = time.time()
         self._probed_at[identity] = now   # 1.8.2.9: the evidence is fresh as of now
         self._busy_kind[identity] = "slow" if first >= _SLOW_FIRST_S else "busy"   # for the panel
@@ -4609,6 +4792,11 @@ class KameTransport:
         if aux.klass == "cosmetic":
             if now < self._busy_until.get(identity, 0.0):
                 return "its model is busy"
+            # 1.8.4.2 (S1, review): a cosmetic job does not wait 30 s on a model remembered as failing - the
+            # host moves it down the user's list at once (decisions/0032 A: never spin on the best model).
+            if not (settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never") \
+                    and HEALTH.risky(identity):
+                return "its model keeps failing"
             if self._quota_pressure(identity, keys):
                 return "its keys are short of quota"
             if self.engine.healthy_count(identity, keys) == 0:
@@ -4781,7 +4969,9 @@ class KameTransport:
                 # either way the reserve key is spent only on this reply's own request.
                 return None
             later = self._later(call, identity)
-            target = next((e for e in later if self._entry_free(e)), None)
+            # 1.8.4.2 (S1d): a model that is not remembered as failing first; never excludes one
+            target = (next((e for e in later if self._entry_free(e) and not self._entry_risky(e)), None)
+                      or next((e for e in later if self._entry_free(e)), None))
             if target is None:
                 return None
             siblings = {e: (m, s) for e, m, s in
@@ -4805,6 +4995,29 @@ class KameTransport:
         except Exception:
             logger.debug("kame: could not plan a probe of the busy model", exc_info=True)
             return None
+
+    def _remembered_risky(self, identity: str, call: Any = None) -> bool:
+        """Is this model remembered as failing (``core/model_health``)? Never for a background job.
+
+        1.8.4.2 (S1c). False under "Never switch" and "Ignore my fallback list": a reply that may not leave
+        its model has no use for the memory. Any error answers False."""
+        try:
+            if call is not None and getattr(call, "channel", "main") != "main":
+                return False
+            if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
+                return False
+            return HEALTH.risky(identity)
+        except Exception:
+            return False
+
+    def _entry_risky(self, entry: str) -> bool:
+        """Is any pool of this chain entry remembered as failing? (1.8.4.2, S1d)"""
+        try:
+            from .core.fallback_chain import _same
+
+            return HEALTH.risky_entry(entry, _same)
+        except Exception:
+            return False
 
     def _race_ready(self, identity: str, keys: Sequence[str]) -> bool:
         """A race leg on ``identity`` could go out on a key that is not a reserve (1.8.4.0 round 2, R1).
@@ -5104,6 +5317,10 @@ class KameTransport:
                 return None
             from .core.fallback_chain import _same
 
+            # 1.8.4.2 (S1d): candidates not remembered as failing come first, in the list's own order;
+            # the rest follow in theirs. Nothing is excluded.
+            candidates = ([c for c in candidates if not self._entry_risky(c[0])]
+                          + [c for c in candidates if self._entry_risky(c[0])])
             with self._probe_lock:
                 for entry, model, suffix in candidates:
                     if any(_same(x, entry) for x in excluded):
@@ -5158,6 +5375,7 @@ class KameTransport:
             self._probed_at.pop(ident, None)
         for memo in [m for m in list(self._handover_until) if _same(m.split("|", 1)[0], entry)]:
             self._handover_until.pop(memo, None)
+        HEALTH.forget(lambda ident: _same(ident, entry))     # 1.8.4.2 (S1b): the remembered trouble too
         return dropped
 
     def _tally(self, index: int) -> None:
@@ -5333,6 +5551,8 @@ class KameTransport:
         self._busy_until.pop(identity, None)
         self._busy_window.pop(identity, None)
         self._probed_at.pop(identity, None)   # 1.8.2.9: an answer ends the probing of it
+        # 1.8.4.2 (S1b): an answer is evidence, a background job's too - before the channel check.
+        HEALTH.note(identity, True, call_id=self._call_id_of(call))
         if getattr(call, "channel", "main") != "main":
             return
         self._tally(_SPEED_REPLIES)
@@ -5414,8 +5634,13 @@ class KameTransport:
         try:
             from .core.fallback_chain import _same
 
-            target = next((e for e in later if self._entry_free(e) and not _same(identity, e)
-                           and not any(_same(x, e) for x in avoid)), None)
+            def _usable(e: str) -> bool:
+                return (self._entry_free(e) and not _same(identity, e)
+                        and not any(_same(x, e) for x in avoid))
+
+            # 1.8.4.2 (S1d): the first one not remembered as failing, else the first (never excludes)
+            target = (next((e for e in later if _usable(e) and not self._entry_risky(e)), None)
+                      or next((e for e in later if _usable(e)), None))
             if target is None:
                 return None
             siblings = {e: (m, s) for e, m, s in
@@ -5848,6 +6073,15 @@ class _StreamLeg:
         self.response: Any = None
         self.stream: Any = None
         self.stop = threading.Event()
+        #: 1.8.4.2 (S1e): when the first chunk was read, when the stream ended normally, and what it
+        #: failed with (monotonic; failure only when the leg was not stopped). Read by ``_judge_probe``.
+        self.first_at: Optional[float] = None
+        self.ended_at: Optional[float] = None
+        self.failed: Optional[BaseException] = None
+        #: 1.8.4.2 (S1e, review): when the first WORKING chunk was read (``_carries_answer``: text, a tool
+        #: call or reasoning). A role chunk or an empty delta is not a model serving again - the race
+        #: itself never counts one - so the judge waits for this, not for ``first_at``.
+        self.word_at: Optional[float] = None
 
     def attach_response(self, response: Any) -> None:
         self.response = response
@@ -5865,12 +6099,18 @@ class _StreamLeg:
             stream = wire.open(self.client, request, self)
             self.stream = stream
             for chunk in stream:
+                if self.first_at is None:
+                    self.first_at = time.monotonic()
+                if self.word_at is None and _carries_answer(chunk):
+                    self.word_at = time.monotonic()
                 if self.stop.is_set():
                     return
                 self.q.put((self, "chunk", chunk))
+            self.ended_at = time.monotonic()
             self.q.put((self, "end", None))
         except BaseException as exc:  # noqa: BLE001 — handed to the race, judged there
             if not self.stop.is_set():
+                self.failed = exc
                 self.q.put((self, "error", exc))
         finally:
             if stream is not None:
