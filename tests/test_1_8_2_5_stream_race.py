@@ -249,8 +249,10 @@ class TestTheRace:
         assert out[0] is role and shown(out) == "hi"
 
     def test_the_primary_answering_after_a_backup_started_still_wins_whole(self, fresh):
-        # The primary speaks at 0.3 s (after the 0.2 s trigger), the backup at 2 s.
-        pool = Pool({KEYS[0]: [[chunk(role="assistant"), 0.3, chunk("primary "), chunk("wins", finish="stop")]],
+        # The primary speaks at 0.6 s (well after the 0.2 s trigger), the backup at 2 s. 1.8.4.2: was 0.3 s; a
+        # slow macOS CI runner woke the trigger after the primary had already spoken (no backup opened), on
+        # 1.8.4.1's commit as well - the margin, not the race, was too thin.
+        pool = Pool({KEYS[0]: [[chunk(role="assistant"), 0.6, chunk("primary "), chunk("wins", finish="stop")]],
                      KEYS[1]: [[2.0, chunk("late")]], KEYS[2]: [[2.0, chunk("late")]], KEYS[3]: [[2.0, chunk("late")]]})
         out, elapsed = run(fresh, FakeCall(pool))
         assert shown(out) == "primary wins"
