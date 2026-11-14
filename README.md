@@ -90,15 +90,34 @@ Then restart Hermes once.
 
 ### 3️⃣ Add your keys
 
-In the chat:
+Where your provider's key already is, put **all your keys in that one field, separated by commas**:
 
-`/kame-keys add gemini KEY1,KEY2,KEY3`
+`key1,key2,key3`
 
-Everything else is **automatic**. Optional: turn on the panel in Desktop **Capabilities → Plugins**.
+No command needed (details below the table). Everything else is **automatic**.
 
 </td>
 </tr>
 </table>
+
+> **🔑 All your keys in one field, no command**
+>
+> 1. Open the place where you already set your provider's API key: the Hermes dashboard, or the file `~/.hermes/.env`.
+> 2. **Delete the key that is there** and paste **all your keys for that provider, separated by commas**, in that same field.
+> 3. Save and restart Hermes once. Do the same for every provider you use.
+>
+> ```
+> GOOGLE_API_KEY=AIza...key1,AIza...key2,AIza...key3
+> OPENROUTER_API_KEY=sk-or-...key1,sk-or-...key2
+> ```
+>
+> KAME turns that one line into one pooled key each, by itself. Prefer the chat? `/kame-keys add gemini KEY1,KEY2,KEY3` does the same.
+
+> **🖥️ Optional: the KAME page in the left menu**
+>
+> Hermes Desktop keeps it off until you turn it on: open **Capabilities → Plugins**, find **KAME API Rotation** and switch on **Desktop**. **KAME API Rotation** then appears in the **left menu**, with the status chip in the bar. Rotation works without it.
+>
+> <img src="assets/panel-enable.png" alt="Hermes Desktop, Capabilities → Plugins: KAME API Rotation with the Desktop switch on" width="90%" />
 
 <sub>Prefer the command line? <code>hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation</code>, then the same for <code>hermes-kame-provider</code> and <code>hermes-kame-bridge</code>. Every step in detail just below.</sub>
 
