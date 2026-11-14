@@ -11,7 +11,7 @@
    "gemini-3.7-flash",
    "gemini-3.6-flash"
   ],
-  "started_at": 1794319582.114193
+  "started_at": 1794608855.8981705
  },
  "build": {
   "complete": true,
@@ -19,7 +19,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.8.4.1",
+ "build_line": "1.9.0.0",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -120,11 +120,11 @@
    "channel": "main",
    "failures": 0,
    "identity": "gemini:gemini-3.8-flash",
-   "last_at": 1794319603.1142013,
+   "last_at": 1794608876.8981857,
    "reason": "",
-   "started": 1794319603.1142013,
+   "started": 1794608876.8981857,
    "task": "",
-   "waiting_s": 0.0
+   "waiting_s": 0.1
   }
  ],
  "installed": true,
@@ -136,7 +136,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 22892,
+ "pid": 16244,
  "pools": [
   {
    "daily_limit": null,
@@ -144,7 +144,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.00029730796813964844,
+   "idle_for_s": 0.0006952285766601562,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -251,7 +251,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.0004885196685791016,
+   "idle_for_s": 0.0011565685272216797,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -358,7 +358,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.0007572174072265625,
+   "idle_for_s": 0.0015137195587158203,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -465,7 +465,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.0011067390441894531,
+   "idle_for_s": 0.0019736289978027344,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -570,7 +570,7 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794319602.6628609,
+  "since": 1794608865.9455426,
   "stopped": {},
   "suggestion": null
  },
@@ -609,6 +609,7 @@
     "hedge_quantile",
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
+    "thought_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1162,6 +1163,35 @@
    "units": "seconds",
    "value": 30.0,
    "when": "Rarely. Same as above, for thinking models."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 20.0,
+   "depends_on": null,
+   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "env": "KAME_THOUGHT_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "impact": "low",
+   "key": "thought_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 120.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, which happens when it writes a very large tool call in one piece (Gemini). The page counts it in Extra requests, with how many answered first.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while thinking",
+   "units": "seconds",
+   "value": 20.0,
+   "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
   },
   {
    "advanced": true,
@@ -1782,7 +1812,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 4
+   "replies": 4,
+   "rescue": 0,
+   "rescue_won": 0
   },
   "mode": "adaptive",
   "paused_until": {},
@@ -1792,7 +1824,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 4
+   "replies": 4,
+   "rescue": 0,
+   "rescue_won": 0
   }
  },
  "status_rail": false,
@@ -1807,6 +1841,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794319603.1411715,
- "version": "1.8.4.2"
+ "updated_at": 1794608876.9577546,
+ "version": "1.9.0.0"
 }

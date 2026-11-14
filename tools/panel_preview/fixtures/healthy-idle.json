@@ -6,7 +6,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.8.4.1",
+ "build_line": "1.9.0.0",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -109,10 +109,10 @@
   "model_switches": 0,
   "replies": 1240,
   "saved": 96,
-  "since": 1792073202.6682703
+  "since": 1792362468.1823733
  },
  "pacing_state": {},
- "pid": 22892,
+ "pid": 16244,
  "pools": [
   {
    "daily_limit": null,
@@ -120,7 +120,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.028729915618896484,
+   "idle_for_s": 0.31438493728637695,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -229,7 +229,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.028940439224243164,
+   "idle_for_s": 0.3163764476776123,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -338,7 +338,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.02914881706237793,
+   "idle_for_s": 0.3460109233856201,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -447,7 +447,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.03036952018737793,
+   "idle_for_s": 0.609459638595581,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -554,14 +554,14 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794319602.6628609,
+  "since": 1794608865.9455426,
   "stopped": {},
   "suggestion": null
  },
  "reason": "not installed",
  "replies": [
   {
-   "at": 1794319582.6682703,
+   "at": 1794608848.1823733,
    "first_s": 1.9,
    "for": "",
    "model": "gemini-3.8-flash",
@@ -601,6 +601,7 @@
     "hedge_quantile",
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
+    "thought_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1154,6 +1155,35 @@
    "units": "seconds",
    "value": 30.0,
    "when": "Rarely. Same as above, for thinking models."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 20.0,
+   "depends_on": null,
+   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "env": "KAME_THOUGHT_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "impact": "low",
+   "key": "thought_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 120.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, which happens when it writes a very large tool call in one piece (Gemini). The page counts it in Extra requests, with how many answered first.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while thinking",
+   "units": "seconds",
+   "value": 20.0,
+   "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
   },
   {
    "advanced": true,
@@ -1774,7 +1804,9 @@
    "circle": 0,
    "extra_pct": 6.0,
    "race": 0,
-   "replies": 50
+   "replies": 50,
+   "rescue": 0,
+   "rescue_won": 0
   },
   "mode": "adaptive",
   "paused_until": {},
@@ -1784,7 +1816,9 @@
    "circle": 0,
    "extra_pct": 6.0,
    "race": 0,
-   "replies": 50
+   "replies": 50,
+   "rescue": 0,
+   "rescue_won": 0
   }
  },
  "status_rail": false,
@@ -1799,6 +1833,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794319602.9009778,
- "version": "1.8.4.2"
+ "updated_at": 1794608869.973166,
+ "version": "1.9.0.0"
 }

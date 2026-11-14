@@ -20,6 +20,17 @@ request in a random shape, and checks after every reply:
       to its end - has ended when the run ends. The start decision also reads random remembered trouble
       (S1c), so the start probe lane runs from windows, tails AND the record.
 
+1.8.4.3 (H5, case 15): the fake provider also has a "thinks_hangs" shape - one reasoning chunk, then a
+silence much longer than the quiet bound (``KAME_THOUGHT_QUIET_S`` = 0.4 s here; every 7th seed runs with
+the guard off, as 1.8.4.2). I1/I2/I4 must hold: the reply ends, shows only canonical text and never leaks
+an internal error, however many legs went quiet.
+
+1.8.4.3 (L8 case 11, thoughts stay live):
+  I6  no visible chunk (text, tool call) is yielded while a race is still open: only the provisional leg's
+      thoughts go out live
+  I7  within one race, the live chunks come from one leg only, and after the winner's first chunk no chunk of
+      another leg is yielded
+
 Offline. HERMES_HOME is a temp folder; nothing reaches the owner's logs. Constants are the
 scaled ones of ``tests/test_1_8_2_9_silent_two_models.py`` (race at 0.3 s, slow bound 1 s).
 
@@ -154,6 +165,13 @@ def chunk(text=None, finish=None):
                            choices=[SimpleNamespace(index=0, delta=delta, finish_reason=finish)])
 
 
+def thought(text="thinking"):
+    """1.8.4.3 (H5, case 15): a reasoning chunk - working, never visible."""
+    delta = SimpleNamespace(role=None, content=None, tool_calls=None, reasoning_content=text)
+    return SimpleNamespace(id="c", model="m", usage=None,
+                           choices=[SimpleNamespace(index=0, delta=delta, finish_reason=None)])
+
+
 class Response:
     def __init__(self):
         self.closed = threading.Event()
@@ -189,6 +207,10 @@ def shape(rng, model):
     roll = rng.random()
     if roll < 0.38:
         return "fast", [rng.uniform(0.02, 0.4)] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    if roll < 0.44:
+        # 1.8.4.3 (H5, case 15): thinks once, then hangs, then (much later) answers. A slice of the old
+        # "silent" band, picked by the roll itself so no seed draws a different number of values.
+        return "thinks_hangs", [0.05, thought(), 3.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
     if roll < 0.50:
         return "silent", [3.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
     if roll < 0.62:
@@ -229,6 +251,69 @@ def _pump(self, wire, request):
 
 
 transport._StreamLeg._pump = _pump
+
+
+# 1.8.4.3 (L8 case 11): what each race yielded while it ran (the provisional leg's live thoughts) and what its
+# winner's stream yielded after it. ``create`` stamps every fake chunk with the leg that asked for it.
+RACE_LOG = []
+_real_race = transport.KameTransport._race_stream
+
+
+class _Spy:
+    """The winner's stream, read like the real one; remembers what it yielded."""
+
+    def __init__(self, inner, entry):
+        self.inner = inner
+        self.entry = entry
+        self.leg = inner.leg
+
+    def __iter__(self):
+        for item in self.inner:
+            self.entry["after"].append(item)
+            yield item
+
+    def close(self):
+        self.inner.close()
+
+
+def _race(self, *args, **kwargs):
+    entry = {"live": [], "after": [], "winner": None}
+    RACE_LOG.append(entry)
+    gen = _real_race(self, *args, **kwargs)
+    try:
+        while True:
+            try:
+                item = next(gen)
+            except StopIteration as stop:
+                result = stop.value
+                break
+            entry["live"].append(item)
+            yield item
+    finally:
+        gen.close()
+    entry["winner"] = result[0].leg
+    return (_Spy(result[0], entry),) + tuple(result[1:])
+
+
+transport.KameTransport._race_stream = _race
+
+
+def race_violations():
+    """I6 / I7 over every race of the run (1.8.4.3, L8 case 11)."""
+    problems = []
+    for n, entry in enumerate(RACE_LOG):
+        live = [c for c in entry["live"] if getattr(c, "choices", None)]
+        if any(transport._carries_visible(c) for c in live):
+            problems.append(f"I6 race {n}: a visible chunk was yielded while the race was still open")
+        # a lone leg's word-less chunk (role, usage) may pass before any leg works, as in 1.8.4.2: only WORK counts
+        legs = {getattr(c, "_kame_leg", None) for c in live if transport._carries_answer(c)} - {None}
+        if len(legs) > 1:
+            problems.append(f"I7 race {n}: live chunks of {len(legs)} different legs were yielded")
+        winner = entry["winner"]
+        stray = [c for c in entry["after"] if getattr(c, "_kame_leg", winner) not in (winner, None)]
+        if stray:
+            problems.append(f"I7 race {n}: {len(stray)} chunk(s) of another leg yielded after the winner's first")
+    return problems
 
 
 class Call(transport.Call):
@@ -298,6 +383,10 @@ class Call(transport.Call):
                 self.asked.append((model, key[-6:], name))
             if callable(how):
                 raise how()
+            leg = getattr(_LEG, "leg", None)
+            for step in how:                       # 1.8.4.3 (L8 case 11): who asked for this chunk
+                if hasattr(step, "choices"):
+                    step._kame_leg = leg
             return FakeStream(how)
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
@@ -345,6 +434,7 @@ def setup_state(t, rng, reserve=()):
 
 def run_one(seed):
     choose_answer(seed)
+    RACE_LOG.clear()
     rng = random.Random(seed)
     settings.forget()
     chain_mod.forget()
@@ -357,6 +447,8 @@ def run_one(seed):
     else:
         os.environ.pop("KAME_KEY_RESERVE", None)
     os.environ["KAME_HEDGE_MODE"] = rng.choice(["adaptive", "adaptive", "max", "off"])
+    # 1.8.4.3: the quiet guard at the scaled bound; every 7th seed (3 of 7) runs with it off, as 1.8.4.2
+    os.environ["KAME_THOUGHT_QUIET_S"] = "0" if seed % 7 == 3 else "0.4"
     settings.forget()
     pacing_mod.PACER._synced_at.clear()
     triggers = rng.choice([(30.0, 60.0), (0.2, 0.4)])
@@ -381,6 +473,8 @@ def run_one(seed):
     th.join(40.0)
     took = time.monotonic() - started
     problems = list(call.violations)
+    if not th.is_alive():
+        problems += race_violations()
     if th.is_alive():
         call.closed = True
         problems.append(f"I1 no end after {took:.0f}s")

@@ -6,7 +6,7 @@
 
 ### What API key rotation should have been: all your keys and models, one agent that never waits.
 
-[![Version](https://img.shields.io/badge/version-1.8.4.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.0-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -29,7 +29,7 @@
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.8.4.2-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.9.0.0-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -192,7 +192,32 @@ flowchart TD
 </table>
 
 <details>
-<summary><b>📣 What's new in 1.8.4.2 and the versions before it</b></summary>
+<summary><b>📣 What's new in 1.9.0.0 and the versions before it</b></summary>
+
+**1.9.0.0 — thoughts stay live, a stalled reply is raced again, a busy model is raced at once.**
+
+- **A thinking reply is watched until it shows something; its thoughts keep showing live.** A reply that stops
+  mid-thought with nothing shown no longer leaves you on the spinner: KAME asks another key of the same model
+  beside it and, later, the next model of your list. The first one to show text or a tool call is the answer. At
+  most two extra requests per reply, and one only when a healthy model is quiet past its limit, as when it writes
+  a very large tool call in one piece (Gemini); they are counted in "Extra requests", with how many answered
+  first. The limit is learned for each model (8 to 20 s, longer for a model that is quiet by nature, never above
+  90 s; 20 s before it has learned). `KAME_THOUGHT_QUIET_S` sets one limit for all (`0` turns it off).
+- **A model that says it is busy is raced at once.** When your model answers 503 ("high demand", "overloaded"),
+  the retry on the next key no longer runs alone for 8 to 12 s: the next model of your list is asked beside it
+  from the first instant and the first to answer is shown. One extra request for a reply that met a 503, counted
+  in "Extra requests".
+- **A model left out is looked at again.** A model of your list left out after failing is a candidate again 10
+  minutes later (twice as long after each further failure, at most 2 hours), so one outage no longer keeps your
+  fastest model out for days. A best model that keeps failing is asked beside your replies less often (at most
+  every 5 minutes), and leads again the moment it answers.
+- **A background title on a model that keeps failing or is busy** goes at once to the next healthy model of your
+  list on the same provider.
+- **Two honest limits.** A reply that stalls after its text has started is not raced: the read timeout (up to
+  120 s) ends it and another key continues the cut answer, as before. In six weeks of the owner's log that was
+  about four events; the rows now carry what is needed to size a watch for it later. And when a provider refuses
+  every model of your list at once, nothing in a one-provider list can answer: KAME keeps asking and shows the
+  first that does, and a model of another provider at the end of your list is what answers in that minute.
 
 **1.8.4.2 — a model that keeps failing stops making you wait.**
 
@@ -542,6 +567,17 @@ The panel explains every one of them in full, with its environment variable.
 <a id="verified"></a>
 ## ✅ Verified
 
+**1.9.0.0** (2026-11-14), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite | 4,137 passing; the only two failures were timing tests on a machine running other suites at the same time, and they pass alone |
+| Host gates | `host_prose` ok; `host_assumptions` ok; `host_corpus` on the installed Hermes: only the verdicts KAME changes on purpose; Hermes' own provider and credential suites on v0.23.0 answer the same with KAME's client |
+| Fault injection | 5,000 calls with random refusals, cuts and timeouts (`tools/chaos.py`) and 150 raced replies whose winner thinks and then hangs (`tools/race_chaos.py`): 0 defects |
+| Live, thoughts | reasoning on screen 0.4 s after the request, before any text; a reply forced to look quiet after 0.5 s asked both rescues and answered, with no refused follow-up request |
+| Live, a model left out | after an outage had left the fastest model out, the next replies looked at it again and started on it: first word in 3 s |
+| Installed | four Hermes profiles, the daily live check passing in each, real replies through the gateway with tools |
+
 **1.8.4.2** (2026-11-11), see the [changelog](CHANGELOG.md):
 
 | Check | Result |
@@ -710,6 +746,7 @@ for the full notes on the current public releases.
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.0** | Thoughts stay live, a stalled reply is raced again, a busy model is raced at once | A reply that stops mid-thought with nothing shown is asked again on another key and then on the next model of your list, while its thoughts keep showing live (at most two extra requests, asked only when a reply stays quiet past its learned limit, and counted with how many answered first); a model that answers 503 is raced by the next model of your list from the retry's first instant; a model left out after failing is looked at again (10 min, doubling, at most 2 h) and a best model that keeps failing is asked at most every 5 min; a background title on a failing or busy model moves to the next healthy model of your list |
 | **1.8.4.2** | A model that keeps failing stops making you wait | A model that keeps failing no longer leads the reply (it is asked beside it and leads again when it answers); a model refused busy is not handed the same reply twice; a background job stopped once no longer benches the provider; listening on your Gemini keys (`stt.provider: kame-gemini`); a speech language setting |
 | **1.8.4.1** | A blocked prompt stops at once | A safety refusal or Anthropic's long-context 429 goes straight back instead of walking every key; a subscription is never raced; one key count everywhere on the page; what KAME did over time and the requests of the last 24 hours; speech with your Gemini keys (`kame-gemini`) |
 | **1.8.3.1** | Any model has a ladder | A reply that starts on model X falls back X, then your main model, then the rest of the list; the live line has seven states with the same words as Agent Zero; a popover on the status-bar chip; the first busy answer after a busy window reopens it. |

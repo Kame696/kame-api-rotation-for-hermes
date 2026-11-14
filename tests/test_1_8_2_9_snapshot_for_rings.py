@@ -49,7 +49,7 @@ def world(monkeypatch, tmp_path):
         ENGINE.select(identity, KEYS)
     t = facade.TRANSPORT
     t._busy_until.clear(); t._busy_window.clear(); t._busy_kind.clear(); t._probed_at.clear()
-    t._speed.clear(); t._speed_total[:] = [0, 0, 0, 0, 0]
+    t._speed.clear(); t._speed_total[:] = [0] * 6
     yield t
     ENGINE.forget()
     events_mod.INFLIGHT.clear()

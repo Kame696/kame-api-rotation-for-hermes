@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 MAX_EVENTS = 10
 MAX_AGE_S = 7 * 86400.0
 MIN_FAILS = 2
+#: 1.8.4.3 (L12, PLAN section 8): a model that is NOT the one Hermes asked for is left out of a choice for its record
+#: only until its retest is due - its latest failure plus this, doubled for each further trailing failure, at most
+#: ``RETEST_MAX_S``. Before L12 nothing ever asked a left-out model again, so one outage could keep the owner's
+#: fastest model out for the seven days its failures stay in the record (live, 2026-11-13: gemini-3.6-flash).
+RETEST_FIRST_S = 600.0
+RETEST_MAX_S = 7200.0
 FILE_NAME = "model-health.json"
 SCHEMA = 1
 ENV_OFF = "KAME_NO_REMEMBERED_TROUBLE"
@@ -466,12 +472,52 @@ class ModelHealth:
         except Exception:
             return []
 
-    def risky_entry(self, entry: str, same: Callable[[str, str], bool]) -> bool:
-        """Any known identity that ``same(identity, entry)`` calls this chain entry is risky."""
+    def trailing_failures(self, identity: str, now: Optional[float] = None) -> int:
+        """How many of the latest judged outcomes in the window are failures in a row (0 when the latest answered)."""
+        try:
+            if disabled() or not identity:
+                return 0
+            with self._lock:
+                self.ensure_loaded()
+                count = 0
+                for _at, ok in reversed(self._window(identity, now)):
+                    if ok:
+                        break
+                    count += 1
+                return count
+        except Exception:
+            return 0
+
+    def retest_due(self, identity: str, now: Optional[float] = None) -> bool:
+        """1.8.4.3 (L12): remembered as failing, and its latest failure is old enough for it to be asked again.
+
+        The wait is ``RETEST_FIRST_S`` x 2^(k-1), k its trailing failures, at most ``RETEST_MAX_S``: a model that
+        fails again when looked at is looked at half as often. False for a model that is not remembered failing."""
+        try:
+            if not self.risky(identity, now):
+                return False
+            stamp = time.time() if now is None else float(now)
+            with self._lock:
+                window = self._window(identity, now)
+                if not window:
+                    return False
+                latest = window[-1][0]
+            k = max(1, self.trailing_failures(identity, now))
+            wait = min(RETEST_MAX_S, RETEST_FIRST_S * (2.0 ** (k - 1)))
+            return stamp - latest >= wait
+        except Exception:
+            return False
+
+    def risky_entry(self, entry: str, same: Callable[[str, str], bool], retest: bool = False) -> bool:
+        """Any known identity that ``same(identity, entry)`` calls this chain entry is risky.
+
+        ``retest`` (1.8.4.3, L12): the question is asked for a model that is NOT the one Hermes asked for - an
+        identity whose retest is due does not count, so the choice may take it again (half-open)."""
         try:
             if disabled():
                 return False
-            return any(self.risky(ident) for ident in self.identities() if same(ident, entry))
+            return any(self.risky(ident) and not (retest and self.retest_due(ident))
+                       for ident in self.identities() if same(ident, entry))
         except Exception:
             return False
 

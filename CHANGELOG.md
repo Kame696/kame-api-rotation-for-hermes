@@ -7,6 +7,74 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.0] - 2026-11-13 - thoughts stay live, a stalled reply is raced again, a busy model is raced at once
+
+Developed as 1.8.4.3: the test file names and the code comments keep that working number, and no 1.8.4.3 was
+published.
+
+**What drove it.** Live, 2026-11-12: Google was overloaded, a backup key "answered first" with a reasoning chunk,
+every other request was cut, and that stream then sat silent for about 109 seconds before a tool call. The
+reply showed only the spinner for two minutes. The race ended at the first sign of work and nothing watched the
+winner after it. And a 503 cost more than it had to: the model had said it was busy, and the next model of the
+list was still asked only 8 to 12 s into the retry.
+
+- **A thinking reply is watched until it shows something, and its thoughts keep showing live.** The first sign of
+  work (reasoning included) still cuts the requests that are silent, but the leg that showed it is only the
+  provisional winner: its thoughts go to Hermes as they arrive, exactly as in 1.8.4.2, and it wins at its first
+  visible chunk (text or a tool call). If it goes quiet for longer than the limit with nothing shown, a reply
+  that stopped mid-thought is asked again on another key of the same model and, if that one is silent too, on
+  the next model of your list. The first visible chunk wins; at most two extra requests per reply. A reply that
+  does not stall is byte for byte the 1.8.4.2 stream.
+- **What a take-over leaves behind, per wire.** The rescue's chunks are kept until it wins, so nothing of the
+  quiet leg follows them. On the Messages wire the stored message is the answering leg's alone (a new attempt
+  after nothing visible is a restart, not a continuation of a message that never showed anything); on the
+  Responses wire only reasoning deltas go out early and the other events come with the first visible one. On
+  Chat Completions Hermes has the quiet leg's thoughts so far and then the rescue's: the same message a 120 s
+  timeout and a retry gave in 1.8.4.2, about 100 s sooner. One known limit there: signed reasoning details
+  (Anthropic through OpenRouter) are merged across the two legs, so the next request can be refused once
+  before Hermes' own repair drops them, as after that timeout and retry.
+- **The Messages wire works with newer Anthropic SDKs.** An SDK whose accumulator wants `json_bufs` (newer
+  than the 0.87.0 Hermes pins) is given one; before, the final message came back empty on such an SDK.
+- **The limit is learned for each model.** Three times the p95 of its own quiet gaps, 8 to 20 s; 20 s before it
+  has learned; and never shorter than 1.25 times a quiet the model has shown in at least two replies and at
+  least one reply in ten (a model that is quiet by nature is not asked twice on every long reply), never above
+  90 s. A healthy thinking model shows gaps of about 2 s. `KAME_THOUGHT_QUIET_S` sets one number for every
+  model; `0` turns the watch off (1.8.4.2 behaviour).
+- **The cost is one extra request when a healthy model is quiet past its limit.** That happens when it writes a
+  very large tool call in one piece (Gemini): at most about 3.5 % of tool replies with the limit at 20 s. It
+  is counted in "Extra requests", with how many of them answered first. The second rescue no longer waits twice
+  the limit for a first rescue that is silent: it opens at that rescue's own late point. A leg that worked and
+  lost teaches the speed tracker its real first word, not a censored one.
+- **A model that says it is busy is raced at once.** When the model in use answers 503 ("high demand",
+  "overloaded") on a key, the retry on the next key no longer runs alone for 8 to 12 s: the next model of your
+  list is asked beside it from the first instant, and the first to answer is shown. Where this was measured,
+  16 % of replies in two weeks met a 503 before their answer; the two of the last day showed their first sign
+  11 and 15 s after the request, where seven of the other eight took 2 to 6 s. Cost: one request on the next
+  model for such a reply, counted in "Extra requests"; in those two replies the next model had been asked
+  anyway, 8.6 and 10.4 s later, so the request moved rather than added. If the next model answers, the busy one
+  is left alone for 30 s (doubling while it repeats), as after two busy keys, and is asked again beside the next
+  replies.
+- **A model left out is looked at again.** In 1.8.4.2 a model of your list remembered as failing was left out of
+  every start, stand-in and title, and nothing ever asked it again: one outage (2026-11-13 12:01) gave your fastest
+  model a latest failure, and every reply went to the slowest one (13 to 19 s to a first sign) for as long as that
+  failure stayed in the seven-day record. Now a left-out model is a candidate again 10 minutes after its latest
+  failure, twice as long after each further failure in a row, at most 2 hours; its answer clears it. The model you
+  picked keeps 1.8.4.2's rule: while it keeps failing it is asked beside your reply, never made to lead it.
+- **A best model that keeps failing is asked less often.** Outside a busy spell it was asked beside every reply; now
+  every 20 s, then 40, 80, 160 s and at most every 5 minutes the longer it keeps failing. Its first answer brings it
+  back at once. Inside a 503 storm it is still asked every 20 s.
+- **What no rotation can do.** When a provider refuses every model of your list at once (2026-11-13: three
+  minutes of 503 on four models of one provider, speech-to-text included), nothing in a one-provider list can
+  answer. KAME keeps asking and shows the first that answers; a model of another provider at the end of your
+  list is what answers in that minute.
+- **Not for background jobs, nor with hedging off.** They keep the 1.8.4.2 behaviour.
+- **A background title on a failing or busy model moves in place.** A title (or another cosmetic background job)
+  on a model remembered as failing, or busy, goes once to the first model of your list on the same provider that
+  is healthy, instead of waiting for the host's walk down the list to time out.
+- **Recorded and shown.** Replies watched while they thought carry `ms_longest_quiet` and `rescued` in
+  `calls.jsonl`, and `rescues_asked` (1 or 2) when a rescue was asked; the cost readout counts the rescue
+  requests and the page says how many re-asked a reply that stopped mid-thought and how many answered first.
+
 ## [1.8.4.2] - 2026-11-11 - a model that keeps failing stops making you wait
 
 **What drove it.** The first reply after a pause waited about 20 s, every session: the best model of the list

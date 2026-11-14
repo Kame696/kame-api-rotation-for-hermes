@@ -1270,6 +1270,8 @@ const PANEL_READS = [
   'speed.cap_pct',
   'speed.hour.extra_pct',
   'speed.hour.replies',
+  'speed.hour.rescue',
+  'speed.hour.rescue_won',
   'speed.mode',
   'speed.paused_until',
   'speed.since_start.extra_pct',
@@ -2241,6 +2243,10 @@ function SpeedCost({ snap }) {
     hour.replies
       ? `Extra requests this hour: +${hour.extra_pct ?? 0}% (${hour.replies} replies). Your setting allows about +${speed.cap_pct}%.`
       : `No replies this hour yet. Your setting allows about +${speed.cap_pct}% extra requests.`,
+    // 1.8.4.3 (L7): a request asked for a reply that stopped mid-thought is told, and how many paid off.
+    hour.rescue > 0
+      ? ` ${hour.rescue} of them re-asked a reply that stopped mid-thought; ${hour.rescue_won ?? 0} answered first.`
+      : '',
     sinceStart?.replies && sinceStart.extra_pct !== null ? ` Since Hermes started: +${sinceStart.extra_pct}%.` : ''
   )
 }

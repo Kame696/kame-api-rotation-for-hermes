@@ -219,6 +219,12 @@ HEDGE_QUANTILE = "hedge_quantile"
 HEDGE_COLD_S = "hedge_cold_s"
 HEDGE_COLD_REASONING_S = "hedge_cold_reasoning_s"
 
+# 1.8.4.3 (H2). How long a reply may stay quiet after it started thinking, with nothing shown yet, before
+# KAME asks another key (and, later, the next model of the list) beside it. Unset: learned per model
+# (3 x the p95 of its own quiet gaps, 8-20 s; 20 s before any data). A number overrides the learned
+# bound; 0 turns the watch off (1.8.4.2 behaviour exactly).
+THOUGHT_QUIET_S = "thought_quiet_s"
+
 # 1.8.2.3. Skip backups for prompts above this size — a hedged huge
 # prompt burns TPM twice and is never cache-friendly.
 HEDGE_MAX_PROMPT_TOKENS = "hedge_max_prompt_tokens"
@@ -511,6 +517,7 @@ _NUMBER_ENV_FOR = {
     HEDGE_QUANTILE: "KAME_HEDGE_QUANTILE",
     HEDGE_COLD_S: "KAME_HEDGE_COLD_S",
     HEDGE_COLD_REASONING_S: "KAME_HEDGE_COLD_REASONING_S",
+    THOUGHT_QUIET_S: "KAME_THOUGHT_QUIET_S",
     HEDGE_MAX_PROMPT_TOKENS: "KAME_HEDGE_MAX_PROMPT_TOKENS",
 }
 
@@ -595,6 +602,7 @@ _NUMBER_RANGE = {
     HEDGE_QUANTILE: (50.0, 99.0),
     HEDGE_COLD_S: (0.5, 120.0),
     HEDGE_COLD_REASONING_S: (2.0, 300.0),
+    THOUGHT_QUIET_S: (0.0, 120.0),
     HEDGE_MAX_PROMPT_TOKENS: (1000.0, 1000000.0),
 }
 
@@ -1105,6 +1113,7 @@ ALL_NUMBERS = {
     HEDGE_QUANTILE: 90.0,
     HEDGE_COLD_S: 6.0,
     HEDGE_COLD_REASONING_S: 30.0,
+    THOUGHT_QUIET_S: 20.0,     # what a model uses before KAME has learned its own; unset = learned
     HEDGE_MAX_PROMPT_TOKENS: 32000.0,
 }
 
@@ -1127,6 +1136,7 @@ UNITS = {
     HEDGE_QUANTILE: "percentile",
     HEDGE_COLD_S: "seconds",
     HEDGE_COLD_REASONING_S: "seconds",
+    THOUGHT_QUIET_S: "seconds",
     HEDGE_MAX_PROMPT_TOKENS: "tokens",
 }
 
@@ -1431,6 +1441,16 @@ META = {
         "a backup.",
         "Leave at 30s.",
     ),
+    THOUGHT_QUIET_S: (
+        "Quiet limit while thinking",
+        "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks "
+        "it again on another key (and later on the next model of your list). Its thoughts keep showing live "
+        "meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is "
+        "quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+        "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, "
+        "which happens when it writes a very large tool call in one piece (Gemini). The page counts it in "
+        "Extra requests, with how many answered first.",
+    ),
     HEDGE_MAX_PROMPT_TOKENS: (
         "Skip backups for very long prompts",
         "A backup of a huge prompt spends your token quota twice and never "
@@ -1574,7 +1594,7 @@ _ADVANCED = frozenset({
     KEY_RESERVE,
     PROBE_BURST,
     HEDGE_MAX_LEGS, HEDGE_BUDGET_PCT, HEDGE_BURST, HEDGE_QUANTILE, HEDGE_COLD_S,
-    HEDGE_COLD_REASONING_S, HEDGE_MAX_PROMPT_TOKENS, PACING_INTERVAL, SHARE_POOL_HEALTH,
+    HEDGE_COLD_REASONING_S, THOUGHT_QUIET_S, HEDGE_MAX_PROMPT_TOKENS, PACING_INTERVAL, SHARE_POOL_HEALTH,
     PACING_RPM_OVERRIDES, KEY_REGION_OVERRIDES, DAILY_COOLDOWN, MAX_HOLD,
     UNSIZED_THROTTLE_BACKOFF, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX, STREAM_RESUME_LIMIT,
 })
@@ -1796,6 +1816,7 @@ IMPACT: Dict[str, str] = {
     HEDGE_QUANTILE: "low",
     HEDGE_COLD_S: "low",
     HEDGE_COLD_REASONING_S: "low",
+    THOUGHT_QUIET_S: "low",
     HEDGE_MAX_PROMPT_TOKENS: "low",
     PACING_RPM_OVERRIDES: "low",
     STREAM_RESUME_LIMIT: "low",
@@ -1830,6 +1851,7 @@ _WHEN: Dict[str, str] = {
     HEDGE_QUANTILE: "Rarely. Lower = backups sooner.",
     HEDGE_COLD_S: "Rarely. Used only until KAME has learned a model's normal speed.",
     HEDGE_COLD_REASONING_S: "Rarely. Same as above, for thinking models.",
+    THOUGHT_QUIET_S: "Rarely. Only to turn the watch off (0) or to set one number for every model.",
     HEDGE_MAX_PROMPT_TOKENS: "Rarely. Very long prompts are not duplicated, to save quota.",
     PACING_RPM_OVERRIDES: "Only if you know a model's per-minute limit and KAME keeps hitting it.",
     STREAM_RESUME_LIMIT: "Rarely. Caps how often one cut answer is continued.",
@@ -1902,7 +1924,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "How KAME keeps answers fast. Already tuned; the first two are the ones "
         "worth knowing.",
         (HEDGE_MODE, FIRST_TOKEN_WAIT, STREAM_SILENCE_TIMEOUT, HEDGE_MAX_LEGS, PROBE_BURST, HEDGE_BUDGET_PCT, HEDGE_BURST,
-         HEDGE_QUANTILE, HEDGE_COLD_S, HEDGE_COLD_REASONING_S, HEDGE_MAX_PROMPT_TOKENS),
+         HEDGE_QUANTILE, HEDGE_COLD_S, HEDGE_COLD_REASONING_S, THOUGHT_QUIET_S, HEDGE_MAX_PROMPT_TOKENS),
     ),
     (
         "keyring",

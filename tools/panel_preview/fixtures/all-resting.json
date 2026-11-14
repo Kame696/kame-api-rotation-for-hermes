@@ -11,7 +11,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.8.4.1",
+ "build_line": "1.9.0.0",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -58,7 +58,7 @@
     "keys": 14,
     "probe_at": null,
     "role": "primary",
-    "soonest_s": 69.99958395957947
+    "soonest_s": 69.99884033203125
    },
    {
     "busy_kind": null,
@@ -69,7 +69,7 @@
     "keys": 14,
     "probe_at": null,
     "role": "fallback",
-    "soonest_s": 69.99970245361328
+    "soonest_s": 69.99915289878845
    },
    {
     "busy_kind": null,
@@ -80,7 +80,7 @@
     "keys": 14,
     "probe_at": null,
     "role": "fallback",
-    "soonest_s": 69.99980115890503
+    "soonest_s": 69.99941563606262
    },
    {
     "busy_kind": null,
@@ -91,7 +91,7 @@
     "keys": 14,
     "probe_at": null,
     "role": "fallback",
-    "soonest_s": 69.99989819526672
+    "soonest_s": 69.99970650672913
    }
   ],
   "state": "on",
@@ -117,7 +117,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 22892,
+ "pid": 16244,
  "pools": [
   {
    "daily_limit": null,
@@ -125,7 +125,7 @@
    "failures": 14,
    "healthy": 0,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.0006120204925537109,
+   "idle_for_s": 0.00167083740234375,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -133,85 +133,85 @@
     [
      "key:01eb86",
      "s",
-     1794319723.091771,
+     1794608996.8237736,
      "per_minute"
     ],
     [
      "key:24ebd9",
      "s",
-     1794319683.0917156,
+     1794608956.8236172,
      "per_minute"
     ],
     [
      "key:36e24d",
      "s",
-     1794319688.0917222,
+     1794608961.823637,
      "per_minute"
     ],
     [
      "key:55e890",
      "s",
-     1794319693.0917294,
+     1794608966.8236566,
      "per_minute"
     ],
     [
      "key:6a0942",
      "s",
-     1794319703.0917432,
+     1794608976.823695,
      "per_minute"
     ],
     [
      "key:74ea95",
      "s",
-     1794319678.0917087,
+     1794608951.823597,
      "per_minute"
     ],
     [
      "key:7ef9d5",
      "s",
-     1794319698.0917363,
+     1794608971.8236752,
      "per_minute"
     ],
     [
      "key:865608",
      "s",
-     1794319718.091764,
+     1794608991.823755,
      "per_minute"
     ],
     [
      "key:9267af",
      "s",
-     1794319673.091702,
+     1794608946.8235772,
      "per_minute"
     ],
     [
      "key:aff59a",
      "s",
-     1794319728.0917778,
+     1794609001.8237941,
      "per_minute"
     ],
     [
      "key:c96221",
      "s",
-     1794319713.091757,
+     1794608986.8237345,
      "per_minute"
     ],
     [
      "key:d14a5e",
      "s",
-     1794319708.0917501,
+     1794608981.8237143,
      "per_minute"
     ],
     [
      "key:ead64a",
      "s",
-     1794319738.0917926,
+     1794609011.8238344,
      "per_minute"
     ],
     [
      "key:fffd54",
      "s",
-     1794319733.091786,
+     1794609006.823814,
      "per_minute"
     ]
    ],
@@ -225,7 +225,7 @@
    "retired": 0,
    "retired_keys": [],
    "sent_24h": 0,
-   "soonest_s": 69.99989819526672,
+   "soonest_s": 69.99970650672913,
    "successes": 0
   },
   {
@@ -234,7 +234,7 @@
    "failures": 14,
    "healthy": 0,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.0007736682891845703,
+   "idle_for_s": 0.002325296401977539,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -242,85 +242,85 @@
     [
      "key:01eb86",
      "s",
-     1794319723.091674,
+     1794608996.8234982,
      "per_minute"
     ],
     [
      "key:24ebd9",
      "s",
-     1794319683.0916188,
+     1794608956.8233235,
      "per_minute"
     ],
     [
      "key:36e24d",
      "s",
-     1794319688.0916255,
+     1794608961.8233418,
      "per_minute"
     ],
     [
      "key:55e890",
      "s",
-     1794319693.0916324,
+     1794608966.8233597,
      "per_minute"
     ],
     [
      "key:6a0942",
      "s",
-     1794319703.0916462,
+     1794608976.8233986,
      "per_minute"
     ],
     [
      "key:74ea95",
      "s",
-     1794319678.0916119,
+     1794608951.8233047,
      "per_minute"
     ],
     [
      "key:7ef9d5",
      "s",
-     1794319698.0916393,
+     1794608971.8233793,
      "per_minute"
     ],
     [
      "key:865608",
      "s",
-     1794319718.0916672,
+     1794608991.8234794,
      "per_minute"
     ],
     [
      "key:9267af",
      "s",
-     1794319673.091605,
+     1794608946.8232863,
      "per_minute"
     ],
     [
      "key:aff59a",
      "s",
-     1794319728.091681,
+     1794609001.8235183,
      "per_minute"
     ],
     [
      "key:c96221",
      "s",
-     1794319713.09166,
+     1794608986.8234382,
      "per_minute"
     ],
     [
      "key:d14a5e",
      "s",
-     1794319708.091653,
+     1794608981.8234186,
      "per_minute"
     ],
     [
      "key:ead64a",
      "s",
-     1794319738.0916948,
+     1794609011.8235574,
      "per_minute"
     ],
     [
      "key:fffd54",
      "s",
-     1794319733.0916877,
+     1794609006.8235378,
      "per_minute"
     ]
    ],
@@ -334,7 +334,7 @@
    "retired": 0,
    "retired_keys": [],
    "sent_24h": 0,
-   "soonest_s": 69.99980115890503,
+   "soonest_s": 69.99941563606262,
    "successes": 0
   },
   {
@@ -343,7 +343,7 @@
    "failures": 14,
    "healthy": 0,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.0009551048278808594,
+   "idle_for_s": 0.0031023025512695312,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -351,85 +351,85 @@
     [
      "key:01eb86",
      "s",
-     1794319723.0915763,
+     1794608996.8232107,
      "per_minute"
     ],
     [
      "key:24ebd9",
      "s",
-     1794319683.0915205,
+     1794608956.8230617,
      "per_minute"
     ],
     [
      "key:36e24d",
      "s",
-     1794319688.0915275,
+     1794608961.8230789,
      "per_minute"
     ],
     [
      "key:55e890",
      "s",
-     1794319693.0915346,
+     1794608966.8230968,
      "per_minute"
     ],
     [
      "key:6a0942",
      "s",
-     1794319703.0915484,
+     1794608976.8231335,
      "per_minute"
     ],
     [
      "key:74ea95",
      "s",
-     1794319678.0915136,
+     1794608951.8230438,
      "per_minute"
     ],
     [
      "key:7ef9d5",
      "s",
-     1794319698.0915415,
+     1794608971.8231156,
      "per_minute"
     ],
     [
      "key:865608",
      "s",
-     1794319718.0915694,
+     1794608991.8231916,
      "per_minute"
     ],
     [
      "key:9267af",
      "s",
-     1794319673.0915062,
+     1794608946.8230236,
      "per_minute"
     ],
     [
      "key:aff59a",
      "s",
-     1794319728.091584,
+     1794609001.8232303,
      "per_minute"
     ],
     [
      "key:c96221",
      "s",
-     1794319713.0915625,
+     1794608986.8231726,
      "per_minute"
     ],
     [
      "key:d14a5e",
      "s",
-     1794319708.0915556,
+     1794608981.8231533,
      "per_minute"
     ],
     [
      "key:ead64a",
      "s",
-     1794319738.091598,
+     1794609011.8232672,
      "per_minute"
     ],
     [
      "key:fffd54",
      "s",
-     1794319733.0915911,
+     1794609006.8232489,
      "per_minute"
     ]
    ],
@@ -443,7 +443,7 @@
    "retired": 0,
    "retired_keys": [],
    "sent_24h": 0,
-   "soonest_s": 69.99970245361328,
+   "soonest_s": 69.99915289878845,
    "successes": 0
   },
   {
@@ -452,7 +452,7 @@
    "failures": 14,
    "healthy": 0,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.0012936592102050781,
+   "idle_for_s": 0.0039441585540771484,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -460,85 +460,85 @@
     [
      "key:01eb86",
      "s",
-     1794319723.0914786,
+     1794608996.8229473,
      "per_minute"
     ],
     [
      "key:24ebd9",
      "s",
-     1794319683.0914204,
+     1794608956.8227916,
      "per_minute"
     ],
     [
      "key:36e24d",
      "s",
-     1794319688.091428,
+     1794608961.822814,
      "per_minute"
     ],
     [
      "key:55e890",
      "s",
-     1794319693.0914357,
+     1794608966.8228345,
      "per_minute"
     ],
     [
      "key:6a0942",
      "s",
-     1794319703.0914497,
+     1794608976.8228734,
      "per_minute"
     ],
     [
      "key:74ea95",
      "s",
-     1794319678.0914102,
+     1794608951.8227627,
      "per_minute"
     ],
     [
      "key:7ef9d5",
      "s",
-     1794319698.091443,
+     1794608971.822854,
      "per_minute"
     ],
     [
      "key:865608",
      "s",
-     1794319718.0914712,
+     1794608991.82293,
      "per_minute"
     ],
     [
      "key:9267af",
      "s",
-     1794319673.0913877,
+     1794608946.822711,
      "per_minute"
     ],
     [
      "key:aff59a",
      "s",
-     1794319728.0914853,
+     1794609001.8229647,
      "per_minute"
     ],
     [
      "key:c96221",
      "s",
-     1794319713.0914643,
+     1794608986.8229115,
      "per_minute"
     ],
     [
      "key:d14a5e",
      "s",
-     1794319708.0914571,
+     1794608981.8228934,
      "per_minute"
     ],
     [
      "key:ead64a",
      "s",
-     1794319738.0914993,
+     1794609011.8230033,
      "per_minute"
     ],
     [
      "key:fffd54",
      "s",
-     1794319733.0914924,
+     1794609006.8229835,
      "per_minute"
     ]
    ],
@@ -552,14 +552,14 @@
    "retired": 0,
    "retired_keys": [],
    "sent_24h": 0,
-   "soonest_s": 69.99958395957947,
+   "soonest_s": 69.99884033203125,
    "successes": 0
   }
  ],
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794319602.6628609,
+  "since": 1794608865.9455426,
   "stopped": {},
   "suggestion": null
  },
@@ -598,6 +598,7 @@
     "hedge_quantile",
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
+    "thought_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1151,6 +1152,35 @@
    "units": "seconds",
    "value": 30.0,
    "when": "Rarely. Same as above, for thinking models."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 20.0,
+   "depends_on": null,
+   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "env": "KAME_THOUGHT_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "impact": "low",
+   "key": "thought_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 120.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, which happens when it writes a very large tool call in one piece (Gemini). The page counts it in Extra requests, with how many answered first.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while thinking",
+   "units": "seconds",
+   "value": 20.0,
+   "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
   },
   {
    "advanced": true,
@@ -1771,7 +1801,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 4
+   "replies": 4,
+   "rescue": 0,
+   "rescue_won": 0
   },
   "mode": "adaptive",
   "paused_until": {},
@@ -1781,7 +1813,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 4
+   "replies": 4,
+   "rescue": 0,
+   "rescue_won": 0
   }
  },
  "status_rail": false,
@@ -1794,8 +1828,8 @@
   "rejected": 0,
   "resting": 56,
   "retired": 0,
-  "soonest_s": 69.99958395957947
+  "soonest_s": 69.99884033203125
  },
- "updated_at": 1794319603.1088445,
- "version": "1.8.4.2"
+ "updated_at": 1794608876.885362,
+ "version": "1.9.0.0"
 }

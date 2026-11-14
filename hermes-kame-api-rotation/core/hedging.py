@@ -100,6 +100,17 @@ _STREAM_MULTIPLIER = 2.0
 #: the backup would race ordinary network jitter, not a stuck request.
 _STREAM_MIN_TRIGGER_S = 1.0
 
+#: 1.8.4.3 (H2): the quiet bound of a model with no recorded gaps, and its clamp once there are. The cold
+#: bound is the ceiling: a healthy reply writing a large tool call showed 11.9 s of quiet (second review R3).
+_QUIET_COLD_S = 20.0
+_QUIET_MIN_SAMPLES = 10
+_QUIET_MIN_S = 8.0
+_QUIET_MAX_S = 20.0
+#: 1.8.4.3 (L4): the bound follows the model. Never shorter than this multiple of a quiet the model has shown
+#: in at least two replies and at least one reply in ten; never longer than the ceiling.
+_QUIET_CEILING_S = 90.0
+_QUIET_FOLLOW = 1.25
+
 
 def bucket_key(identity: str, stream: bool, reasoning: bool) -> str:
     """The full bucket id: identity + mode + class, pipe-separated."""
@@ -199,6 +210,8 @@ class HedgeTracker:
         self._cool_until: Dict[str, float] = {}
         # identity -> monotonic time until which "max" mode is downgraded
         self._max_downgraded_until: Dict[str, float] = {}
+        # 1.8.4.3 (H2): identity -> the longest quiet gap (s) of each answered raced reply
+        self._quiet: Dict[str, list] = {}
 
     # -- settings read (call-time, never cached at import) ----------------
 
@@ -450,6 +463,57 @@ class HedgeTracker:
         p95 = recent[min(len(recent) - 1, int(len(recent) * 0.95))]
         return median, p95
 
+    def record_quiet(self, identity: str, seconds: float) -> None:
+        """1.8.4.3 (H2): the longest gap between two working chunks (reasoning, text, a tool call) of an
+        answered raced reply, before its first VISIBLE chunk. A healthy model that thinks shows gaps of
+        about two seconds; the quiet bound is sized from this model's own."""
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if value < 0 or not math.isfinite(value):
+            return
+        with self._lock:
+            samples = self._quiet.setdefault(identity, [])
+            samples.append(value)
+            if len(samples) > _MAX_SAMPLES:
+                samples[:] = samples[-_MAX_SAMPLES:]
+
+    def seed_quiet(self, identity: str, samples) -> int:
+        """1.8.4.3 (F4): give this model's quiet gaps its recorded history. Only into an empty list (live
+        samples always win), at most ``_MAX_SAMPLES``. Returns how many were added."""
+        values = [float(s) for s in list(samples)[-_MAX_SAMPLES:]
+                  if isinstance(s, (int, float)) and math.isfinite(s) and s > 0]
+        with self._lock:
+            bucket = self._quiet.setdefault(identity, [])
+            if bucket or not values:
+                return 0
+            bucket.extend(values)
+            return len(values)
+
+    def quiet_bound(self, identity: str, reasoning: bool = False) -> float:
+        """1.8.4.3 (H2): how long a reply may stay quiet after it started thinking, with nothing shown,
+        before a rescue leg is asked. ``base`` is ``clamp(3 x p95 of this model's recorded quiet gaps, 8 s,
+        20 s)``, ``_QUIET_COLD_S`` until ``_QUIET_MIN_SAMPLES`` gaps exist. 1.8.4.3 (L4): the bound follows the
+        model - never shorter than ``_QUIET_FOLLOW`` x the k-th largest gap, k = max(2, ceil(n / 10)) (a quiet
+        shown in at least two replies and at least one in ten), never above ``_QUIET_CEILING_S``. One odd
+        reply never moves it. ``reasoning`` is kept for symmetry with the other bounds; gaps are learned per
+        model, whatever its class."""
+        with self._lock:
+            recent = sorted(self._quiet.get(identity, []))
+        n = len(recent)
+        follow = None
+        if n >= 2:
+            k = max(2, math.ceil(n / 10))
+            follow = _QUIET_FOLLOW * recent[n - k]
+        if n < _QUIET_MIN_SAMPLES:
+            base = _QUIET_COLD_S
+        else:
+            p95 = recent[min(n - 1, int(n * 0.95))]
+            base = min(_QUIET_MAX_S, max(_QUIET_MIN_S, 3.0 * p95))
+        bound = base if follow is None else min(_QUIET_CEILING_S, max(base, follow))
+        return float(bound)
+
     def seed_stream(self, identity: str, samples, *, reasoning: bool,
                     now: Optional[float] = None) -> int:
         """Give this model's stream bucket its recorded first-word times.
@@ -560,6 +624,7 @@ class HedgeTracker:
             self._hedge_count.clear()
             self._cool_until.clear()
             self._max_downgraded_until.clear()
+            self._quiet.clear()
 
     def snapshot(self) -> Dict[str, object]:
         """For the panel: per-bucket threshold, samples, budget, cooldown."""

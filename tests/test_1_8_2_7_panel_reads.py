@@ -112,6 +112,11 @@ def test_the_writer_waits_out_a_reader_instead_of_skipping_the_snapshot(tmp_path
     calls = {"n": 0}
 
     def replace(a, b):
+        # os is one module for the whole process: a background writer left by an earlier test (a status,
+        # counters or model-health save) may call os.replace meanwhile. Only this file is counted
+        # (CI macOS 3.13 counted 4 calls on the v1.8.4.2 tag run).
+        if str(a) != str(source):
+            return real(a, b)
         calls["n"] += 1
         if calls["n"] < 3:
             raise PermissionError(13, "in use")

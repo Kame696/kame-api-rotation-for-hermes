@@ -153,6 +153,7 @@ def _sicken_aux(identity, failures=2, ago=3600.0):
 
 def test_a_cosmetic_job_on_a_model_that_keeps_failing_is_refused_without_a_request(aux_fresh):
     _sicken_aux(A.IDENTITY)
+    _sicken_aux("gemini:gemini-3.7-flash")      # 1.8.4.3 (H4): with a healthy sibling the job would move there
     assert A.transport.HEALTH.risky(A.IDENTITY)
     plan = A.Plan(["never"], aux_fresh.clock)
     before = aux_fresh.clock.now

@@ -6,7 +6,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.8.4.1",
+ "build_line": "1.9.0.0",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -145,7 +145,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 22892,
+ "pid": 16244,
  "pools": [
   {
    "daily_limit": null,
@@ -153,7 +153,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.00013709068298339844,
+   "idle_for_s": 0.0012488365173339844,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -260,7 +260,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.00025916099548339844,
+   "idle_for_s": 0.0021390914916992188,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -367,7 +367,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.00038123130798339844,
+   "idle_for_s": 0.0030450820922851562,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -474,7 +474,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.0005667209625244141,
+   "idle_for_s": 0.0042057037353515625,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -579,7 +579,7 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794319602.6628609,
+  "since": 1794608865.9455426,
   "stopped": {},
   "suggestion": null
  },
@@ -618,6 +618,7 @@
     "hedge_quantile",
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
+    "thought_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1171,6 +1172,35 @@
    "units": "seconds",
    "value": 30.0,
    "when": "Rarely. Same as above, for thinking models."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 20.0,
+   "depends_on": null,
+   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "env": "KAME_THOUGHT_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "impact": "low",
+   "key": "thought_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 120.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, which happens when it writes a very large tool call in one piece (Gemini). The page counts it in Extra requests, with how many answered first.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while thinking",
+   "units": "seconds",
+   "value": 20.0,
+   "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
   },
   {
    "advanced": true,
@@ -1791,7 +1821,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 9
+   "replies": 9,
+   "rescue": 0,
+   "rescue_won": 0
   },
   "mode": "adaptive",
   "paused_until": {},
@@ -1801,7 +1833,9 @@
    "circle": 0,
    "extra_pct": 0.0,
    "race": 0,
-   "replies": 9
+   "replies": 9,
+   "rescue": 0,
+   "rescue_won": 0
   }
  },
  "status_rail": false,
@@ -1816,6 +1850,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794319603.2112098,
- "version": "1.8.4.2"
+ "updated_at": 1794608877.9018106,
+ "version": "1.9.0.0"
 }

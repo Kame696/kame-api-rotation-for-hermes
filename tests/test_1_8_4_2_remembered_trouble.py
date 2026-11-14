@@ -131,7 +131,7 @@ def test_ignore_my_fallback_list_keeps_the_best_model(fresh, monkeypatch):
 
 def test_the_target_skips_a_second_failing_model(fresh):
     sicken(PRIMARY)
-    sicken(SECOND)
+    sicken(SECOND, ago=60.0)  # 1.8.4.3 (L12): failing NOW, not due a retest
     call = Scripted(pool(), {"gemini-race-three": ("fast", 0.3)})
     out = list(fresh.stream(call))
     assert R.shown(out) == "gemini-race-three here"
@@ -143,8 +143,8 @@ def test_the_target_skips_a_second_failing_model(fresh):
 
 def test_every_model_failing_gives_todays_target(fresh):
     sicken(PRIMARY)
-    sicken(SECOND)
-    sicken(THIRD)
+    sicken(SECOND, ago=60.0)  # 1.8.4.3 (L12): failing NOW, not due a retest
+    sicken(THIRD, ago=60.0)  # 1.8.4.3 (L12): failing NOW, not due a retest
     call = Scripted(pool(), {"gemini-race-two": ("fast", 0.3)})
     out = list(fresh.stream(call))
     assert R.shown(out) == "gemini-race-two here"
@@ -152,7 +152,7 @@ def test_every_model_failing_gives_todays_target(fresh):
 
 
 def test_the_target_preference_is_in_the_plan_and_the_stand_in(fresh):
-    sicken(SECOND)
+    sicken(SECOND, ago=60.0)  # 1.8.4.3 (L12): failing NOW, not due a retest
     plan = fresh._start_probe_plan(Scripted(pool(), {}), PRIMARY, True, R.KEYS)
     assert plan is not None and plan[0] == THIRD
     stand = fresh._stand_in_for(Scripted(pool(), {}), PRIMARY, ["gemini:gemini-race-two", THIRD], [], "busy", None, None)

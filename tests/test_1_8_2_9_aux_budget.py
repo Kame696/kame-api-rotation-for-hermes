@@ -210,6 +210,7 @@ def test_cosmetic_never_waits_on_resting_keys(fresh):
 
 def test_cosmetic_refuses_inside_a_busy_window(fresh):
     fresh._note_busy(IDENTITY)
+    fresh._note_busy("gemini:gemini-3.7-flash")     # 1.8.4.3 (H4): with a healthy sibling the job would move
     plan = Plan(["never"], fresh.clock)
     with pytest.raises(transport.KameAuxTimeout):
         fresh.complete(title(plan))

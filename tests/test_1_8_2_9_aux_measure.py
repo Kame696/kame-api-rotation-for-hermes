@@ -86,6 +86,16 @@ def test_background_rows_never_seed_the_first_word_history(journal):
     assert history == {"gemini:gemini-3.8-flash": [pytest.approx(1.0)]}, "only the chat's 1.0 s counts"
 
 
+def test_a_rescued_row_never_seeds_the_first_word_history(journal):
+    """1.8.4.3: a rescue answered - the row's first sign is the quiet leg's (what the user saw, maybe another
+    model's), so it is not a first-word sample of the model that answered. The quiet history still reads it."""
+    write(call_id="r", first_sign_at=1.2, first_text_at=30.0, ended_at=31.0, rescued=True, rescues_asked=1,
+          longest_quiet_s=0.4)
+    write(call_id="m", first_sign_at=2.0, first_text_at=2.2)
+    assert timings.first_word_history() == {"gemini:gemini-3.8-flash": [pytest.approx(1.0)]}
+    assert timings.quiet_history() == {"gemini:gemini-3.8-flash": [pytest.approx(0.4)]}
+
+
 def test_old_rows_without_the_field_are_read_as_before(journal):
     old = {"at": round(time.time(), 3), "identity": "gemini:gemini-3.6-flash", "key": "key:aa", "attempt": 1,
            "outcome": "answered", "kind": "", "status": 200, "ms_total": 3000, "ms_to_first_sign": 1500,

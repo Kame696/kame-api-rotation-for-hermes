@@ -138,6 +138,9 @@ def record(
     record_type: str = "",
     channel: str = "",
     task: str = "",
+    longest_quiet_s: Optional[float] = None,
+    rescued: bool = False,
+    rescues_asked: int = 0,
 ) -> None:
     """Write one attempt down. Fails silently, always.
 
@@ -191,6 +194,14 @@ def record(
         if channel and channel != "main":
             row["channel"] = str(channel)[:16]
             row["task"] = str(task or "")[:40]
+        # 1.8.4.3 (H2): a reply watched while it thought. Only on those rows, so every other row reads
+        # exactly as it always did. No key, no text.
+        if longest_quiet_s is not None or rescued:
+            row["ms_longest_quiet"] = _ms(longest_quiet_s)
+            row["rescued"] = bool(rescued)
+        # 1.8.4.3 (L7): how many rescue legs (0-2) this reply asked; absent when none, so waste can be counted.
+        if isinstance(rescues_asked, int) and rescues_asked > 0:
+            row["rescues_asked"] = int(rescues_asked)
         from . import recorder
 
         # Rotates at the ceiling; a failed rotation or write is said once, and the next attempt tries
@@ -259,6 +270,10 @@ def first_word_history(now: Optional[float] = None) -> "dict":
                         continue
                     if row.get("channel") == "secondary":
                         continue  # 1.8.2.9: a title's first word is not the chat's
+                    if row.get("rescued") is True:
+                        # 1.8.4.3: a rescue answered. The row's first sign is the quiet leg's (what the
+                        # user saw), and that leg may be another model's: not this identity's first word.
+                        continue
                     # The first sign of work (text, tool call or reasoning) is what
                     # decides a race; the first word stands in where it was not kept.
                     ms = row.get("ms_to_first_sign") or row.get("ms_to_first_text")
@@ -271,4 +286,48 @@ def first_word_history(now: Optional[float] = None) -> "dict":
                     out.setdefault(identity, deque(maxlen=HISTORY_PER_IDENTITY)).append(ms / 1000.0)
     except OSError:
         logger.debug("kame: could not read call timings for the backup trigger", exc_info=True)
+    return {identity: list(samples) for identity, samples in out.items()}
+
+
+def quiet_history(now: Optional[float] = None) -> "dict":
+    """``{identity: [longest quiet gap in seconds, oldest first]}`` from this file (1.8.4.3, F4).
+
+    The twin of :func:`first_word_history` for the rows a watched reply wrote (``ms_longest_quiet``), so
+    the quiet bound a model has learned survives a restart. Answered chat rows only, the same window and
+    cap per model. Reads only; any failure returns what was read so far."""
+    import json
+    import time as _time
+    from collections import deque
+
+    now = _time.time() if now is None else now
+    out: "dict" = {}
+    path = _destination()
+    if not path:
+        return out
+    try:
+        from . import recorder
+
+        files = recorder.generations(path)
+    except Exception:
+        files = [path] if os.path.isfile(path) else []
+    try:
+        for each in files:
+            with open(each, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("outcome") != "answered" or row.get("channel") == "secondary":
+                        continue
+                    ms = row.get("ms_longest_quiet")
+                    at = row.get("at")
+                    identity = row.get("identity")
+                    if not identity or not isinstance(ms, (int, float)) or isinstance(ms, bool) or ms <= 0:
+                        continue
+                    if isinstance(at, (int, float)) and now - at > HISTORY_MAX_AGE_S:
+                        continue
+                    out.setdefault(identity, deque(maxlen=HISTORY_PER_IDENTITY)).append(ms / 1000.0)
+    except OSError:
+        logger.debug("kame: could not read call timings for the quiet bound", exc_info=True)
     return {identity: list(samples) for identity, samples in out.items()}

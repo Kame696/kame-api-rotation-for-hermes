@@ -62,7 +62,7 @@ def build(name: str, home: Path, m) -> dict:
     m.events.INFLIGHT.clear()
     m.events.EVENTS.clear()
     transport._busy_until.clear(); transport._busy_window.clear(); transport._busy_kind.clear()
-    transport._probed_at.clear(); transport._speed.clear(); transport._speed_total[:] = [0] * 5
+    transport._probed_at.clear(); transport._speed.clear(); transport._speed_total[:] = [0] * max(7, len(transport._speed_total))
     transport.replies.clear()
     transport._requests.clear(); transport._request_tasks.clear(); transport._aux_stopped.clear(); transport._aux_memo.clear()
     long_list = CHAIN + "".join(f"  - provider: gemini\n    model: gemini-3.{n}-flash-extra\n" for n in (4, 3, 2))

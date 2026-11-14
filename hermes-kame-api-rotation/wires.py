@@ -24,6 +24,7 @@ Hermes asks a provider profile for carries it onto the other two wires.
 from __future__ import annotations
 
 import copy
+import inspect
 import itertools
 import logging
 import time
@@ -76,6 +77,14 @@ def _view_text(view: Any) -> Optional[str]:
     return text if isinstance(text, str) else None
 
 
+def _view_tools(view: Any) -> Any:
+    choices = getattr(view, "choices", None) or []
+    if not choices:
+        return None
+    delta = getattr(choices[0], "delta", None)
+    return getattr(delta, "tool_calls", None) if delta is not None else None
+
+
 def _view_finish(view: Any) -> Any:
     choices = getattr(view, "choices", None) or []
     return getattr(choices[0], "finish_reason", None) if choices else None
@@ -100,6 +109,18 @@ class Wire:
 
     def emit(self, views: Iterable[Any]) -> Iterator[Any]:
         return iter(views)
+
+    #: 1.8.4.3 (L2): whether live chunks keep their place in the stream. True here and on Messages: a chunk
+    #: goes out live only while nothing of its leg is waiting (the end of a reply waits for the main loop,
+    #: and whatever follows it waits behind it). The Responses wire sends its reasoning deltas ahead of
+    #: the events it keeps back, on purpose.
+    live_in_order = True
+
+    def live(self, view: Any) -> bool:
+        """1.8.4.3 (L2): may this NON-visible chunk of a watched reply go out now, before the reply is
+        known to be the one that answers? Chat Completions: Hermes shows and accumulates reasoning from the
+        same chunk fields, so yes."""
+        return True
 
     def result(self, value: Any) -> Any:
         return value
@@ -227,6 +248,14 @@ class _MessagesEmitter:
         self.next_index = 0
         self.remap: Dict[int, int] = {}
         self.started = False
+        #: 1.8.4.3 (L3): whether anything the user can see (text) or act on (a tool event) has been emitted.
+        #: A new attempt after nothing visible is a RESTART (the stored message is the answering attempt's
+        #: alone); after something visible it is a continuation of that message.
+        self.visible = False
+        #: 1.8.4.3: newer SDKs keep a tool call's partial JSON in a dict the caller owns (``json_bufs``)
+        #: instead of on the block. One dict per message; asked of the SDK once per stream.
+        self.json_bufs: Dict[int, bytes] = {}
+        self._takes_bufs: Optional[bool] = None
 
     def _accumulate(self, event: Any) -> None:
         try:
@@ -234,7 +263,16 @@ class _MessagesEmitter:
 
             if _field(event, "type") in ("message_start", "content_block_start", "content_block_delta",
                                          "content_block_stop", "message_delta"):
-                self.snapshot = accumulate_event(event=event, current_snapshot=self.snapshot)
+                if self._takes_bufs is None:
+                    try:
+                        self._takes_bufs = "json_bufs" in inspect.signature(accumulate_event).parameters
+                    except (TypeError, ValueError):
+                        self._takes_bufs = False
+                if self._takes_bufs:
+                    self.snapshot = accumulate_event(event=event, current_snapshot=self.snapshot,
+                                                     json_bufs=self.json_bufs)
+                else:
+                    self.snapshot = accumulate_event(event=event, current_snapshot=self.snapshot)
         except Exception:
             logger.debug("kame: could not fold a Messages event into the final message", exc_info=True)
 
@@ -271,6 +309,7 @@ class _MessagesEmitter:
             if native is None:
                 text = _view_text(view)
                 if text:
+                    self.visible = True
                     event = self._text_event(text)
                     self._accumulate(event)
                     yield event
@@ -282,6 +321,16 @@ class _MessagesEmitter:
                 self.attempt = attempt
                 if self.first_attempt is None:
                     self.first_attempt = attempt
+                elif not self.visible:
+                    # 1.8.4.3 (L3): the earlier attempt showed nothing (thinking only, or a leg that went
+                    # quiet and was taken over): this attempt is a restart, not a continuation. The
+                    # final message is this attempt's alone - its id, usage, blocks and signatures.
+                    self.snapshot = None
+                    self.json_bufs = {}
+                    self.first_attempt = attempt
+                    self.remap = {}
+                    self.next_index = 0
+                    self.open_text = None
                 else:
                     # A continuation: keep the cut text block, start fresh numbering after it.
                     self.remap = {}
@@ -309,6 +358,8 @@ class _MessagesEmitter:
                     if not text:
                         continue
                     event = self._text_event(text)
+            if text or _view_tools(view):
+                self.visible = True
             self._accumulate(event)
             yield event
 
@@ -359,6 +410,19 @@ class ResponsesWire(Wire):
 
     def result(self, value: Any) -> Any:
         return getattr(value, NATIVE, value)
+
+    live_in_order = False
+
+    def live(self, view: Any) -> bool:
+        """1.8.4.3 (L2): only reasoning deltas go out before the reply is known to answer - the exact
+        predicate of Hermes' ``_on_reasoning_delta``. Every other event (``response.created``, output
+        items, ``*.done``) stays buffered and is delivered at the win, so a take-over never hands Hermes
+        a structural event of the quiet leg. A view with no native event (a keep-alive) is live."""
+        native = getattr(view, NATIVE, None)
+        if native is None:
+            return True
+        kind = str(_field(native, "type") or "")
+        return "reasoning" in kind and "delta" in kind
 
     def open(self, client: Any, kwargs: Dict[str, Any], call: Any = None) -> Iterator[Any]:
         attempt = next(_ATTEMPTS)
