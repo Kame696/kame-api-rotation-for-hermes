@@ -506,7 +506,9 @@ class TestTheResponsesWire:
 
     def test_only_reasoning_deltas_go_out_early_and_the_rest_follows_the_win_in_native_order(self, guard):
         ev = self.ev
-        plan = [0.25, ev("response.created"), ev("response.output_item.added", item={"type": "reasoning", "id": "r"}),
+        # 0.8 s, well after the backup trigger (0.2 s): a leg still ALONE passes its events as an unraced stream does,
+        # and CI macOS 3.12 once started the backup after a 0.25 s first chunk.
+        plan = [0.8, ev("response.created"), ev("response.output_item.added", item={"type": "reasoning", "id": "r"}),
                 ev("response.reasoning_summary_text.delta", delta="t1"), 0.4,
                 ev("response.output_text.delta", delta="hi"), ev("response.output_item.done", item={"type": "message"}),
                 ev("response.completed", response={"output": []})]
