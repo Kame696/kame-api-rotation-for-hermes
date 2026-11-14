@@ -85,7 +85,7 @@ A `429`, `RESOURCE_EXHAUSTED`, a `503` or a dead key moves the call to the **nex
 <td width="50%" valign="top">
 
 ### ⚡ Speed first
-A late reply is **raced** by a backup key, then by your **next model**. Whichever answers first is shown, the rest is cut.
+A late reply is **raced** by a backup key, then by your **next model**. Whichever answers first is shown, the rest is cut. A reply that **stalls half-way** is picked up again.
 
 </td>
 <td width="50%" valign="top">
@@ -113,16 +113,17 @@ Which **model answered** each reply and how long it took. A live panel with ever
 
 ## 🏎️ How fast? Measured live
 
-On the author's own Gemini free-tier keys (4 fallback models × 14 keys), on a bad day for the newest model:
+On the author's own Gemini free-tier keys (four models of one provider × 14 keys), November 2026:
 
-| Situation | Before 1.8.2.8 | **KAME 1.8.2.8** |
-|---|---|---|
-| Main model is **slow** (about 2 minutes for one word) | 46–120 s per reply | **2.6 s median** |
-| Main model is **overloaded** (503) | stuck on it | next model answering in **8.3 s**, then at once |
-| Main model is **out of quota** | next model, then stuck there up to 1 hour | switched in **0.3 s**, back on the model you picked next reply |
-| Everything **healthy** | — | your main model, first word in **2–4 s** |
+| Situation | What happens |
+|---|---|
+| Your **two best models overloaded** (503) | the next model answers: first sign of work **2.7 s** median, none over 20 s (10 live replies) |
+| A 503 storm, **Hermes alone** | no answer in 200 s; **with KAME, 14–20 s** |
+| A model **stops mid-thought** | asked again on another key once it is quiet past its own limit (8–20 s), then on your next model or provider |
+| An answer **goes silent half-way** | continued after 45 s, where it could sit for minutes before |
+| A key **out of quota** | the next key or model at once; the spent key still works on your other models |
 
-<sub>Measured on the Hermes build, which shares these rules; 8 messages in one session. See <a href="VALIDATION.md">validation and limits</a>.</sub>
+<sub>Live numbers from the author's install; the rows without a number are rules, each tested in the plugin's suite. See <a href="VALIDATION.md">validation and limits</a>.</sub>
 
 <a id="vs"></a>
 ## 🆚 KAME vs round-robin
@@ -186,7 +187,7 @@ flowchart TD
 <table>
 <tr><th>Step</th><th>What KAME does</th></tr>
 <tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
-<tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. First to answer wins.</td></tr>
+<tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. A reply that thinks and then goes quiet is asked again; one that stops half-way is continued. First to answer wins.</td></tr>
 <tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
 <tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, for any model a reply starts on (that model, then your main model, then the rest of the list), and every new reply starts on the model you picked.</td></tr>
 </table>
@@ -588,6 +589,9 @@ The panel explains every one of them in full, with its environment variable.
 | Live, a failing provider | 2026-11-14 11:18-11:31: one model timing out on every key, one answering 503, two out of their daily quota on most keys; every reply sent through the gateway was answered, each on the first model that could |
 | Installed | four Hermes profiles, the daily live check 13 of 13 in each |
 
+<details>
+<summary><b>Earlier versions (click to open)</b></summary>
+
 **1.9.0.0** (2026-11-14), see the [changelog](CHANGELOG.md):
 
 | Check | Result |
@@ -704,6 +708,8 @@ host witness in `tools/` against Hermes 0.21.3, 0.21.4 and 0.21.5 installed
 from their release tags; it changes no runtime behaviour, so the live-gateway
 evidence above still describes what runs.
 
+</details>
+
 <a id="faq"></a>
 ## ❓ FAQ
 
@@ -730,7 +736,7 @@ Only a confirmed daily quota or an empty balance rests a key that long. A daily 
 <details>
 <summary><b>Does KAME send extra requests to make replies faster?</b></summary>
 
-Only when a reply is stuck. A reply silent for twice its model's usual wait gets one backup on another key (a third if it is still silent), the first key that starts working wins, and the others are cut. Extra requests stay within about 10% of calls, stop by themselves when rate limits appear, and never happen with a single key — so a subscription login with one credential (Anthropic, ChatGPT) is never raced. Turn it off with `hedging_disabled`.
+Only when a reply is stuck. A reply silent for twice its model's usual wait gets one backup on another key (a third if it is still silent). A reply that thinks and then goes quiet is asked at most twice more (another key, or the same key when it is your only one, then your next model). An answer that goes silent half-way costs one continuation. The first that works wins and the others are cut. A subscription login (Anthropic, ChatGPT) is never asked twice. Racing stops by itself when rate limits appear; turn it off with `hedging_disabled`.
 </details>
 
 <details>
@@ -742,7 +748,7 @@ Once, after installing. After that every setting — panel, `/kame set` or a `KA
 <details>
 <summary><b>I only have one key. Does KAME help?</b></summary>
 
-Yes: the right wait for each error, stream continuation, the live countdown and the one-hour ceiling all apply. It simply has nothing to rotate to.
+Yes: the right wait for each error, stream continuation, the live countdown and the one-hour ceiling all apply. A reply that stops mid-thought is asked again on the same key, a 503 moves the reply to your next model at once, and an answer that goes silent half-way is continued.
 </details>
 
 <details>
@@ -756,12 +762,7 @@ Yes: the right wait for each error, stream continuation, the live countdown and 
 <a id="history"></a>
 ## 🪪 Version history
 
-The previous README had an **Evolution** table. It disappeared during the
-1.8.1.0 README rewrite; the plugin's older work did not disappear. Restored
-below with the newer milestones added. The 1.7.x and 1.8.0.x entries were
-development candidates, not public release tags; 1.8.1.3–1.8.1.5 shipped together
-inside the v1.8.1.6 release. See [CHANGELOG.md](CHANGELOG.md)
-for the full notes on the current public releases.
+In development since early 2026, and every release came from a real log, not from theory. One line per version here; the full notes are in [CHANGELOG.md](CHANGELOG.md). The 1.7.x and 1.8.0.x entries were development candidates, not public releases.
 
 <details>
 <summary><b>Versions and what changed (click to open)</b></summary>
@@ -862,6 +863,6 @@ MIT — see [LICENSE](LICENSE). Bugs and ideas: [issues](https://github.com/Kame
 
 <div align="center">
 
-🐢⚡ **KAME 1.8.1.8** — *because round-robin was never enough*
+🐢⚡ **KAME** — *because round-robin was never enough*
 
 </div>
