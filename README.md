@@ -575,7 +575,7 @@ The panel explains every one of them in full, with its environment variable.
 | Host gates | `host_prose` ok; `host_assumptions` ok; `host_corpus` on the installed Hermes: only the verdicts KAME changes on purpose; Hermes' own provider and credential suites on v0.23.0 answer the same with KAME's client |
 | Fault injection | 5,000 calls with random refusals, cuts and timeouts (`tools/chaos.py`) and 150 raced replies whose winner thinks and then hangs (`tools/race_chaos.py`): 0 defects |
 | Live, thoughts | reasoning on screen 0.4 s after the request, before any text; a reply forced to look quiet after 0.5 s asked both rescues and answered, with no refused follow-up request |
-| Live, a model left out | after an outage had left the fastest model out, the next replies looked at it again and started on it: first word in 3 s |
+| Live, a model left out | after an outage had left the fastest model out, the next replies looked at it again and started on it (1.8.4.2 had sent every reply to the slowest model, 10 to 19 s to a first sign) |
 | Live, a slow provider | 2026-11-14 02:33-02:41, every Gemini model of the list slow at once (first sign 51 to 104 s, 503s): the replies answered, each on the model that spoke first; no rotation is faster than the fastest model of the list |
 | Installed | four Hermes profiles, the daily live check passing in each (13 of 13), real replies through the gateway |
 
