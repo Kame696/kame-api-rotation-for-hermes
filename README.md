@@ -44,19 +44,21 @@ A reply that is **late**, **stops mid-thought** or **goes silent half-way** is s
 
 Also: 🔀 **your model leads** — every reply starts on the model you picked; your fallback list takes over only when it is busy, spent or slow · 🧠 **reads every error** — 82 providers learned from their own docs · 👀 **you see everything** — which model answered each reply, and how long it took.
 
-## 🏎️ How fast? Measured live
+<a id="vs"></a>
+## 🆚 KAME vs round-robin
 
-On the author's own Gemini free-tier keys (four models of one provider × 14 keys), November 2026:
+Most key rotators cycle keys in order and retry on a timer. KAME decides from the refusal itself.
 
-| Situation | What happens |
-|---|---|
-| Your **two best models overloaded** (503) | the next model answers: first sign of work **2.7 s** median, none over 20 s (10 live replies) |
-| A 503 storm, **Hermes alone** | no answer in 200 s; **with KAME, 14–20 s** |
-| A model **stops mid-thought** | asked again on another key once it is quiet past its own limit (8–20 s), then on your next model or provider |
-| An answer **goes silent half-way** | continued after 45 s, where it could sit for minutes before |
-| A key **out of quota** | the next key or model at once; the spent key still works on your other models |
-
-<sub>Live numbers from the author's install; the rows without a number are rules, each tested in the plugin's suite. See <a href="VALIDATION.md">validation and limits</a>.</sub>
+| | Round-robin rotator | **KAME** |
+|---|---|---|
+| Which key is next | the next one in the list | **the least-loaded healthy key** (60-second window) |
+| After a 429 | retry on a fixed backoff | **the provider's own `retryDelay` / `Retry-After`, to the second** |
+| Per-minute vs daily quota | same treatment | **told apart** (`quotaId`, reset headers, the pool's own behaviour) |
+| Gemini bare `RESOURCE_EXHAUSTED` | fixed backoff or hammering | **1 → 2 → 4 → 8s … ladder, reset the moment the key answers** |
+| Outage (5xx) | punishes every key | **1s, never escalates** — the key was never at fault |
+| A key spent on one model | benched everywhere | **still used on your other models** |
+| All keys resting | error, turn over | **waits for the first one back, and says so** |
+| Longest a healthy key can be lost | whatever the provider claimed | **1 hour** (`max_hold_seconds`) |
 
 <a id="install-fast"></a>
 ## ⚡ Install in 1 minute
@@ -300,22 +302,21 @@ A gateway is a server you run in front of your clients. KAME is a plugin inside 
 
 Optional reading — everything above is all you need. Click a line to open it.
 
-<a id="vs"></a>
+<a id="fast"></a>
 <details>
-<summary><b>🆚 KAME vs round-robin</b></summary>
+<summary><b>🏎️ How fast? Measured live</b></summary>
 
-Most key rotators cycle keys in order and retry on a timer. KAME decides from the refusal itself.
+On the author's own Gemini free-tier keys (four models of one provider × 14 keys), November 2026:
 
-| | Round-robin rotator | **KAME** |
-|---|---|---|
-| Which key is next | the next one in the list | **the least-loaded healthy key** (60-second window) |
-| After a 429 | retry on a fixed backoff | **the provider's own `retryDelay` / `Retry-After`, to the second** |
-| Per-minute vs daily quota | same treatment | **told apart** (`quotaId`, reset headers, the pool's own behaviour) |
-| Gemini bare `RESOURCE_EXHAUSTED` | fixed backoff or hammering | **1 → 2 → 4 → 8s … ladder, reset the moment the key answers** |
-| Outage (5xx) | punishes every key | **1s, never escalates** — the key was never at fault |
-| A key spent on one model | benched everywhere | **still used on your other models** |
-| All keys resting | error, turn over | **waits for the first one back, and says so** |
-| Longest a healthy key can be lost | whatever the provider claimed | **1 hour** (`max_hold_seconds`) |
+| Situation | What happens |
+|---|---|
+| Your **two best models overloaded** (503) | the next model answers: first sign of work **2.7 s** median, none over 20 s (10 live replies) |
+| A 503 storm, **Hermes alone** | no answer in 200 s; **with KAME, 14–20 s** |
+| A model **stops mid-thought** | asked again on another key once it is quiet past its own limit (8–20 s), then on your next model or provider |
+| An answer **goes silent half-way** | continued after 45 s, where it could sit for minutes before |
+| A key **out of quota** | the next key or model at once; the spent key still works on your other models |
+
+<sub>Live numbers from the author's install; the rows without a number are rules, each tested in the plugin's suite. See <a href="VALIDATION.md">validation and limits</a>.</sub>
 
 </details>
 
