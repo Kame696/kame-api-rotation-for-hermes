@@ -90,6 +90,7 @@ class FakeStream:
     def __init__(self, steps):
         self.steps = steps
         self.response = Response()
+        self.raised = False   # True once a planned failure was delivered (a cut leg never gets there)
 
     def __iter__(self):
         for step in self.steps:
@@ -101,6 +102,7 @@ class FakeStream:
                     time.sleep(0.005)
                 continue
             if isinstance(step, BaseException):
+                self.raised = True
                 raise step
             yield step
 
@@ -332,7 +334,9 @@ class TestEveryLegIsJudgedOnItsOwnKey:
         out, elapsed = run(fresh, FakeCall(pool, keys=keys))
         assert shown(out) == "recovered"
         assert elapsed < 5.0
-        failed = {k for k, s in pool.opened if k != KEYS[2]}
+        # On a slow runner the second key can open beside the key that answers and be cut before its own 429;
+        # a leg that was cut never failed, so only the keys whose failure was delivered must rest.
+        failed = {k for k, s in pool.opened if getattr(s, "raised", False)}
         assert KEYS[0] in failed
         assert all(fresh.engine.healthy_count(IDENTITY, [k]) == 0 for k in failed)
 

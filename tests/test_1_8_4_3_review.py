@@ -92,3 +92,33 @@ def test_the_quiet_bound_survives_a_restart(guard, monkeypatch, tmp_path):
     guard._race_seeded.discard((IDENTITY, False))
     guard._seed_race_history(IDENTITY, False)       # live samples win: seeding never adds twice
     assert len(R.hedging_mod.HEDGE_TRACKER._quiet[IDENTITY]) == 11
+
+
+# Third review (2026-11-14, Agent Zero review finding 2 holds in this port too) ---------------------------
+
+def test_a_provisional_that_fails_while_the_rescues_are_silent_rotates_at_once(guard, monkeypatch):
+    # The home leg thinks, goes quiet (rescue 1 opens on another key and stays silent), then FAILS. 1.8.4.2 raised the
+    # failure at once and the next key answered; with the watch on and nothing guarding a dead provisional, the reply
+    # waited for the silent rescue's own end. The silent rescue is cut and the failure rotates, as in 1.8.4.2.
+    monkeypatch.setattr(R.hedging_mod.HEDGE_TRACKER, "stream_triggers", lambda *a, **k: (30.0, 60.0))
+    monkeypatch.setattr(transport.KameTransport, "_widen_candidate", lambda *a, **k: None)   # no rescue 2
+    call = SeqCall([[0.02, think("a"), 0.6, R.Refusal(503, "The model is overloaded. Please try again later.")],
+                    [20.0, chunk("late rescue")],
+                    [0.02, chunk("next key answers", finish="stop")],
+                    # the 503 also moves the other model to time 0 (L11), so the next race opens two legs
+                    [0.3, chunk("next key answers", finish="stop")]])
+    started = time.monotonic()
+    out = list(guard.stream(call))
+    assert R.shown(out) == "next key answers"
+    assert time.monotonic() - started < 5.0, "rotated at the failure, not after the silent rescue's 20 s"
+    assert call.opened[1][2].response.closed.is_set(), "the silent rescue was cut"
+
+
+def test_a_provisional_that_fails_while_a_rescue_is_working_waits_for_the_rescue(guard, monkeypatch):
+    monkeypatch.setattr(R.hedging_mod.HEDGE_TRACKER, "stream_triggers", lambda *a, **k: (30.0, 60.0))
+    monkeypatch.setattr(transport.KameTransport, "_widen_candidate", lambda *a, **k: None)
+    call = SeqCall([[0.02, think("a"), 0.6, R.Refusal(503, "The model is overloaded. Please try again later.")],
+                    [0.05, think("rescue thinks"), 0.8, chunk("rescued", finish="stop")]])
+    out = list(guard.stream(call))
+    assert R.shown(out) == "rescued", "a rescue that already shows work is the reply"
+    assert len(call.opened) == 2

@@ -63,6 +63,10 @@ list was still asked only 8 to 12 s into the retry.
 - **A best model that keeps failing is asked less often.** Outside a busy spell it was asked beside every reply; now
   every 20 s, then 40, 80, 160 s and at most every 5 minutes the longer it keeps failing. Its first answer brings it
   back at once. Inside a 503 storm it is still asked every 20 s.
+- **A reply that was working and then fails moves on at once.** If the request that was showing its thoughts
+  fails while the extra requests beside it are still silent, those are cut and the next key is asked
+  immediately, as in 1.8.4.2; before this fix the reply waited for the silent ones to end on their own. If one
+  of them has already shown work, it is kept and becomes the reply.
 - **What no rotation can do.** When a provider refuses every model of your list at once (2026-11-13: three
   minutes of 503 on four models of one provider, speech-to-text included), nothing in a one-provider list can
   answer. KAME keeps asking and shows the first that answers; a model of another provider at the end of your

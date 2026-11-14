@@ -4639,6 +4639,20 @@ class KameTransport:
                 else:
                     leg.done = True
                     leg.error = payload
+                    if watch and leg is provisional and winner is None and not any(
+                            other is not leg and not other.done and other not in settled and other in worked
+                            for other in legs):
+                        # Third review (2026-11-14): the leg that was working failed and no leg still running has
+                        # shown a sign of work. 1.8.4.2 had cut the silent legs at that leg's first sign and raised
+                        # its failure at once; with the watch the silent rescues kept the race open with every guard
+                        # off, until their own end. They are cut now and the failure goes back (F1 blames its key).
+                        t_cut = time.monotonic()
+                        for other in list(legs):
+                            if other is leg or other.done or other in settled:
+                                continue
+                            settled.add(other)
+                            settle(other, leg, t_cut)
+                        self._drain_hedge_losers()
                 if winner is None and not all(leg.done or leg in settled for leg in legs):
                     continue
                 if winner is None and len(legs) == 1 and primary.error is not None:
@@ -4732,6 +4746,11 @@ class KameTransport:
                 _emit(call, "switch", identity=identity, key=fingerprint(winner.key),
                       reason=f"the rescue answered first, {now - race_started:.1f}s after the first request - "
                              "the quiet one was cut")
+                # Third review F5 (2026-11-14): the rescue asked the raced-in model's pool, so that model had
+                # beaten the home model to the first sign - the home model lost as on a cross win and its window
+                # opens. A recovered best model (``probe``) beat it without the home model being slow.
+                if won_by != probe and identity not in noted_slow:
+                    self._note_busy(identity, call=call)
             elif probe and won_by == probe:
                 # decisions/0032 C: the best model is back. The home model was not slow, it was only
                 # beaten by a recovered one - no window for it, and the reply is not a hand-over.

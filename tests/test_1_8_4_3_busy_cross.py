@@ -207,3 +207,28 @@ def test_under_the_quiet_watch_a_busy_cross_leg_that_thinks_then_goes_quiet_is_r
     assert elapsed < 4.0, (elapsed, call.models(), reasons())
     assert any("said it is busy" in r for r in reasons()), reasons()
     assert any("rescue" in r and "answered first" in r for r in reasons()), reasons()
+
+
+# third review (2026-11-14), F5 ----------------------------------------------------------------------------
+
+def test_a_rescue_that_wins_after_the_next_model_had_beaten_the_home_model_rests_the_home_model(guard, monkeypatch):
+    # The home model stays silent, the next model is raced in by the cross timer and thinks (it is the provisional
+    # winner), goes quiet, and a rescue on ANOTHER KEY OF THE NEXT MODEL answers. The home model lost the race to
+    # the next model exactly as on a cross win, so its window opens; before, a rescue win skipped it.
+    fast_cross(monkeypatch)
+    call = SeqCall(by_model={M_HOME: [silent()] * 4,
+                             M_NEXT: [[0.05, think("the next model thinks"), 30.0, chunk("never")],
+                                      reply("rescued")]})
+    out, elapsed = run(guard, call)
+    assert R.shown(out) == "rescued answer"
+    assert elapsed < 3.0, (elapsed, call.models(), reasons())
+    assert guard._busy_until.get(HOME, 0.0) > time.time(), "the home model lost to the next model: its window opens"
+    assert guard._busy_until.get(NEXT, 0.0) <= time.time(), "the next model answered (through its rescue)"
+
+
+def test_a_rescue_of_the_home_model_itself_does_not_rest_the_home_model(guard):
+    # The home leg thinks, goes quiet, another key of the home model answers: nothing was slow, nothing rests.
+    call = SeqCall(by_model={M_HOME: [[0.05, think("home thinks"), 30.0, chunk("never")], reply("rescued")]})
+    out, elapsed = run(guard, call)
+    assert R.shown(out) == "rescued answer"
+    assert guard._busy_until.get(HOME, 0.0) <= time.time()
