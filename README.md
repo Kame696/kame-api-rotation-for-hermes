@@ -440,7 +440,7 @@ Paste them into **one** provider field, separated by commas — in the dashboard
 GOOGLE_API_KEY=AIzaSy...aaa,AIzaSy...bbb,AIzaSy...ccc
 ```
 
-That is all KAME needs. One key works too; there is just nothing to rotate to.
+That is all KAME needs. One key works too: a stalled reply is asked again on it and a busy model hands the reply to your next one; more keys add rotation.
 
 KAME keeps such a list as one pool entry per key on its own, at every start, and follows the variable when you edit it (turn off with `resolver_disabled`). It writes through Hermes' own pool API, suppresses the comma source, backs up `auth.json` first, and never rewrites `.env`. `/kame-keys split` does the same once by hand.
 
