@@ -7,7 +7,7 @@
   "keys": 14,
   "kind": "calling",
   "model": "gemini-3.5-flash",
-  "started_at": 1794608863.2474046
+  "started_at": 1794656726.5683923
  },
  "build": {
   "complete": true,
@@ -15,7 +15,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.9.0.0",
+ "build_line": "1.9.0.1",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -52,7 +52,7 @@
  },
  "events": [
   {
-   "at": 1794608873.3090422,
+   "at": 1794656736.3881276,
    "code": null,
    "detail": "",
    "identity": "gemini:gemini-3.7-flash",
@@ -64,7 +64,7 @@
    "sized_by": ""
   },
   {
-   "at": 1794608873.3090088,
+   "at": 1794656736.3881114,
    "code": null,
    "detail": "",
    "identity": "gemini:gemini-3.8-flash",
@@ -80,45 +80,45 @@
   "entries": [
    {
     "busy_kind": "busy",
-    "busy_until": 1794608903.1638927,
+    "busy_until": 1794656766.3791933,
     "healthy": 14,
     "identity": "gemini:gemini-3.8-flash",
     "kame_serves": true,
     "keys": 14,
-    "probe_at": 1794608887.0474045,
+    "probe_at": 1794656750.3683922,
     "role": "primary",
     "soonest_s": null
    },
    {
     "busy_kind": "busy",
-    "busy_until": 1794608903.1796792,
+    "busy_until": 1794656766.3825228,
     "healthy": 11,
     "identity": "gemini:gemini-3.7-flash",
     "kame_serves": true,
     "keys": 14,
-    "probe_at": 1794608893.1796792,
+    "probe_at": 1794656756.3825228,
     "role": "fallback",
     "soonest_s": null
    },
    {
     "busy_kind": "busy",
-    "busy_until": 1794608903.2457623,
+    "busy_until": 1794656766.3846776,
     "healthy": 14,
     "identity": "gemini:gemini-3.6-flash",
     "kame_serves": true,
     "keys": 14,
-    "probe_at": 1794608893.2457623,
+    "probe_at": 1794656756.3846776,
     "role": "fallback",
     "soonest_s": null
    },
    {
     "busy_kind": "busy",
-    "busy_until": 1794608903.308662,
+    "busy_until": 1794656766.3879554,
     "healthy": 14,
     "identity": "gemini:gemini-3.5-flash",
     "kame_serves": true,
     "keys": 14,
-    "probe_at": 1794608893.308662,
+    "probe_at": 1794656756.3879554,
     "role": "fallback",
     "soonest_s": null
    }
@@ -146,7 +146,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 16244,
+ "pid": 14452,
  "pools": [
   {
    "daily_limit": null,
@@ -154,7 +154,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.2624654769897461,
+   "idle_for_s": 0.01999187469482422,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -261,7 +261,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.26879143714904785,
+   "idle_for_s": 0.02026057243347168,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -368,7 +368,7 @@
    "failures": 3,
    "healthy": 11,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.26932430267333984,
+   "idle_for_s": 0.020596981048583984,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -382,7 +382,7 @@
     [
      "key:24ebd9",
      "s",
-     1794608903.3089533,
+     1794656766.3880906,
      "per_minute"
     ],
     [
@@ -406,7 +406,7 @@
     [
      "key:74ea95",
      "s",
-     1794608903.3088856,
+     1794656766.3880641,
      "per_minute"
     ],
     [
@@ -424,7 +424,7 @@
     [
      "key:9267af",
      "s",
-     1794608903.3087003,
+     1794656766.3879702,
      "per_minute"
     ],
     [
@@ -477,7 +477,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.2700083255767822,
+   "idle_for_s": 0.020990371704101562,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -582,7 +582,7 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794608865.9455426,
+  "since": 1794656736.1951222,
   "stopped": {},
   "suggestion": null
  },
@@ -622,6 +622,7 @@
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
     "thought_quiet_s",
+    "answer_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1204,6 +1205,35 @@
    "units": "seconds",
    "value": 20.0,
    "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 45.0,
+   "depends_on": null,
+   "detail": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "env": "KAME_ANSWER_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "impact": "low",
+   "key": "answer_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 600.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave at 45. Some providers keep the connection open with empty keep-alive messages while the answer has stopped, and Hermes alone would wait for minutes.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while answering",
+   "units": "seconds",
+   "value": 45.0,
+   "when": "Rarely. Only to turn the watch off (0) or to wait longer for a very slow model."
   },
   {
    "advanced": true,
@@ -1853,6 +1883,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794608873.9423726,
- "version": "1.9.0.0"
+ "updated_at": 1794656736.4082632,
+ "version": "1.9.0.1"
 }

@@ -2745,7 +2745,7 @@ class KameTransport:
                 else:
                     handover = self._maybe_hand_over(
                         call, identity, keys, pool_waited, bool(seen),
-                        waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
+                        waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys, keys),
                         stand_in_ok=True, avoid=visited + excluded + leg_busy)
                     if isinstance(handover, _StandIn):
                         circle_to(handover.target(), handover.why)      # 1.8.3.0 (D2 a)
@@ -3008,9 +3008,13 @@ class KameTransport:
                                 slow_after=_slow_s, cross=_cross, probe=_probe_id, quiet_guard=_quiet_guard,
                                 busy_cross=_busy_cross,
                             )
-                    if raw is None and (_slow_s is not None or _probe_id):
+                    if raw is None and (_slow_s is not None or _probe_id
+                                        or (_quiet_guard and not seen and stitcher is None
+                                            and not replay_tool_request)):
                         # No backup race here, but the slow-model watch (or the probe of the busy
                         # model) still runs: a race of one leg is the plain stream plus that clock.
+                        # 1.9.0.1 (H2): and the quiet watch - a user with one key and no list had no race at
+                        # all, so a reply that stopped mid-thought had nobody to ask a second time.
                         raw, key, _call_started = yield from self._race_stream(
                             call, identity, label, attempt, key, keys, client, request,
                             reasoning=_race_reasoning, max_legs=1, progress=progress,
@@ -3019,6 +3023,11 @@ class KameTransport:
                         )
                     if raw is None:
                         raw = call.wire.open(client, request, call)
+                        # 1.9.0.1 (H4): a stream that is not raced (a continuation, a background job, hedging
+                        # off) is watched for a silence after its text too.
+                        _answer_quiet = self._answer_quiet_s(call)
+                        if _answer_quiet > 0.0:
+                            raw = _WatchedStream(raw, _answer_quiet)
                     _won = getattr(call, "_kame_answered_by", None)
                     if _won and _won != identity:
                         # 1.8.2.8 (review R1): the next model won the race - the rest of
@@ -3352,15 +3361,16 @@ class KameTransport:
                             and not (settings.is_on(settings.NO_MODEL_FALLBACK)
                                      or settings.model_switch_mode() == "never")
                             and time.time() >= self._busy_until.get(identity, 0.0)
-                            and self._is_busy(identity, busy_keys)):
+                            and self._is_busy(identity, busy_keys, keys)):
                         busy_noted = True
                         self._note_busy(identity, call=call)
-                if len(busy_keys) >= 2 and not busy_noted:
+                # 1.9.0.1 (H3): "two busy keys" is "every key the pool has, at most two"
+                if len(busy_keys) >= self._busy_need(keys) and not busy_noted:
                     busy_noted = True
                     self._note_busy(identity, call=call)
                 handover = self._maybe_hand_over(
                     call, identity, keys, pool_waited, bool(seen),
-                    waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys),
+                    waited=time.monotonic() - started, busy=self._is_busy(identity, busy_keys, keys),
                     after_failure=True,
                     stand_in_ok=stitcher is None and not replay_tool_request, avoid=visited + excluded + leg_busy)
                 if isinstance(handover, _StandIn):
@@ -3371,11 +3381,11 @@ class KameTransport:
                 if aux is not None and not seen:
                     # A model that says it is busy, or a key out of quota, is not worth a
                     # second key for a job nobody waits on: Hermes moves it down the user's list.
-                    if len(busy_keys) >= 2:
+                    if len(busy_keys) >= self._busy_need(keys):
                         raise aux_stop("its model is busy")
                     if aux.klass == "cosmetic" and kind in _HEDGE_QUOTA_KINDS:
                         raise aux_stop("a key is out of quota")
-                if self._is_busy(identity, busy_keys):
+                if self._is_busy(identity, busy_keys, keys):
                     # 1.8.2.9: busy, and nothing after Hermes' position is free to hand to
                     # Hermes: circle back through the user's list instead of rotating keys
                     # on a model that says it cannot answer (the last model of a busy list
@@ -4099,6 +4109,20 @@ class KameTransport:
             logger.debug("kame: could not read the quiet bound", exc_info=True)
             return None
 
+    def _answer_quiet_s(self, call: "Call") -> float:
+        """Seconds an answer that has begun may stay silent before KAME cuts it, or ``0`` - no watch.
+
+        1.9.0.1 (H4). ``KAME_ANSWER_QUIET_S``: 45 by default, 0 turns it off. Never for a model running on
+        this machine (a long prefill or a slow CPU is not a stall). A failing read turns the watch off."""
+        try:
+            if _looks_local(getattr(call, "base_url", "")):
+                return 0.0
+            default = settings.ALL_NUMBERS.get(settings.ANSWER_QUIET_S, 45.0)
+            return max(0.0, float(settings.number(settings.ANSWER_QUIET_S, default)))
+        except Exception:
+            logger.debug("kame: could not read the answer quiet limit", exc_info=True)
+            return 0.0
+
     def _race_stream(
         self,
         call: "Call",
@@ -4204,6 +4228,12 @@ class KameTransport:
         rescue1_opened = False
         rescue1_leg: Optional[_StreamLeg] = None
         rescue1_late = 0.0          # 1.8.4.3 (L5): when a SILENT rescue 1 counts as late, from its own start
+        # 1.9.0.1 (H1): rescue 2 as rescue 1 is kept, so "both rescues have had their turn" can be read; and
+        # whether the stall hand-over was already tried (once per reply, whatever it answered).
+        rescue2_leg: Optional[_StreamLeg] = None
+        rescue2_late = 0.0
+        stall_handed = False
+        key2_tried = False
         last_work_at = race_started
         wire = getattr(call, "wire", wires.CHAT)
         try:
@@ -4269,6 +4299,77 @@ class KameTransport:
             if probe_alive:
                 self._probe_verdicts.append((leg_id, leg.key, "ok", None, elapsed, call, label, attempt,
                                              reasoning))
+
+        def late_point(pool: str) -> float:
+            """1.8.4.3 (L5): after this long from its own start a rescue that has shown NOTHING is late - the
+            number ``_cross_target`` uses to call a silent leg late, never past twice the bound."""
+            try:
+                stats = _hedge.first_word_stats(pool, reasoning=reasoning)
+            except Exception:
+                stats = None
+            return float(min(2.0 * guard_bound,
+                             _CROSS_COLD_S if not stats else max(_CROSS_MIN_S, 3.0 * stats[0])))
+
+        def exhausted(leg: Optional["_StreamLeg"], late: float, at: float) -> bool:
+            """1.9.0.1 (H1): has this rescue had its turn? It never opened, it ended, it is past its own late
+            point with no sign of work, or it worked and is itself quiet past the bound."""
+            if leg is None or leg.done or leg in settled:
+                return True
+            if leg not in worked:
+                return at - leg.started >= late
+            return leg.last_work is not None and at - leg.last_work >= guard_bound
+
+        def open_key_rescue2(at: float, quiet_s: float) -> bool:
+            """1.9.0.1 (H2, R2): rescue 2 as another key of the model the provisional leg asks - or that same
+            key again - for a reply that has no later model to ask and no later provider to be handed to.
+            Never a subscription credential (E3, through ``_backup_keys``). Counted as rescue 1 is."""
+            nonlocal rescue2_leg, rescue2_late
+            r_pool = getattr(provisional, "cross", None) or identity
+            r_model = getattr(provisional, "cross_model", None)
+            used = {leg.key for leg in legs}
+            others = _backup_keys(call, [k for k in _race_keys(keys, r_pool) if k not in used], keys)
+            same_key = not others
+            if same_key:
+                others = _backup_keys(call, [provisional.key], keys)
+            if not others:
+                return False
+            healthy = self.engine.healthy_count(r_pool, keys)
+            if not (burst or _hedge.may_start_backup(
+                    r_pool, healthy_count=max(healthy, 2) if same_key else healthy,
+                    under_pressure=self._quota_pressure(r_pool, keys),
+                    stream=True, reasoning=reasoning, est_prompt_tokens=est_tokens)):
+                return False
+            pick, status = self.engine.select(r_pool, others)
+            if not pick or status != "SUCCESS":
+                return False
+            if not burst:
+                _hedge.note_hedge(r_pool)
+            self._tally(_SPEED_RESCUE)
+            self._count_request(call, r_pool)
+            setattr(call, "_kame_rescues_asked", 2 if rescue1_opened else 1)
+            rrequest = request
+            if r_pool != identity:
+                rrequest = dict(request)
+                rrequest["model"] = r_model
+            rleg = _StreamLeg(race_q, pick, call.client_for(pick, attempt), is_hedge=True)
+            rleg.race_kind = "rescue"
+            if r_pool != identity:
+                rleg.cross = r_pool  # type: ignore[attr-defined]
+                rleg.cross_model = r_model  # type: ignore[attr-defined]
+                cross_legs.append(rleg)
+            rleg.start(call.wire, rrequest)
+            legs.append(rleg)
+            rescue2_leg = rleg
+            rescue2_late = late_point(r_pool)
+            _emit(call, "switch", identity=identity, key=fingerprint(pick),
+                  reason=f"{model_label(r_pool)} stopped mid-thought {quiet_s:.0f}s ago with nothing shown yet - "
+                         + ("the same key is asked again beside it" if same_key else "another key races it")
+                         + "; the first to answer is shown")
+            if r_pool != identity:
+                self._publish_racing(identity, attempt, keys, key, race_started, cross_legs, probe, call)
+            else:
+                self._publish_backup(call, identity, attempt, keys, key, race_started)
+            return True
 
         try:
             while True:
@@ -4457,9 +4558,17 @@ class KameTransport:
                         else:
                             r_keys = [k for k in _race_keys(keys, r_pool) if k not in used]
                         others = _backup_keys(call, r_keys, keys)
+                        # 1.9.0.1 (H2, R2): no other key to ask (one key, or every other key is in the race):
+                        # the SAME key again, a fresh request. A subscription credential is not asked twice
+                        # (``_backup_keys``). The pool's healthy-count rule counts the key itself as the second.
+                        same_key = False
+                        if not others:
+                            others = _backup_keys(call, [provisional.key], keys)
+                            same_key = bool(others)
                         healthy = self.engine.healthy_count(r_pool, keys)
                         if others and (burst or _hedge.may_start_backup(
-                                r_pool, healthy_count=healthy, under_pressure=self._quota_pressure(r_pool, keys),
+                                r_pool, healthy_count=max(healthy, 2) if same_key else healthy,
+                                under_pressure=self._quota_pressure(r_pool, keys),
                                 stream=True, reasoning=reasoning, est_prompt_tokens=est_tokens)):
                             rescue_key, rescue_status = self.engine.select(r_pool, others)
                             if rescue_key and rescue_status == "SUCCESS":
@@ -4486,16 +4595,13 @@ class KameTransport:
                                 # 1.8.4.3 (L5): the point after which a rescue that has shown NOTHING is
                                 # itself late - the number ``_cross_target`` uses to call a silent leg late,
                                 # never past twice the bound. Computed once, now.
-                                try:
-                                    r_stats = _hedge.first_word_stats(r_pool, reasoning=reasoning)
-                                except Exception:
-                                    r_stats = None
-                                rescue1_late = float(min(
-                                    2.0 * guard_bound,
-                                    _CROSS_COLD_S if not r_stats else max(_CROSS_MIN_S, 3.0 * r_stats[0])))
+                                rescue1_late = late_point(r_pool)
                                 _emit(call, "switch", identity=identity, key=fingerprint(rescue_key),
                                       reason=f"{model_label(r_pool)} stopped mid-thought {quiet:.0f}s ago with "
-                                             "nothing shown yet - another key races it; the first to answer is shown")
+                                             "nothing shown yet - "
+                                             + ("the same key is asked again beside it" if same_key
+                                                else "another key races it")
+                                             + "; the first to answer is shown")
                                 self._publish_backup(call, identity, attempt, keys, key, race_started)
                     # 1.8.4.3 (F3): at twice the bound after a rescue 1 that opened; at once when it could not
                     # second review R2: a rescue 1 that already ended does not make rescue 2 wait either
@@ -4530,12 +4636,58 @@ class KameTransport:
                                     rleg.start(call.wire, rrequest)
                                     legs.append(rleg)
                                     cross_legs.append(rleg)
+                                    rescue2_leg = rleg
+                                    rescue2_late = late_point(r_id)
                                     _emit(call, "switch", identity=identity, key=fingerprint(rkey),
                                           reason=f"{model_label(identity)} stopped mid-thought {quiet:.0f}s ago with "
                                                  f"nothing shown yet - {model_label(r_id)} (your list) races it; "
                                                  "the first to answer is shown")
                                     self._publish_racing(identity, attempt, keys, key, race_started, cross_legs,
                                                          probe, call)
+                        elif not self._stall_exit_open(call, identity, taken):
+                            # 1.9.0.1 (H2, R2): no later model may be asked and no later provider can be handed
+                            # the reply (the whole list is this model, "Never switch", the main model is the
+                            # only one left): rescue 2 is another key of the same model, or the same key again.
+                            key2_tried = True
+                            open_key_rescue2(now, quiet)
+                    # -- 1.9.0.1 (H1): both rescues have had their turn and the reply is still quiet --------------
+                    # The hand-over a silent reply gets at the slow bound (D11), for a reply that is quiet mid-thought:
+                    # nothing beside it answered, so a later entry of the list (another provider) is asked instead of
+                    # waiting for the provider's own timeout. With no such entry the reply keeps waiting, as before.
+                    if (rescues == 2 and not stall_handed and quiet >= guard_bound
+                            and exhausted(rescue1_leg, rescue1_late, now)
+                            and exhausted(rescue2_leg, rescue2_late, now)):
+                        h_taken = [identity] + [getattr(leg, "cross") for leg in cross_legs
+                                                if getattr(leg, "cross", None)]
+                        if self._stall_exit_open(call, identity, h_taken):
+                            stall_handed = True
+                            handover = self._maybe_hand_over(
+                                call, identity, keys, 0.0, False, waited=now - race_started, busy=True,
+                                stalled=quiet,
+                                avoid=[getattr(leg, "cross") for leg in cross_legs
+                                       if leg.error is not None and getattr(leg, "cross", None)])
+                            if handover is not None:
+                                t_cut = time.monotonic()
+                                for leg in list(legs):      # every leg is cut and accounted for, as at the slow bound
+                                    if leg in settled:
+                                        continue
+                                    settled.add(leg)
+                                    settle(leg, None, t_cut)
+                                self._drain_hedge_losers()
+                                if identity not in noted_slow:
+                                    self._note_busy(identity, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S, call=call)
+                                    noted_slow.add(identity)
+                                for cross_leg in cross_legs:        # a model that never showed work is left alone too
+                                    pool = getattr(cross_leg, "cross", None)
+                                    if pool and pool not in noted_slow and cross_leg not in worked:
+                                        self._note_busy(pool, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S, call=call)
+                                        noted_slow.add(pool)
+                                raise handover
+                            if rescue2_leg is None and not key2_tried:
+                                # the exit was refused (a recent hand-over, nothing usable): rescue 2 still
+                                # has the keys of the model to ask, as when there is no exit at all
+                                key2_tried = True
+                                open_key_rescue2(now, quiet)
                     if time.monotonic() - last_beat >= self.KEEPALIVE_S:
                         last_beat = time.monotonic()
                         yield _KEEPALIVE        # a wire that lets no thought out live still shows a live provider
@@ -4549,6 +4701,18 @@ class KameTransport:
                             second = min(second, rescue1_leg.started + rescue1_late)     # 1.8.4.3 (L5)
                         due = max(due, second)
                     wait = min(wait, max(0.01, due - now))
+                elif watch and provisional is not None and winner is None and rescues == 2 and not stall_handed:
+                    # 1.9.0.1 (H1): the moment both rescues will have had their turn
+                    due = last_work_at + guard_bound
+                    for r_leg, r_late in ((rescue1_leg, rescue1_late), (rescue2_leg, rescue2_late)):
+                        if r_leg is None or r_leg.done or r_leg in settled:
+                            continue
+                        if r_leg in worked and r_leg.last_work is not None:
+                            due = max(due, r_leg.last_work + guard_bound)
+                        else:
+                            due = max(due, r_leg.started + r_late)
+                    if due > now:       # already past: the hand-over was tried (or has no exit) - no busy loop
+                        wait = min(wait, max(0.01, due - now))
                 if triggers and len(legs) < max_legs:
                     wait = min(wait, max(0.01, race_started + triggers[0] - now))
                 if slow_after is not None:
@@ -4789,7 +4953,7 @@ class KameTransport:
             else:
                 _emit(call, "switch", identity=identity, key=fingerprint(winner.key),
                       reason=f"the backup key answered first, {now - race_started:.1f}s after the first request — the slow one was cut")
-        return _RaceStream(winner, race_q), winner.key, winner.started
+        return _RaceStream(winner, race_q, self._answer_quiet_s(call)), winner.key, winner.started
 
     def _flush(self, stitcher: Any, held_tools: List[Any], progress: "_Progress") -> Iterator[Any]:
         """At the end of an attempt: release held text, then the held tool calls."""
@@ -5162,13 +5326,24 @@ class KameTransport:
         self._busy_window[identity] = window
         self._busy_until[identity] = now + window
 
-    def _is_busy(self, identity: str, busy_keys: set) -> bool:
-        """Two keys busy in this call, or one while the provider is known busy.
+    @staticmethod
+    def _busy_need(keys: Optional[Sequence[str]] = None) -> int:
+        """1.9.0.1 (H3, R3): how many busy keys prove the MODEL busy - every key the pool has, at most two.
+
+        Two was the rule for a pool of fourteen; a user with one key could never reach it, so a 503 on his
+        only key was retried every second and the next provider was never asked. Without the keys: two."""
+        return 2 if not keys else min(2, len(keys))
+
+    def _is_busy(self, identity: str, busy_keys: set, keys: Optional[Sequence[str]] = None) -> bool:
+        """Every key of the pool (at most two) busy in this call, or one while the provider is known busy.
+
+        1.9.0.1 (H3): "every key the pool has" - a one-key user whose only key answers 503 is as busy as a
+        fourteen-key user after two busy keys.
 
         "Known" lasts the busy window and as long again after it: inside the
         window a reply is handed over without a request (the call start), and
         the first knock after it decides alone whether the storm is still on."""
-        if len(busy_keys) >= 2:
+        if len(busy_keys) >= self._busy_need(keys):
             return True
         return bool(busy_keys) and time.time() < self._busy_until.get(identity, 0.0) + _BUSY_FIRST_S
 
@@ -5587,6 +5762,21 @@ class KameTransport:
                        for e in later)
         except Exception:
             return True
+
+    def _stall_exit_open(self, call: "Call", identity: str, taken: Sequence[str]) -> bool:
+        """1.9.0.1 (H1): could a reply that stopped mid-thought be handed to a later entry of the list?
+
+        Side-effect free, for the decision to ask a key again (H2) instead of waiting for that hand-over:
+        the conversation itself, "Ignore my fallback list" off, not "Never switch", and some entry after
+        Hermes' position free that is not already in the race. ``_maybe_hand_over`` decides the rest."""
+        try:
+            if getattr(call, "channel", "main") != "main":
+                return False
+            if settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never":
+                return False
+            return self._outside_race_free(call, identity, taken)
+        except Exception:
+            return False
 
     def _widen_candidate(self, call: "Call", identity: str, keys: Optional[Sequence[str]],
                          taken: Sequence[str]) -> Optional[Tuple[str, str, str]]:
@@ -6119,7 +6309,7 @@ class KameTransport:
         self, call: "Call", identity: str, keys: Sequence[str], pool_waited: float, seen: bool,
         *, waited: Optional[float] = None, busy: bool = False, after_failure: bool = False,
         slow: Optional[float] = None, skipped: Optional[float] = None,
-        stand_in_ok: bool = False, avoid: Sequence[str] = (),
+        stand_in_ok: bool = False, avoid: Sequence[str] = (), stalled: Optional[float] = None,
     ) -> Optional[Any]:
         """The exception that lets Hermes' fallback chain answer, or ``None`` to wait.
 
@@ -6225,6 +6415,11 @@ class KameTransport:
             elif slow is not None:
                 said = (f"{model_label(identity)} is slow right now (no first word after "
                         f"{format_duration(slow)})")
+            elif stalled is not None:
+                # 1.9.0.1 (H1): it started thinking and stopped; the requests asked beside it stayed silent too
+                # (short: the event row keeps 120 characters and must still name the entry that answers)
+                said = (f"{model_label(identity)} stopped mid-thought ({format_duration(stalled)}); "
+                        "nothing beside it answered")
             elif why == "busy":
                 said = f"{model_label(identity)} is busy (overloaded or timing out on several keys)"
             elif eta is not None and healthy == 0:
@@ -6475,6 +6670,13 @@ def _carries_answer(chunk: Any) -> bool:
 #: 1.8.4.3 (H1). Native events that put something the user can see (text) or act on (a tool call) on the wire.
 _MESSAGES_VISIBLE_DELTAS = ("text_delta", "input_json_delta")
 _MESSAGES_VISIBLE_BLOCKS = ("text", "tool_use", "server_tool_use", "mcp_tool_use")
+#: 1.9.0.1 (H4, F2). Tools the PROVIDER runs inside the same stream: Messages blocks (open until a block whose type
+#: ends in ``_tool_result`` starts) and Responses items (open until that item's ``output_item.done``). Such a tool
+#: can run past the answer quiet limit with no event; cutting the stream would run it again.
+_MESSAGES_SERVER_TOOL_BLOCKS = ("server_tool_use", "mcp_tool_use")
+_MESSAGES_TOOL_RESULT_SUFFIX = "_tool_result"
+_RESPONSES_SERVER_TOOL_ITEMS = ("web_search_call", "file_search_call", "code_interpreter_call", "computer_call",
+                                "mcp_call", "image_generation_call")
 _RESPONSES_VISIBLE = ("response.output_text.delta", "response.refusal.delta",
                       "response.function_call_arguments.delta")
 
@@ -6640,24 +6842,36 @@ class _RaceStream:
     stream would.
     """
 
-    def __init__(self, leg: _StreamLeg, race_q: "queue.Queue[Tuple[_StreamLeg, str, Any]]") -> None:
+    def __init__(self, leg: _StreamLeg, race_q: "queue.Queue[Tuple[_StreamLeg, str, Any]]",
+                 quiet_s: float = 0.0) -> None:
         self.leg = leg
         self.q = race_q
+        #: 1.9.0.1 (H4): seconds of silence, after the first visible chunk, that cut the answer; 0 = no watch.
+        self.quiet_s = float(quiet_s or 0.0)
 
     def __iter__(self) -> Iterator[Any]:
+        watch = _AnswerWatch(self.quiet_s)
         held, self.leg.buffer = self.leg.buffer, []
         for chunk in held:
+            watch.saw(chunk)
             yield chunk
+            watch.resume(chunk)
         if self.leg.done:
             if self.leg.error is not None:
                 raise self.leg.error
             return
         while True:
-            leg, kind, payload = self.q.get()
+            try:
+                leg, kind, payload = self.q.get(timeout=watch.timeout())
+            except queue.Empty:
+                self.leg.abort()
+                raise watch.error()
             if leg is not self.leg:
                 continue
             if kind == "chunk":
+                watch.saw(payload)
                 yield payload
+                watch.resume(payload)
             elif kind == "end":
                 return
             else:
@@ -6665,6 +6879,138 @@ class _RaceStream:
 
     def close(self) -> None:
         self.leg.abort()
+
+
+class _AnswerQuiet(ConnectionError):
+    """1.9.0.1 (H4): KAME cut an answer that had shown text and then said nothing for the quiet limit.
+
+    A ``ConnectionError`` on purpose: it is classified, recorded and continued exactly as a connection the
+    provider dropped mid-answer (the stitch path, a tool call in flight asked again whole)."""
+
+
+class _AnswerWatch:
+    """1.9.0.1 (H4): the clock behind the mid-answer watch, shared by both stream readers.
+
+    Armed by the first VISIBLE chunk (text or a tool call); every WORKING chunk (text, a tool-call delta,
+    reasoning) stamps it. KAME's own keep-alives never reach a reader, so they never stamp. The time a
+    consumer spends holding a chunk is not silence: the stamp is taken again when the reader resumes."""
+
+    def __init__(self, quiet_s: float) -> None:
+        self.quiet_s = float(quiet_s or 0.0)
+        self.armed = False
+        self.server_tools = 0       # F2: tools the provider runs inside this stream that have not returned
+        self.last = time.monotonic()
+
+    def saw(self, chunk: Any) -> None:
+        if self.quiet_s <= 0.0:
+            return
+        if _carries_visible(chunk):
+            self.armed = True
+        self.server_tools += _server_tool_change(getattr(chunk, wires.NATIVE, None))
+        if self.server_tools < 0:
+            self.server_tools = 0
+
+    def resume(self, chunk: Any) -> None:
+        """F1: liveness, not work - ANY item the provider sent proves the stream alive (usage, role, a ping,
+        an in-progress event). KAME's own keep-alives never reach a reader, so they never stamp."""
+        if self.quiet_s > 0.0:
+            self.last = time.monotonic()
+
+    def timeout(self) -> Optional[float]:
+        """Seconds the reader may block on its queue: ``None`` (forever) until armed, and while a tool the
+        provider runs on its side is open (F2)."""
+        if self.quiet_s <= 0.0 or not self.armed or self.server_tools > 0:
+            return None
+        return max(0.0, self.last + self.quiet_s - time.monotonic())
+
+    def error(self) -> "_AnswerQuiet":
+        # "timed out": the failure reads as the timeout it is (the key is not at fault and earns no strike)
+        return _AnswerQuiet(f"kame: read timed out - the answer was silent for {self.quiet_s:.0f}s after it "
+                            "had begun; cut, to be continued")
+
+
+def _server_tool_change(native: Any) -> int:
+    """+1 when a provider-side tool opens in this event, -1 when one returns, else 0 (1.9.0.1, F2)."""
+    if native is None:
+        return 0
+
+    def field(obj: Any, name: str) -> Any:
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+    kind = str(field(native, "type") or "")
+    if kind == "content_block_start":
+        block = str(field(field(native, "content_block"), "type") or "")
+        if block in _MESSAGES_SERVER_TOOL_BLOCKS:
+            return 1
+        if block.endswith(_MESSAGES_TOOL_RESULT_SUFFIX):
+            return -1
+        return 0
+    item = str(field(field(native, "item"), "type") or "")
+    if item in _RESPONSES_SERVER_TOOL_ITEMS:
+        if kind == "response.output_item.added":
+            return 1
+        if kind == "response.output_item.done":
+            return -1
+    return 0
+
+
+class _WatchedStream:
+    """1.9.0.1 (H4): a stream that is not raced, read through the same mid-answer watch.
+
+    The stream is read on its own thread so the reader can stop waiting; on a silence past the limit the
+    stream is closed under it and the reader gets an :class:`_AnswerQuiet`."""
+
+    def __init__(self, stream: Any, quiet_s: float) -> None:
+        self.stream = stream
+        self.quiet_s = float(quiet_s or 0.0)
+        self.q: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+        self.stop = threading.Event()
+
+    def _pump(self) -> None:
+        stream = self.stream
+        try:
+            for chunk in stream:
+                if self.stop.is_set():
+                    return
+                self.q.put(("chunk", chunk))
+            self.q.put(("end", None))
+        except BaseException as exc:  # noqa: BLE001 - handed to the reader, judged there
+            if not self.stop.is_set():
+                self.q.put(("error", exc))
+
+    def _cut(self) -> None:
+        self.stop.set()
+        holder = self.stream
+        response = getattr(holder, "response", None)
+        for target in (response, holder):
+            close = getattr(target, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # pragma: no cover - closing a finished response
+                    logger.debug("kame: could not close a watched stream", exc_info=True)
+
+    def __iter__(self) -> Iterator[Any]:
+        watch = _AnswerWatch(self.quiet_s)
+        context = contextvars.copy_context()
+        threading.Thread(target=context.run, args=(self._pump,), name="kame-answer-watch", daemon=True).start()
+        while True:
+            try:
+                kind, payload = self.q.get(timeout=watch.timeout())
+            except queue.Empty:
+                self._cut()
+                raise watch.error()
+            if kind == "chunk":
+                watch.saw(payload)
+                yield payload
+                watch.resume(payload)
+            elif kind == "end":
+                return
+            else:
+                raise payload
+
+    def close(self) -> None:
+        self._cut()
 
 
 def _close_quietly(stream: Any) -> None:

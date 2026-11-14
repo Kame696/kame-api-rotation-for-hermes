@@ -11,7 +11,7 @@
    "gemini-3.7-flash",
    "gemini-3.6-flash"
   ],
-  "started_at": 1794608855.8981705
+  "started_at": 1794656715.5636835
  },
  "build": {
   "complete": true,
@@ -19,7 +19,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.9.0.0",
+ "build_line": "1.9.0.1",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -120,11 +120,11 @@
    "channel": "main",
    "failures": 0,
    "identity": "gemini:gemini-3.8-flash",
-   "last_at": 1794608876.8981857,
+   "last_at": 1794656736.563691,
    "reason": "",
-   "started": 1794608876.8981857,
+   "started": 1794656736.563691,
    "task": "",
-   "waiting_s": 0.1
+   "waiting_s": 0.0
   }
  ],
  "installed": true,
@@ -136,7 +136,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 16244,
+ "pid": 14452,
  "pools": [
   {
    "daily_limit": null,
@@ -144,7 +144,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.0006952285766601562,
+   "idle_for_s": 0.00022673606872558594,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -251,7 +251,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.0011565685272216797,
+   "idle_for_s": 0.000408172607421875,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -358,7 +358,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.0015137195587158203,
+   "idle_for_s": 0.000598907470703125,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -465,7 +465,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.0019736289978027344,
+   "idle_for_s": 0.0008752346038818359,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -570,7 +570,7 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794608865.9455426,
+  "since": 1794656736.1951222,
   "stopped": {},
   "suggestion": null
  },
@@ -610,6 +610,7 @@
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
     "thought_quiet_s",
+    "answer_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1192,6 +1193,35 @@
    "units": "seconds",
    "value": 20.0,
    "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 45.0,
+   "depends_on": null,
+   "detail": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "env": "KAME_ANSWER_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "impact": "low",
+   "key": "answer_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 600.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave at 45. Some providers keep the connection open with empty keep-alive messages while the answer has stopped, and Hermes alone would wait for minutes.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while answering",
+   "units": "seconds",
+   "value": 45.0,
+   "when": "Rarely. Only to turn the watch off (0) or to wait longer for a very slow model."
   },
   {
    "advanced": true,
@@ -1841,6 +1871,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794608876.9577546,
- "version": "1.9.0.0"
+ "updated_at": 1794656736.5826766,
+ "version": "1.9.0.1"
 }

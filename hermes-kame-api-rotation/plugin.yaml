@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.9.0.0"
+version: "1.9.0.1"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -183,6 +183,10 @@ config_schema:
     type: float
     default: 20.0
     description: "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list); its thoughts keep showing live meanwhile. Unset, KAME learns it for each model (8 to 20 seconds, longer for a model that is quiet by nature, never above 90; 20 before it has learned). It costs one extra request when a healthy model is quiet past its limit (Gemini writing a very large tool call in one piece), counted in Extra requests. A number replaces the learned limit; 0 turns the watch off. Same as KAME_THOUGHT_QUIET_S."
+  answer_quiet_s:
+    type: float
+    default: 45.0
+    description: "How long a reply that has already started to show its answer may stay completely silent (the provider sends nothing at all) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one; what you already read stays and nothing is repeated. A tool the provider runs on its side (a web search, code execution) is never cut while it runs. A model on your own machine is never cut. 0 turns the watch off. Same as KAME_ANSWER_QUIET_S."
   hedge_max_prompt_tokens:
     type: int
     default: 32000

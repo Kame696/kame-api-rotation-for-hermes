@@ -226,7 +226,9 @@ def test_a_rescue_that_only_thinks_does_not_win(guard):
 def test_both_quiet_opens_the_next_model_at_twice_the_bound_and_never_a_third(guard):
     call = SeqCall(by_model={
         "gemini-race": [[0.02, think("a"), 30.0], [0.02, think("b"), 30.0]],
-        "gemini-race-two": [[0.02, think("c"), 0.9, chunk("two answers", finish="stop")]],
+        # 1.9.0.1 (H1): a rescue that is itself quiet past the bound has had its turn and the reply is handed to a
+        # later entry, so "still thinking" is steady here (a gap under the bound) until the answer
+        "gemini-race-two": [[0.02, think("c")] + [0.1, think("c")] * 8 + [chunk("two answers", finish="stop")]],
         "gemini-race-three": [[0.02, chunk("never asked", finish="stop")]],
     })
     started = time.monotonic()
@@ -401,6 +403,13 @@ def test_a_background_job_has_no_holding_and_no_rescue(guard):
 
 def test_a_subscription_credential_gets_no_rescue_leg(guard):
     facade = importlib.import_module(f"{R.PACKAGE}.facade")
+    # 1.9.0.1 (H1): with a later entry free a stalled reply is handed to it (tests/test_1_9_0_1_rescue_keys.py);
+    # this test is about the REQUEST: no list, nothing to hand over to, the stream is left to finish
+    guard_dir = os.environ["HERMES_HOME"]
+    with open(os.path.join(guard_dir, "config.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("model:\n  provider: gemini\n  default: gemini-race\n")
+    chain_mod.forget()
+    settings.forget()
 
     class Subs(SeqCall):
         def entry(self, key):

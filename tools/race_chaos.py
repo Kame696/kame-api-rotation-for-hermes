@@ -31,6 +31,15 @@ an internal error, however many legs went quiet.
   I7  within one race, the live chunks come from one leg only, and after the winner's first chunk no chunk of
       another leg is yielded
 
+1.9.0.1 (H6): the world is no longer always "four models of one provider, five keys". A seed also draws, from its own
+random stream (so the ladder seeds above keep their shapes), the user the owner's pool is NOT: a mixed list (a later
+entry on another provider), a mixed list behind a same-provider sibling, one key, no list, "Never switch", and a
+provider that stops mid-answer (``answer_hangs``, cut by ``KAME_ANSWER_QUIET_S`` = 0.4 s here).
+  I8  (every user) in a world where every request thinks and hangs for 6 s and a later provider is free, the reply is
+      handed over (KamePoolResting) within rescue points + 1 s (3.2 s here), never left waiting for the provider
+  I8b in a world where only the FIRST request hangs and the rest are fast, the reply is answered within 2.5 s: a
+      rescue exists whatever the number of keys or models (one key and no list included)
+
 Offline. HERMES_HOME is a temp folder; nothing reaches the owner's logs. Constants are the
 scaled ones of ``tests/test_1_8_2_9_silent_two_models.py`` (race at 0.3 s, slow bound 1 s).
 
@@ -88,6 +97,16 @@ MODELS = ["gemini-race", "gemini-race-two", "gemini-race-three", "gemini-race-fo
 CHAIN = ("model:\n  provider: gemini\n  default: gemini-race\nfallback_providers:\n"
          + "".join(f"  - provider: gemini\n    model: {m}\n" for m in MODELS[1:]))
 KEYS = [f"AIzaSyCHAOS{i}" + "0" * 28 for i in range(5)]
+
+# 1.9.0.1 (H6): the other users. Chains: the owner's ladder above, a later entry on another provider, that behind
+# a same-provider sibling, and no list at all.
+_HEAD = "model:\n  provider: gemini\n  default: gemini-race\n"
+CHAIN_MIXED = _HEAD + "fallback_providers:\n  - provider: groq\n    model: llama-x\n"
+CHAIN_SIBLING_THEN_OTHER = (_HEAD + "fallback_providers:\n  - provider: gemini\n    model: gemini-race-two\n"
+                            "  - provider: groq\n    model: llama-x\n")
+CHAIN_NONE = _HEAD
+WORLDS = ("ladder", "ladder", "ladder", "mixed", "sibling_other", "onekey", "nolist", "never",
+          "stall_all", "stall_first")
 ANSWER = ["the ", "quick ", "brown ", "fox ", "jumps"]
 CANON = "".join(ANSWER)
 
@@ -109,6 +128,7 @@ PATTERN_ANSWERS = [
     ["----------", "----------", "----------", "----------", " and done"],               # a bare rule of dashes
     ["def f(x):\n", "x = f(1)\n", "x = f(1)\n", "x = f(1)\n", "return x"],
 ]
+LAST = {}           # 1.9.0.1 (H6): what the seed that just ran drew (``--worlds`` prints it)
 USE_PATTERNS = True
 REPEATS = False     # the chosen answer is one of the repeating ones
 
@@ -228,6 +248,37 @@ def shape(rng, model):
     return "empty", [rng.uniform(0.02, 0.2), chunk(finish="stop")]
 
 
+def world_shape(rng, model, world, first):
+    """1.9.0.1 (H6): one request's answer in a world that is not the owner's ladder: (name, steps or factory)."""
+    if world == "stall_all":
+        return "thinks_hangs", [0.05, thought(), 6.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    if world == "stall_first":
+        if first:
+            return "thinks_hangs", [0.05, thought(), 6.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+        return "fast", [rng.uniform(0.02, 0.15)] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    roll = rng.random()
+    if roll < 0.30:
+        return "fast", [rng.uniform(0.02, 0.4)] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    if roll < 0.45:
+        return "thinks_hangs", [0.05, thought(), 3.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    if roll < 0.52:
+        return "silent", [3.0] + [chunk(w) for w in ANSWER] + [chunk(finish="stop")]
+    if roll < 0.66:
+        # text, then a silence the stream does not end: the mid-answer watch cuts it (R4)
+        cut = rng.randint(1, len(ANSWER) - 1)
+        return "answer_hangs", ([0.05] + [chunk(w) for w in ANSWER[:cut]] + [3.0]
+                                + [chunk(w) for w in ANSWER[cut:]] + [chunk(finish="stop")])
+    if roll < 0.78:
+        return "503", busy
+    if roll < 0.84:
+        return "per_minute", per_minute
+    if roll < 0.92:
+        cut = rng.randint(1, len(ANSWER) - 1)
+        return "cut", ([rng.uniform(0.02, 0.2)] + [chunk(w) for w in ANSWER[:cut]]
+                       + [ConnectionError("peer closed connection without sending complete message body")])
+    return "empty", [rng.uniform(0.02, 0.2), chunk(finish="stop")]
+
+
 def continued_from(messages):
     """The text this request asks the model to continue (the last assistant turn), or ``None``."""
     for m in reversed(list(messages or [])[-2:]):
@@ -317,11 +368,12 @@ def race_violations():
 
 
 class Call(transport.Call):
-    def __init__(self, t, rng, reserve_keys):
+    def __init__(self, t, rng, reserve_keys, world="ladder", keys=None):
         self.t = t
         self.rng = rng
+        self.world = world
         self.reserve = set(reserve_keys)
-        self._keys = list(KEYS)
+        self._keys = list(keys or KEYS)
         self.kwargs = {"model": MODELS[0], "messages": [{"role": "user", "content": "hi"}], "stream": True}
         self.provider = "gemini"
         self.identity = "gemini:" + MODELS[0]
@@ -364,7 +416,10 @@ class Call(transport.Call):
                     # a reserve key, whatever else is ready. (A widen may: F1.)
                     self.violations.append(f"I3b {kind} race leg asked a reserve key on {model}")
             with self.lock:
-                name, how = shape(self.rng, model)
+                if self.world == "ladder":
+                    name, how = shape(self.rng, model)
+                else:
+                    name, how = world_shape(self.rng, model, self.world, first=not self.asked)
                 prefix = continued_from(request.get("messages"))
                 if (prefix and not callable(how) and CANON.startswith(prefix.rstrip())
                         and self.rng.random() < 0.5 and not REPEATS):
@@ -442,11 +497,42 @@ def run_one(seed):
     pacing_mod.PACER.clear()
     transport.HEALTH.configure(directory=Path(HOME) / f"health-{seed}", calls_path=Path(HOME) / "no-calls.jsonl")
     reserve = [KEYS[0]] if rng.random() < 0.5 else []
+    # 1.9.0.1 (H6): the world, from a stream of its own so the draws above and below are the ones every earlier
+    # record knows. Everything but the owner's ladder runs on a clean state with no reserve key.
+    wrng = random.Random(seed * 1000003 + 17)
+    world = wrng.choice(WORLDS)
+    LAST["world"] = world
+    world_keys = list(KEYS)
+    chain = CHAIN
+    if world != "ladder":
+        reserve = []
+        chain, world_keys = {
+            "mixed": (CHAIN_MIXED, list(KEYS)),
+            "sibling_other": (CHAIN_SIBLING_THEN_OTHER, list(KEYS)),
+            "onekey": (wrng.choice([CHAIN_MIXED, CHAIN_NONE, CHAIN_SIBLING_THEN_OTHER]), KEYS[:1]),
+            "nolist": (CHAIN_NONE, wrng.choice([KEYS[:1], list(KEYS)])),
+            "never": (CHAIN_MIXED, wrng.choice([KEYS[:1], list(KEYS)])),
+            "stall_all": (wrng.choice([CHAIN_MIXED, CHAIN_SIBLING_THEN_OTHER]), wrng.choice([KEYS[:1], list(KEYS)])),
+            "stall_first": (wrng.choice([CHAIN_MIXED, CHAIN_NONE, CHAIN_SIBLING_THEN_OTHER]),
+                            wrng.choice([KEYS[:1], list(KEYS)])),
+        }[world]
+    (Path(HOME) / "config.yaml").write_text(chain, encoding="utf-8")
+    chain_mod.forget()
+    if world == "never":
+        os.environ["KAME_MODEL_SWITCH"] = "never"
+    else:
+        os.environ.pop("KAME_MODEL_SWITCH", None)
+    if world == "ladder":
+        os.environ.pop("KAME_ANSWER_QUIET_S", None)
+    else:
+        os.environ["KAME_ANSWER_QUIET_S"] = "0.4"        # the mid-answer watch at the scaled bound
     if reserve:
         os.environ["KAME_KEY_RESERVE"] = ", ".join(label(k) for k in reserve)
     else:
         os.environ.pop("KAME_KEY_RESERVE", None)
-    os.environ["KAME_HEDGE_MODE"] = rng.choice(["adaptive", "adaptive", "max", "off"])
+    hedge_mode = rng.choice(["adaptive", "adaptive", "max", "off"])
+    os.environ["KAME_HEDGE_MODE"] = hedge_mode
+    LAST["hedge"] = hedge_mode
     # 1.8.4.3: the quiet guard at the scaled bound; every 7th seed (3 of 7) runs with it off, as 1.8.4.2
     os.environ["KAME_THOUGHT_QUIET_S"] = "0" if seed % 7 == 3 else "0.4"
     settings.forget()
@@ -454,8 +540,9 @@ def run_one(seed):
     triggers = rng.choice([(30.0, 60.0), (0.2, 0.4)])
     hedging_mod.HEDGE_TRACKER.stream_triggers = lambda *a, **k: triggers
     t = transport.KameTransport(engine=carousel_mod.Carousel())
-    setup_state(t, rng, reserve)
-    call = Call(t, rng, reserve)
+    if world == "ladder":
+        setup_state(t, rng, reserve)
+    call = Call(t, rng, reserve, world=world, keys=world_keys)
     box = {"chunks": []}
 
     def body():
@@ -496,7 +583,19 @@ def run_one(seed):
                 last = call.asked[-1] if call.asked else None
                 problems.append(f"I2 shown only a beginning {text!r} and the last request was not empty: {last}")
             return problems, took, call.asked, "short" if text else "empty"
-    return problems, took, call.asked, ("exc" in box and type(box["exc"]).__name__) or "answer"
+    outcome = ("exc" in box and type(box["exc"]).__name__) or "answer"
+    # 1.9.0.1 (H6, I8 / I8b): a reply is never left waiting while a free entry or key existed that the rules allow.
+    # Only where the watch is on: hedging not off, the quiet guard not off, and the reply was not cut short by the test.
+    watch_on = hedge_mode != "off" and seed % 7 != 3 and not th.is_alive()
+    if watch_on and world == "stall_all":
+        if outcome != "KamePoolResting" or took > 3.2:
+            problems.append(f"I8 every request hangs and a later provider was free: {outcome} after {took:.1f}s "
+                            f"(keys {len(world_keys)}, chain {'sibling' if 'two' in chain else 'mixed'})")
+    if watch_on and world == "stall_first":
+        if outcome != "answer" or took > 2.5:
+            problems.append(f"I8b only the first request hangs and the rest are fast: {outcome} after {took:.1f}s "
+                            f"(keys {len(world_keys)})")
+    return problems, took, call.asked, outcome
 
 
 def main():
@@ -504,6 +603,8 @@ def main():
     ap.add_argument("--seeds", type=int, default=150)
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--show", action="store_true", help="print every seed that did not end in a full answer")
+    ap.add_argument("--worlds", action="store_true",
+                    help="print the world, the outcome and the time of every seed (1.9.0.1, H6)")
     ap.add_argument("--no-patterns", action="store_true",
                     help="every seed asks for the prose answer (the runs of the records before 1.8.4.1)")
     args = ap.parse_args()
@@ -524,6 +625,8 @@ def main():
         outcomes[outcome] += 1
         continued += sum(1 for _m, _k, s in asked if s.endswith("+cont"))
         times.append(took)
+        if args.worlds:
+            print(f"seed {seed}: {LAST.get('world')}, hedge {LAST.get('hedge')}, {outcome}, {took:.2f}s", flush=True)
         if args.show and outcome != "answer" and not problems:
             print(f"seed {seed}: {outcome}, {took:.2f}s, asked {asked[-6:]}", flush=True)
         if problems:

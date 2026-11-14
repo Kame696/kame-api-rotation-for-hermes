@@ -7,6 +7,39 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.1] - 2026-11-14 - a reply is never left waiting when something else could answer
+
+**What drove it.** 1.9.0.0 was judged against one setup: one provider, fourteen keys. Run for users unlike that
+(a list with a second provider, one key, no list at all, "Never switch") four things still left a reply waiting
+for the provider's own timeout although something else could have answered, and one left a visible answer
+silent for minutes.
+
+- **A reply that stops mid-thought moves on to the next provider.** After the two extra requests of 1.9.0.0 have
+  had their turn (each one could not be asked, ended, is itself late with nothing shown, or showed work and is
+  quiet again), the reply is handed to the next free entry of your Hermes list, as a silent reply already was
+  at its slow limit. Before, it waited for the provider's own timeout (up to minutes). With no later entry, or with
+  "Never switch" on, nothing changes: the reply keeps waiting. A request that is still working is never cut.
+- **A second request is always possible.** With one key, the extra request is the same key asked again; with
+  several keys and no later model to ask (no list, "Never switch", or the list is only this model), the second
+  extra request goes to another key of the same model. Before, a user with one key got no extra request at all
+  and a user with no list got one. Never more than two per reply, never on a subscription credential, still
+  counted in "Extra requests".
+- **The only key busy is the model busy.** A 503 ("overloaded") counted as "the model is busy" only after two
+  keys had said it. With one key it is the first: the reply goes to the next provider or model of your list at
+  once instead of asking the same key again every second. A 429 is still a key's quota, not a busy model, and
+  two keys still need two.
+- **An answer that starts and then goes silent is cut and continued.** After the first words (or a tool call),
+  an answer from which the provider sends nothing at all for 45 seconds is cut by KAME and continued on another
+  key (on the same key when it is the only one), exactly like an answer the provider dropped; what you already
+  read stays and nothing is repeated, and a tool call in flight is asked again whole. Two replies in the
+  history stayed silent for 300 and 600 seconds after their first words before they were cut. A tool the
+  provider runs on its side (a web search, code execution) is never cut while it runs. `KAME_ANSWER_QUIET_S`
+  (setting `answer_quiet_s`) sets the limit, `0` turns it off, and a model on your own machine is never cut.
+- **Cost.** At most the same two extra requests per reply as 1.9.0.0, now also available to a one-key user; the
+  45-second cut costs one continuation request for a reply that was silent for 45 seconds.
+
+---
+
 ## [1.9.0.0] - 2026-11-13 - thoughts stay live, a stalled reply is raced again, a busy model is raced at once
 
 Developed as 1.8.4.3: the test file names and the code comments keep that working number, and no 1.8.4.3 was

@@ -6,7 +6,7 @@
   "guidance": "fallback",
   "missing": []
  },
- "build_line": "1.9.0.0",
+ "build_line": "1.9.0.1",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -112,7 +112,7 @@
   "since": null
  },
  "pacing_state": {},
- "pid": 16244,
+ "pid": 14452,
  "pools": [
   {
    "daily_limit": null,
@@ -120,7 +120,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.4283764362335205,
+   "idle_for_s": 0.0003383159637451172,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -227,7 +227,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.5306148529052734,
+   "idle_for_s": 0.0005614757537841797,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -334,7 +334,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.7088186740875244,
+   "idle_for_s": 0.0007989406585693359,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -441,7 +441,7 @@
    "failures": 13,
    "healthy": 1,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.8115878105163574,
+   "idle_for_s": 0.0011200904846191406,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -449,73 +449,73 @@
     [
      "key:01eb86",
      "d",
-     1794609175.533031,
+     1794657036.412559,
      "daily"
     ],
     [
      "key:24ebd9",
      "d",
-     1794609175.4283998,
+     1794657036.4125085,
      "daily"
     ],
     [
      "key:36e24d",
      "d",
-     1794609175.4287207,
+     1794657036.4125156,
      "daily"
     ],
     [
      "key:55e890",
      "d",
-     1794609175.4857376,
+     1794657036.4125218,
      "daily"
     ],
     [
      "key:6a0942",
      "d",
-     1794609175.4865832,
+     1794657036.4125347,
      "daily"
     ],
     [
      "key:74ea95",
      "d",
-     1794609175.4277065,
+     1794657036.4124975,
      "daily"
     ],
     [
      "key:7ef9d5",
      "d",
-     1794609175.4862921,
+     1794657036.4125278,
      "daily"
     ],
     [
      "key:865608",
      "d",
-     1794609175.5326598,
+     1794657036.4125533,
      "daily"
     ],
     [
      "key:9267af",
      "d",
-     1794609175.379711,
+     1794657036.4124742,
      "daily"
     ],
     [
      "key:aff59a",
      "d",
-     1794609175.6087732,
+     1794657036.4125664,
      "daily"
     ],
     [
      "key:c96221",
      "d",
-     1794609175.5323768,
+     1794657036.412547,
      "daily"
     ],
     [
      "key:d14a5e",
      "d",
-     1794609175.5317752,
+     1794657036.412541,
      "daily"
     ],
     [
@@ -527,7 +527,7 @@
     [
      "key:fffd54",
      "s",
-     1794608915.6095622,
+     1794656776.4125733,
      "per_minute"
     ]
    ],
@@ -549,14 +549,14 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794608865.9455426,
+  "since": 1794656736.1951222,
   "stopped": {},
   "suggestion": null
  },
  "reason": "not installed",
  "replies": [
   {
-   "at": 1794608872.3795831,
+   "at": 1794656733.4124703,
    "failed": true,
    "first_s": null,
    "for": "",
@@ -565,7 +565,7 @@
    "total_s": null
   },
   {
-   "at": 1794608863.3795831,
+   "at": 1794656724.4124703,
    "first_s": 1.6,
    "for": "gemini-3.8-flash",
    "model": "gemini-3.7-flash",
@@ -573,7 +573,7 @@
    "why": "busy"
   },
   {
-   "at": 1794608845.3795831,
+   "at": 1794656706.4124703,
    "attempts": 2,
    "backup": true,
    "cut": true,
@@ -584,7 +584,7 @@
    "waited_s": 40.0
   },
   {
-   "at": 1794608867.3795831,
+   "at": 1794656728.4124703,
    "back_to": {
     "model": "gemini-3.8-flash",
     "provider": "gemini"
@@ -633,6 +633,7 @@
     "hedge_cold_s",
     "hedge_cold_reasoning_s",
     "thought_quiet_s",
+    "answer_quiet_s",
     "hedge_max_prompt_tokens"
    ],
    "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
@@ -1215,6 +1216,35 @@
    "units": "seconds",
    "value": 20.0,
    "when": "Rarely. Only to turn the watch off (0) or to set one number for every model."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
+   "default": 45.0,
+   "depends_on": null,
+   "detail": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "env": "KAME_ANSWER_QUIET_S",
+   "group": "speed",
+   "help": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "impact": "low",
+   "key": "answer_quiet_s",
+   "kind": "number",
+   "line": "",
+   "max": 600.0,
+   "min": 0.0,
+   "off_or_at_least": null,
+   "recommendation": "Leave at 45. Some providers keep the connection open with empty keep-alive messages while the answer has stopped, and Hermes alone would wait for minutes.",
+   "source": "default",
+   "step": null,
+   "title": "Quiet limit while answering",
+   "units": "seconds",
+   "value": 45.0,
+   "when": "Rarely. Only to turn the watch off (0) or to wait longer for a very slow model."
   },
   {
    "advanced": true,
@@ -1864,6 +1894,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794608876.1825838,
- "version": "1.9.0.0"
+ "updated_at": 1794656736.434782,
+ "version": "1.9.0.1"
 }

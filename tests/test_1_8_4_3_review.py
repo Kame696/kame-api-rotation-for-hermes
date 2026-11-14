@@ -118,7 +118,9 @@ def test_a_provisional_that_fails_while_a_rescue_is_working_waits_for_the_rescue
     monkeypatch.setattr(R.hedging_mod.HEDGE_TRACKER, "stream_triggers", lambda *a, **k: (30.0, 60.0))
     monkeypatch.setattr(transport.KameTransport, "_widen_candidate", lambda *a, **k: None)
     call = SeqCall([[0.02, think("a"), 0.6, R.Refusal(503, "The model is overloaded. Please try again later.")],
-                    [0.05, think("rescue thinks"), 0.8, chunk("rescued", finish="stop")]])
+                    # 1.9.0.1 (H1): a rescue quiet past the bound has had its turn and the reply is handed to a
+                    # later entry, so this rescue keeps thinking in steps under the bound (0.2 s)
+                    [0.05, think("rescue thinks")] + [0.1, think("rescue thinks")] * 8 + [chunk("rescued", finish="stop")]])
     out = list(guard.stream(call))
     assert R.shown(out) == "rescued", "a rescue that already shows work is the reply"
     assert len(call.opened) == 2
