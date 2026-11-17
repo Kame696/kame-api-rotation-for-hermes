@@ -78,6 +78,33 @@ def budget_for(task: str, task_known: bool, host_timeout: Any, user_cap: float) 
     return Budget(klass, max(FLOOR_S, total), limit.max_requests, limit.may_wait)
 
 
+#: 1.9.0.2 (H10). A cosmetic attempt that is not the job's last gets at least this, and this many times the
+#: model's own median first word (the chat's learned one, ``HEDGE_TRACKER.first_word_stats``).
+COSMETIC_TRY_FLOOR_S = 10.0
+COSMETIC_TRY_FACTOR = 3.0
+
+
+def try_cap(klass: str, request_no: int, max_requests: int, first_word_median: Any) -> Optional[float]:
+    """The longest one attempt of a background job may wait for its answer, or ``None`` (the time left).
+
+    1.9.0.2 (H10). Live 2026-11-15 16:53: a title sent to a healthy model met a silent key, and that one
+    attempt's read timeout was the job's whole 30 s - "timed out after 1 tries in 30s" - so the two other
+    requests a title may send never went out and the title was lost. A cosmetic attempt that is not the
+    last allowed one now gets ``max(10 s, 3 x median first word)``: a fast model leaves room for another key,
+    a slow or thinking model (median >= 10 s) keeps the whole time left as before. ``None`` - the time left,
+    as before - for an important job, for the last request, and for a model with no first-word history:
+    KAME never cuts a model whose speed it has not seen.
+    """
+    if klass != "cosmetic" or request_no >= max_requests:
+        return None
+    if isinstance(first_word_median, bool) or not isinstance(first_word_median, (int, float)):
+        return None
+    median = float(first_word_median)
+    if not math.isfinite(median) or median <= 0:
+        return None
+    return max(COSMETIC_TRY_FLOOR_S, COSMETIC_TRY_FACTOR * median)
+
+
 def stop_message(task: str, model: str, tries: int, seconds: float) -> str:
     """The text of the error a stopped background job raises.
 

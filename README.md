@@ -6,7 +6,7 @@
 
 ### All your API keys and models as one pool. A `429`, a spent quota or a slow model never stops your agent again.
 
-[![Version](https://img.shields.io/badge/version-1.9.0.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.2-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -69,7 +69,7 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.9.0.1-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.9.0.2-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -439,7 +439,14 @@ The panel explains every one of them in full, with its environment variable.
 <details>
 <summary><b>✅ Verified — tests and live checks</b></summary>
 
-**1.9.0.1** (2026-11-14), see the [changelog](CHANGELOG.md):
+**1.9.0.2** (2026-11-16), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite (1.9.0.2) | **0 failing**, 4,315 passing (one timing test that is slow only under load passed three times alone) |
+| Live (1.9.0.2) | Stop through the gateway ends the rotation; Reset pool clears Hermes' own marks; a reply with the best model failing started on the healthy model while the model due a second look was asked beside it from the first instant; Gemini and NVIDIA keys checked; four Hermes profiles, the daily live check in each |
+
+**1.9.0.1** (2026-11-14):
 
 | Check | Result |
 |---|---|
@@ -574,7 +581,18 @@ evidence above still describes what runs.
 
 <a id="new"></a>
 <details>
-<summary><b>📣 What's new in 1.9.0.1</b></summary>
+<summary><b>📣 What's new in 1.9.0.2</b></summary>
+
+**1.9.0.2 — Stop stops, Reset works again, the wait is said.** Fixes only, from one installed week of 1.9.0.1.
+
+- **Stop reaches the key rotation:** after Stop, at most the request already on the wire finishes.
+- **Reset pool clears Hermes' own marks again**, and when a part of the reset fails it names which one and why.
+- **Chat titles are made again**, and one silent key no longer loses the title.
+- **A reply starts on the first model of your list that is not failing.** A model due a second look is asked
+  beside it from the first instant: if it answers first, the reply is its own and it is trusted again.
+- **Voice and transcription share the chat's memory of each key.**
+- **The wait is said in the provider's words**, and when every key refused naming no time, the line says so.
+- **Every call that ends without an answer leaves one closing row** in `calls.jsonl`.
 
 **1.9.0.1 — a reply is never left waiting when something else could answer.**
 
@@ -800,6 +818,7 @@ In development since early 2026, and every release came from a real log, not fro
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.2** | Stop stops, Reset works again, the wait is said | Stop ends the key rotation; Reset pool clears Hermes' own marks again and names what failed; chat titles are made again (only on a model KAME may start on, each try bounded by the model's usual time to first word); a reply starts on the first model that is not failing while a model due a second look is asked beside it; voice and transcription share the chat's key memory; the waiting line gives the provider's own return time; one closing row per unanswered call |
 | **1.9.0.1** | A reply is never left waiting when something else could answer | A reply that stops mid-thought moves on to the next provider of your list once its extra requests are spent; one key or no list still gets an extra request (the same key again, or another key of the model); the only key busy counts as the model busy; an answer silent for 45 s after its first words is cut and continued (`KAME_ANSWER_QUIET_S`) |
 | **1.9.0.0** | Thoughts stay live, a stalled reply is raced again, a busy model is raced at once | A reply that stops mid-thought with nothing shown is asked again on another key and then on the next model of your list, while its thoughts keep showing live (at most two extra requests, asked only when a reply stays quiet past its learned limit, and counted with how many answered first); a model that answers 503 is raced by the next model of your list from the retry's first instant; a model left out after failing is looked at again (10 min, doubling, at most 2 h) and a best model that keeps failing is asked at most every 5 min; a background title on a failing or busy model moves to the next healthy model of your list |
 | **1.8.4.2** | A model that keeps failing stops making you wait | A model that keeps failing no longer leads the reply (it is asked beside it and leads again when it answers); a model refused busy is not handed the same reply twice; a background job stopped once no longer benches the provider; listening on your Gemini keys (`stt.provider: kame-gemini`); a speech language setting |

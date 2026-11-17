@@ -270,7 +270,9 @@ class TestTheRace:
                      KEYS[2]: [[0.05, chunk("third", finish="stop")]], KEYS[3]: [[0.05, chunk("third", finish="stop")]]})
         out, elapsed = run(fresh, FakeCall(pool))
         assert len(pool.opened) == 3
-        assert elapsed < 1.5
+        # 1.9.0.2 (H7): the claim is "the third leg answers before the two 3.0 s legs", not a stopwatch:
+        # 1.5 s failed once at 3.28 s with the whole suite and Hermes on an 8 GB PC (audit F8), pass alone 5/5.
+        assert elapsed < 2.9
         winner_key = pool.opened[2][0]
         assert shown(out) == "third" and winner_key in (KEYS[2], KEYS[3], KEYS[1])
 

@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -143,7 +144,80 @@ def poll() -> bool:
     return True
 
 
-def _clear_benches_on_disk() -> "tuple[str, list[str]]":
+_SECRET_LIKE = re.compile(r"[A-Za-z0-9_\-]{24,}")
+
+
+def _why(exc: BaseException) -> str:
+    """``Type: message`` for a log line - cut short, and with anything key-shaped blanked.
+
+    1.9.0.2 (H2, audit F3). The reset failed on every press for a month and the reason sat at
+    DEBUG, so nobody could say what failed. The message is the host's own and may quote a path or
+    a lock holder; a run of 24+ token characters is replaced, so a key can never ride along.
+    """
+    text = _SECRET_LIKE.sub("<redacted>", str(exc) or "")[:200]
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _failed(step: str, exc: BaseException, failed: list, storage: list) -> None:
+    """Record one failed reset step: the panel gets ``step (Type)``, the log the reason, at WARNING."""
+    failed.append(f"{step} ({type(exc).__name__})")
+    if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
+        storage.append(step)
+    logger.warning("kame: Reset pool could not clear %s - %s", step, _why(exc))
+
+
+class _ProfileScope:
+    """Run one host call inside this home's secret scope, the way Hermes runs work on a bare thread.
+
+    1.9.0.2 (H2b, audit F3). Live press 2026-11-15 15:37: every provider's host-marks step raised
+    ``UnscopedSecretError`` - since the host serves every profile from one gateway
+    (``gateway.multiplex_profiles``), a credential read outside a profile's secret scope fails closed,
+    and the panel's request runs on KAME's heartbeat, a bare thread with an empty context. The host's
+    own chores bind the profile first (``gateway/run_profile_reconcile.py::_for_each_served_profile``,
+    ``agent/curator.py``); this does the same for one call, with the home KAME publishes for (the one
+    whose ``control.json`` was read). Used only after the host refused without a scope, so a host
+    where the plain call works never sees one. The secrets are built once per press.
+    """
+
+    class NoScopeApi(Exception):
+        """This host has no profile secret scope to bind: report the refusal it gave."""
+
+    def __init__(self) -> None:
+        self._secrets: Any = None
+        self._home = ""
+        self._broken: Optional[BaseException] = None
+
+    def run(self, fn: Any) -> Any:
+        try:
+            from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+            from hermes_constants import get_hermes_home
+        except ImportError as exc:
+            raise self.NoScopeApi() from exc
+        if self._broken is not None:
+            raise self._broken              # built once per press: a scope that failed fails the same way
+        if self._secrets is None:
+            try:
+                self._home = str(get_hermes_home())
+                try:
+                    # The host hydrates external secret sources before building a scope (gateway/run.py
+                    # ``_load_profile_secret_scope``); a host without that step still has the .env.
+                    from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+                    hydrate_profile_secret_sources(Path(self._home))
+                except Exception:
+                    logger.debug("kame: could not hydrate the profile's secret sources", exc_info=True)
+                self._secrets = build_profile_secret_scope(Path(self._home))
+            except Exception as exc:
+                self._broken = exc
+                raise
+        token = set_secret_scope(self._secrets, profile_home=self._home)
+        try:
+            return fn()
+        finally:
+            reset_secret_scope(token)
+
+
+def _clear_benches_on_disk(storage: "list | None" = None) -> "tuple[str, list[str]]":
     """Everything *Clear pool* must drop besides the carousel's memory.
 
     Each step is independent and never raises: a step that fails leaves its
@@ -157,6 +231,7 @@ def _clear_benches_on_disk() -> "tuple[str, list[str]]":
     """
     done = []
     failed = []
+    storage = storage if storage is not None else []
     try:
         from . import _binding  # type: ignore[attr-defined]
     except Exception:
@@ -171,9 +246,10 @@ def _clear_benches_on_disk() -> "tuple[str, list[str]]":
                     done.append(label)
                 else:
                     failed.append(label)
-            except Exception:
-                failed.append(label)
-                logger.debug("kame: could not clear the %s", label, exc_info=True)
+                    storage.append(label)       # ``clear`` returns False when the file write failed
+                    logger.warning("kame: Reset pool could not clear the %s (the file was not written)", label)
+            except Exception as exc:
+                _failed(label, exc, failed, storage)
     # The host's own mark. Hermes writes ``last_status: exhausted`` with its
     # own reset time into the credential store, and that mark outlives every
     # piece of KAME state — so a key could still be skipped by Hermes itself
@@ -184,26 +260,39 @@ def _clear_benches_on_disk() -> "tuple[str, list[str]]":
         from agent.credential_pool import load_pool
 
         reset = 0
+        scope = _ProfileScope()
         for provider in sorted(read_credential_pool().keys()):
             try:
-                reset += int(load_pool(provider).reset_statuses() or 0)
-            except Exception:
-                failed.append("host marks")
-                logger.debug("kame: could not reset %s", provider, exc_info=True)
+                try:
+                    reset += int(load_pool(provider).reset_statuses() or 0)
+                except Exception as unscoped:
+                    # 1.9.0.2 (H2b): a multiplexed host refuses a credential read with no profile
+                    # scope; retry this provider once inside this home's scope. Anything else, or a
+                    # host without the scope API, is reported as before.
+                    if type(unscoped).__name__ != "UnscopedSecretError":
+                        raise
+                    try:
+                        retried = scope.run(lambda p=provider: load_pool(p).reset_statuses())
+                    except _ProfileScope.NoScopeApi:
+                        raise unscoped from None
+                    reset += int(retried or 0)
+            except Exception as exc:
+                # 1.9.0.2 (H2): which provider, and how - every press since 2026-10-19 said only
+                # "host marks". The other providers are still reset.
+                _failed(f"Hermes' marks for {provider}", exc, failed, storage)
         if reset:
             done.append(f"{reset} host mark{'s' if reset != 1 else ''}")
     except ImportError:
         # No host in offline tools: there is no host credential store to reset.
         pass
-    except Exception:
-        failed.append("host credential store")
-        logger.debug("kame: host credential store not reachable", exc_info=True)
+    except Exception as exc:
+        _failed("Hermes' credential store", exc, failed, storage)
     try:
         from . import runtime
 
         runtime.forget_bench_model()
-    except Exception:
-        failed.append("runtime bench")
+    except Exception as exc:
+        _failed("runtime bench", exc, failed, storage)
     return ", ".join(done), failed
 
 
@@ -265,17 +354,22 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         # after a deadline proves short, and the host's own "exhausted" mark
         # on each pooled credential. All four are cleared now.
         failures = []
+        storage: list = []
         try:
             from .core.carousel import ENGINE
 
             ENGINE.reset_all()
-        except Exception:
-            logger.debug("kame: could not clear the pool", exc_info=True)
-            failures.append("shared pool health")
-        cleared, disk_failures = _clear_benches_on_disk()
+        except Exception as exc:
+            _failed("shared pool health", exc, failures, storage)
+        cleared, disk_failures = _clear_benches_on_disk(storage)
         failures.extend(disk_failures)
         if failures:
-            return False, "pool reset incomplete: " + ", ".join(dict.fromkeys(failures)) + "; retry after checking storage access"
+            # 1.9.0.2 (H2): say what failed and how; the storage advice only when it was storage.
+            advice = ("retry after checking storage access to the Hermes folder" if storage
+                      else "the log has the exact error")
+            done_part = f"; cleared {cleared}" if cleared else ""
+            return False, ("pool reset incomplete: " + ", ".join(dict.fromkeys(failures))
+                           + done_part + "; " + advice)
         tail = f" ({cleared})" if cleared else ""
         return True, "every key starts again as if it had never been tried" + tail
 

@@ -289,7 +289,7 @@ def test_per_minute_429_moves_the_same_sentence_to_the_other_key(host, monkeypat
     chunks = list(provider.stream("Same sentence.", model=m, format="pcm"))
     assert chunks == [PCM]
     assert gemini.asked == [K1, K2]
-    identity = "gemini:" + m
+    identity = "gemini:" + m + ":global"
     assert engine().healthy_count(identity, [K1, K2]) == 1
     rest = engine().next_recovery_seconds(identity, [K1])
     assert rest is not None and 10 < rest <= 40, rest          # about the stated 30 s
@@ -302,7 +302,7 @@ def test_daily_429_rests_the_key_long_and_the_next_sentence_goes_to_the_other_fi
     provider = make(monkeypatch, gemini)
     assert list(provider.stream("First.", model=m, format="pcm")) == [PCM]
     assert gemini.asked == [K1, K2]
-    identity = "gemini:" + m
+    identity = "gemini:" + m + ":global"
     rest = engine().next_recovery_seconds(identity, [K1])
     assert rest is not None and rest > 120, rest        # the engine's daily rest, not the stated 29 s
     assert list(provider.stream("Second.", model=m, format="pcm")) == [PCM]
@@ -319,7 +319,7 @@ def test_a_400_that_names_the_voice_is_raised_at_once_and_no_key_rests(host, mon
     assert len(gemini.asked) == 1
     assert not isinstance(caught.value, voice_mod.SpeechUnavailable)
     assert "Nobody" in str(caught.value) or "voice" in str(caught.value).lower()
-    identity = "gemini:" + m
+    identity = "gemini:" + m + ":global"
     assert engine().healthy_count(identity, [K1, K2]) == 2
     assert K1 not in str(caught.value) and K2 not in str(caught.value)
 
@@ -357,7 +357,7 @@ def test_a_sentence_the_model_would_not_speak_is_reframed_on_the_next_key_and_no
     assert _sent_text(gemini.requests[0]) == "Hello there."
     second = _sent_text(gemini.requests[1])
     assert second != "Hello there." and second.endswith("Hello there.") and "TRANSCRIPT" in second
-    assert engine().healthy_count("gemini:" + m, [K1, K2]) == 2
+    assert engine().healthy_count("gemini:" + m + ":global", [K1, K2]) == 2
 
 
 def test_a_200_without_audio_is_reframed_too(host, monkeypatch):
@@ -367,7 +367,7 @@ def test_a_200_without_audio_is_reframed_too(host, monkeypatch):
     pcm = b"".join(provider.stream("Hello there.", model=m, format="pcm"))
     assert pcm == PCM
     assert len(gemini.asked) == 2
-    assert engine().healthy_count("gemini:" + m, [K1, K2]) == 2
+    assert engine().healthy_count("gemini:" + m + ":global", [K1, K2]) == 2
 
 
 def test_with_one_key_the_reframed_sentence_goes_to_the_same_key(host, monkeypatch):
@@ -391,12 +391,12 @@ def test_three_framings_without_speech_end_the_sentence_with_a_speech_error(host
     texts = [_sent_text(r) for r in gemini.requests]
     assert len(texts) == 3 and len(set(texts)) == 3          # bare, TRANSCRIPT frame, Say:
     assert texts[2].startswith("Say:")
-    assert engine().healthy_count("gemini:" + m, [K1, K2, K3]) == 3
+    assert engine().healthy_count("gemini:" + m + ":global", [K1, K2, K3]) == 3
 
 
 def test_every_key_resting_for_minutes_raises_at_once_naming_when_and_does_not_sleep(host, monkeypatch):
     m = model()
-    identity = "gemini:" + m
+    identity = "gemini:" + m + ":global"
     for key in (K1, K2):
         engine().select(identity, [K1, K2])
         engine().mark(identity, key, False, 600.0, "rate_limit", stated=True)
@@ -412,7 +412,7 @@ def test_every_key_resting_for_minutes_raises_at_once_naming_when_and_does_not_s
 
 def test_a_key_back_within_two_seconds_is_waited_for_once(host, monkeypatch):
     m = model()
-    identity = "gemini:" + m
+    identity = "gemini:" + m + ":global"
     for key in (K1, K2):
         engine().select(identity, [K1, K2])
         engine().mark(identity, key, False, 1.0, "rate_limit", stated=True)

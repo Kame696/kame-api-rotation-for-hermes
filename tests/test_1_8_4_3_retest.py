@@ -64,13 +64,18 @@ def test_a_model_that_answers_is_never_due_a_retest(fresh):
 
 # -- the choice among models that are not the one in use ----------------------------------------------
 
-def test_the_owners_2030_record_starts_the_reply_on_a_model_that_was_left_out(fresh):
-    # 3.8 / 3.6 / 3.5 of the owner become race / race-two / race-three; the record of 20:30, eight hours on
+def test_the_owners_2030_record_looks_at_the_model_that_was_left_out(fresh):
+    # 3.8 / 3.6 / 3.5 of the owner become race / race-two / race-three; the record of 20:30, eight hours on.
+    # 1.9.0.2 (H11, owner 2026-11-15): looked at again BESIDE the reply, never in front of it - the reply starts on
+    # the healthy model, and the left-out one, if it answers first, takes the reply (1.8.4.2: never asked at all).
     record(PRIMARY, [0] * 10, 60)
     record(SECOND, [1, 1, 1, 0, 1, 1, 1, 1, 1, 0], 8 * HOUR)
     record(THIRD, [0, 1, 1, 1, 1, 1, 1, 1, 1, 1], 60)
     plan = fresh._start_probe_plan(Scripted(pool(), {}), PRIMARY, True, R.KEYS)
-    assert plan is not None and plan[0] == SECOND, "looked at again, in the list's own order (1.8.4.2: the third)"
+    assert plan is not None and plan[0] == THIRD, "the healthy model starts the reply"
+    call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05), "gemini-race-three": ("fast", 0.6)})
+    out = list(fresh.stream(call))
+    assert R.shown(out) == "gemini-race-two here", "looked at again, and its answer is the reply"
 
 
 def test_a_fresh_failure_still_leaves_the_model_out(fresh):
@@ -80,13 +85,13 @@ def test_a_fresh_failure_still_leaves_the_model_out(fresh):
     assert plan is not None and plan[0] == THIRD
 
 
-def test_a_reply_started_on_a_looked_at_model_that_answers_clears_it(fresh):
+def test_a_looked_at_model_that_answers_clears_it(fresh):
     record(PRIMARY, [0, 0], HOUR)
     record(SECOND, [1, 0, 0], HOUR)                 # k = 2: due after 20 min
-    call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05), "gemini-race-three": ("fast", 0.05)})
+    call = Scripted(pool(), {"gemini-race-two": ("fast", 0.05), "gemini-race-three": ("fast", 0.6)})
     out = list(fresh.stream(call))
     assert R.shown(out) == "gemini-race-two here"
-    assert call.models_asked[0] == "gemini-race-two"
+    assert call.models_asked[0] == "gemini-race-three", "1.9.0.2 (H11): asked beside, the reply starts on the third"
     deadline = time.time() + 3.0
     while transport.HEALTH.risky(SECOND) and time.time() < deadline:
         time.sleep(0.05)

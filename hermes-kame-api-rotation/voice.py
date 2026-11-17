@@ -168,6 +168,21 @@ def _host_default_model() -> str:
         return FALLBACK_MODEL
 
 
+def _identity(model: str, base_url: str) -> str:
+    """The health bucket for ``model`` on ``base_url`` - the one the chat uses for the same call.
+
+    1.9.0.2 (H3, audit F4). This used to be ``"gemini:" + model`` while every chat call is
+    ``gemini:<model>:<region>`` (1.8.2.3): the same keys and the same Google quota kept in two
+    memories, so speech and transcription asked keys the chat knew were spent. Built here by the
+    same two functions ``facade._FacadeCall`` uses. Shared by ``listen``.
+    """
+    from .core.carousel import Carousel
+    from .core.region import parse_region
+
+    region, _source = parse_region(base_url, model)
+    return Carousel.identity("gemini", model, region)
+
+
 def _base_url() -> str:
     gemini = _tts_config().get("gemini")
     value = gemini.get("base_url") if isinstance(gemini, dict) else ""
@@ -290,12 +305,12 @@ def _speak(text: str, voice: str, model: str) -> bytes:
     if not _facade().enabled():
         raise SpeechUnavailable("KAME rotation is off")
     engine = transport.engine
-    identity = "gemini:" + model
+    base = _base_url()
+    identity = _identity(model, base)        # 1.9.0.2 (H3): the chat's bucket
     keys = _keys()
     if not keys:
         raise SpeechUnavailable("no Gemini key")
     deadline = _monotonic() + SENTENCE_BUDGET_S
-    base = _base_url()
     url = f"{base}/models/{model}:generateContent"
     language = _language()
     framing = 0

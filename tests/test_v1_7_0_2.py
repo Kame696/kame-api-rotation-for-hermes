@@ -352,6 +352,11 @@ def test_every_failure_records_the_rest_it_cost():
 
     dispatch = importlib.import_module(f"{PACKAGE}.dispatch_binding")
     blocks = _record_calls(inspect.getsource(dispatch))
+    # 1.9.0.2 (H5): a third lane, the one closing row of a call that ends without an answer. It is
+    # not an attempt and benches nothing: no key, no rest, ``record_type="close"``.
+    closing = [b for b in blocks if 'record_type="close"' in b]
+    assert len(closing) == 1 and "rest_s=" not in closing[0] and "key_fingerprint=" not in closing[0]
+    blocks = [b for b in blocks if b not in closing]
     assert len(blocks) == 2, "one lane for the refusal, one for the answer"
 
     failure = next(b for b in blocks if "outcome=verdict" in b)

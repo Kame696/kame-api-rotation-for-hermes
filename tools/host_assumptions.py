@@ -956,6 +956,52 @@ def a_stopped_background_job_still_moves_down_the_users_list(text=None):
     return from_0231, True
 
 
+def a_stop_reaches_kames_client_through_cancel(text=None):
+    """A stop from a stranger thread still calls ``type(client).cancel()``, and KAME's clients answer it.
+
+    1.9.0.2 (H1, audit F1). ``_abort_request_slot_client`` cancels an in-flight request from the
+    interrupt thread: ``client.cancel()`` when the client's TYPE has one, else a socket shutdown that
+    finds no sockets on KAME's client (they live in its per-key inner clients). Without ``cancel`` the
+    owner's Stop left KAME rotating for minutes (2026-11-15: 282 attempts after Stop). If the host stops
+    looking for ``cancel``, or KAME loses it, a Stop no longer reaches the key loop.
+    """
+    lines = text if text is not None else read("agent/client_lifecycle.py")
+    body = "\n".join(lines)
+    start = body.find("def _abort_request_slot_client")
+    if start < 0:
+        return "_abort_request_slot_client is gone from client_lifecycle.py", True
+    end = body.find("\n    def ", start + 10)
+    func = body[start:end if end > 0 else len(body)]
+    if 'getattr(type(client), "cancel"' not in func or "client.cancel()" not in func:
+        return "the host no longer stops a client through type(client).cancel()", True
+    facade = (Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/facade.py").read_text(encoding="utf-8")
+    mixin = facade[facade.find("class _KameMixin"):facade.find("class _WithTimeout")]
+    if "    def cancel(self) -> None:" not in mixin:
+        return "KAME's client mixin has no cancel()", True
+    return True, True
+
+
+def the_reset_can_bind_this_profiles_secret_scope(text=None):
+    """Reset pool can bind the profile's secret scope the way the host's own chores do.
+
+    1.9.0.2 (H2b, audit F3). On a multiplexed gateway a credential read with no profile scope raises
+    ``UnscopedSecretError``; the panel's Reset runs on KAME's heartbeat (a bare thread), so clearing
+    Hermes' own marks failed on every press since 2026-10-19. ``control._ProfileScope`` retries inside
+    ``set_secret_scope(build_profile_secret_scope(home), profile_home=...)`` / ``reset_secret_scope``.
+    If the host renames any of them, Reset is back to failing on every press.
+    """
+    lines = text if text is not None else read("agent/secret_scope.py")
+    body = "\n".join(lines)
+    for needed in ("class UnscopedSecretError", "def build_profile_secret_scope(hermes_home",
+                   "def set_secret_scope(secrets", "profile_home", "def reset_secret_scope(token"):
+        if needed not in body:
+            return f"agent/secret_scope.py lost {needed!r}", True
+    control = (Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation/control.py").read_text(encoding="utf-8")
+    if "class _ProfileScope" not in control or '"UnscopedSecretError"' not in control:
+        return "KAME's Reset no longer retries an unscoped refusal inside the profile's scope", True
+    return True, True
+
+
 def a_lane_of_the_walk_is_not_held_out_as_a_provider_outage(text=None):
     """1.8.4.2 (A1): KAME's lane error is a plain failure of that lane; the host's walk quarantines nothing for it.
 
@@ -1074,6 +1120,10 @@ CHECKS = (
     ("agent/auxiliary_client.py", "the auxiliary request still carries the task's timeout", the_aux_request_still_carries_the_tasks_timeout),
     # 1.8.4.2 (A1). A lane of the host's own walk is a plain failure, not a provider outage.
     ("agent/auxiliary_health.py", "a lane of the host's walk is not held out as a provider outage", a_lane_of_the_walk_is_not_held_out_as_a_provider_outage),
+    # 1.9.0.2 (H1). The owner's Stop and the host's own aborts reach KAME's key loop.
+    ("agent/client_lifecycle.py", "a stop reaches KAME's client through cancel()", a_stop_reaches_kames_client_through_cancel),
+    # 1.9.0.2 (H2b). Reset pool clears Hermes' own marks on a multiplexed gateway.
+    ("agent/secret_scope.py", "Reset pool can bind the profile's secret scope", the_reset_can_bind_this_profiles_secret_scope),
 )
 
 

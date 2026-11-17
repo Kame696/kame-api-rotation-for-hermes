@@ -351,7 +351,8 @@ class _FacadeCall(Call):
         return self._client._kame_inner(key, attempt, self.identity, self.kwargs, self.streaming)
 
     def cancelled(self) -> bool:
-        return self._client._kame_cancelled.is_set()
+        # 1.9.0.2 (H1): a stop sent to the client this request runs on, or to the one it was cloned from.
+        return self._client._kame_is_cancelled()
 
 
 class _KameMixin:
@@ -414,6 +415,51 @@ class _KameMixin:
         if timeout is None:
             return inner
         return _WithTimeout(inner, timeout)
+
+    def cancel(self) -> None:
+        """Hermes' stop for a request in flight, from a thread that does not own it.
+
+        1.9.0.2 (H1, audit F1). ``agent/client_lifecycle._abort_request_slot_client`` calls
+        ``type(client).cancel()`` when the client has one and otherwise shuts the client's own
+        sockets. KAME's sockets live in its per-key inner clients, so without this the host found
+        none (``tcp_force_closed=0``) and the key loop never heard the stop: on 2026-11-15 a call
+        rotated 282 more times after the owner pressed Stop. Serves the user's Stop, "background
+        review superseded" and "cache_evict_in_flight" alike.
+
+        Only a flag: the loop checks it before every attempt and every second of a wait, so it
+        ends within about a second and sends nothing more. Nothing is closed from this thread
+        (the host's own rule: ``close()`` from a stranger thread races the owner's TLS state);
+        an attempt already on the wire runs to its own read timeout and is the last one.
+        Never raises - the host is in the middle of tearing a turn down.
+        """
+        try:
+            stop = self.__dict__.get("_kame_stop")
+            if stop is None:
+                stop = self.__dict__.setdefault("_kame_stop", threading.Event())
+            stop.set()
+            flag = self.__dict__.get("_kame_cancelled")
+            if flag is not None:
+                flag.set()
+        except Exception:  # pragma: no cover - a stop must never break the teardown
+            logger.debug("kame: could not record a cancel", exc_info=True)
+
+    def _kame_is_cancelled(self) -> bool:
+        """This client was stopped or closed, or a client it was cloned from was stopped.
+
+        A clone made by ``with_options`` hears its parent's ``cancel`` (the host may hold the
+        parent while the request runs on the clone) but not its parent's ``close`` - a close is
+        the host releasing the parent, not a stop of the work done on a copy of it.
+        """
+        flag = self.__dict__.get("_kame_cancelled")
+        if flag is not None and flag.is_set():
+            return True
+        node, hops = self.__dict__.get("_kame_cancel_parent"), 0
+        while node is not None and hops < 16:
+            stop = getattr(node, "__dict__", {}).get("_kame_stop")
+            if stop is not None and stop.is_set():
+                return True
+            node, hops = getattr(node, "__dict__", {}).get("_kame_cancel_parent"), hops + 1
+        return False
 
     def _kame_close(self) -> None:
         self._kame_cancelled.set()
@@ -1010,6 +1056,8 @@ class KameMessagesClient(_KameMixin):
         clone._kame_inners = {}
         clone._kame_lock = threading.Lock()
         clone._kame_cancelled = threading.Event()
+        clone.__dict__.pop("_kame_stop", None)      # 1.9.0.2 (H1): its own stop starts clear
+        clone._kame_cancel_parent = self             # and it hears the parent's cancel
         clone.messages = _MessagesProxy(clone)
         return clone
 

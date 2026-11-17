@@ -7,6 +7,50 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.2] - 2026-11-16 - Stop stops; Reset works again; the wait is said
+
+Fixes only, from one installed week of 1.9.0.1 read in its own logs. No new setting, no new behaviour.
+
+- **Stop reaches the key rotation.** Hermes stops a request in flight by calling the client's `cancel()`
+  from another thread. KAME's clients had none, so after Stop the rotation went on (seen: 282 more
+  requests over almost five minutes, against your daily quota). Now Stop, and Hermes' own stops (a
+  background review that was replaced, a cache eviction), end it before the next request; at most the
+  request already on the wire finishes.
+- **Reset pool says what failed.** When a part of the reset fails, the answer names it and the error
+  type (for example "Hermes' marks for gemini (TimeoutError)") and the log has the reason, instead of
+  "host marks; retry after checking storage access" every time. Everything else is still reset.
+- **Reset pool clears Hermes' own marks again.** Since Hermes serves every profile from one gateway, it
+  refuses to read a key outside that profile's scope, and the Reset button runs in the background where
+  there is none: every press since 2026-10-19 left Hermes' own "exhausted" marks in place. KAME now
+  retries that step inside the profile's scope, the same way Hermes' own background chores do. Where the
+  plain call already worked, nothing changes.
+- **Chat titles are made again.** When your best model kept failing, KAME moved the title to another model
+  of your list - but it could pick one that had also been failing and then refuse it there, sending no
+  request at all. Hermes read that as a timeout and kept Gemini out of every background job for ten
+  minutes, so new chats stayed untitled. The title now goes only to a model it may really start on.
+- **One silent key no longer loses the title.** A title may send three requests in 30 seconds, but the first
+  one could wait the whole 30 seconds on a key that never answered. Now each try waits three times the
+  model's usual time to first word (at least 10 seconds), so a fast model gets another key in time. A slow
+  or thinking model, a model KAME has never timed, and the last try keep the whole time, as before.
+- **A reply no longer starts on a model that is only due a second look.** When your best model kept
+  failing and the next one had failed too, KAME started the reply on that next model as soon as its second
+  look was due (10 minutes to 2 hours after its last failure), and a healthy model further down your list
+  only joined at the race's slow bound - 14 seconds to a first word that the healthy model gives in two.
+  Now the reply starts on the first model of your list that is not failing, and the model due its second
+  look is asked beside it from the first instant, next to your best model's own check: if it answers first,
+  the reply is its own and it is trusted again; if it stays silent or fails, that counts and its next look
+  waits longer. Nobody waits for it.
+- **Voice and transcription share the chat's memory of each key.** They used another name for the same
+  model, so a key the chat knew was spent for the day was asked again by a voice note, and the other way
+  round. Same keys, same quota, one memory now.
+- **The wait is said in the provider's words.** When every key is resting on a spent day and the
+  provider named when it comes back (Google names the next midnight, US Pacific), the waiting line says
+  that time beside KAME's next try. When every key has refused for a minute without naming any time,
+  the line says so ("the provider gave no time") instead of only "trying the next key". Nothing waits
+  or stops differently.
+- **Every call that ends without an answer leaves one closing row** in `calls.jsonl` (`cancelled`,
+  `handed_over`, `gave_up` or `raised`), so a stopped call no longer reads like one still running.
+
 ## [1.9.0.1] - 2026-11-14 - a reply is never left waiting when something else could answer
 
 **What drove it.** 1.9.0.0 was judged against one setup: one provider, fourteen keys. Run for users unlike that

@@ -110,6 +110,11 @@ def _host_default_model() -> str:
         return FALLBACK_MODEL
 
 
+def _identity(model: str, base_url: str) -> str:
+    """1.9.0.2 (H3): the chat's health bucket for this model and endpoint (see ``voice._identity``)."""
+    return voice._identity(model, base_url)
+
+
 def _base_url() -> str:
     gemini = _stt_config().get("gemini")
     value = gemini.get("base_url") if isinstance(gemini, dict) else ""
@@ -191,12 +196,12 @@ def _transcribe(file_path: str, model: str, language: Optional[str], hint: Any) 
     if not voice._facade().enabled():
         raise ListenError("KAME rotation is off")
     engine = transport.engine
-    identity = "gemini:" + model
+    base = _base_url()
+    identity = _identity(model, base)        # 1.9.0.2 (H3): the chat's bucket
     keys = voice._keys()
     if not keys:
         raise ListenError("no Gemini key")
     deadline = _monotonic() + UTTERANCE_BUDGET_S
-    base = _base_url()
     url = f"{base}/models/{model}:generateContent"
     prompt = _prompt(language, hint)
     thinking = _thinking_config(model)

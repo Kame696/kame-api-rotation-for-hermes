@@ -235,14 +235,14 @@ def test_a_429_rotates_and_the_key_rests_as_the_chat_reader_decides(host, monkey
     provider = make(monkeypatch, gemini)
     assert provider.transcribe(clip(tmp_path), model=m)["success"]
     assert gemini.asked == [K1, K2]
-    rest = engine().next_recovery_seconds("gemini:" + m, [K1])
+    rest = engine().next_recovery_seconds("gemini:" + m + ":global", [K1])
     assert rest is not None and 10 < rest <= 40, rest
 
 
 def test_a_key_resting_for_the_chat_rests_for_listening(host, monkeypatch, tmp_path):
     m = model()
-    engine().select("gemini:" + m, [K1, K2])
-    engine().mark("gemini:" + m, K1, False, 600.0, "rate_limit", stated=True)
+    engine().select("gemini:" + m + ":global", [K1, K2])
+    engine().mark("gemini:" + m + ":global", K1, False, 600.0, "rate_limit", stated=True)
     gemini = Gemini()
     provider = make(monkeypatch, gemini)
     assert provider.transcribe(clip(tmp_path), model=m)["success"]
@@ -262,8 +262,8 @@ def test_every_key_refused_is_an_error_envelope_not_a_hang(host, monkeypatch, tm
 def test_every_key_resting_for_minutes_is_an_error_at_once_and_does_not_sleep(host, monkeypatch, tmp_path):
     m = model()
     for key in (K1, K2):
-        engine().select("gemini:" + m, [K1, K2])
-        engine().mark("gemini:" + m, key, False, 600.0, "rate_limit", stated=True)
+        engine().select("gemini:" + m + ":global", [K1, K2])
+        engine().mark("gemini:" + m + ":global", key, False, 600.0, "rate_limit", stated=True)
     gemini = Gemini()
     out = make(monkeypatch, gemini).transcribe(clip(tmp_path), model=m)
     assert out["success"] is False and "back in" in out["error"] and gemini.asked == [] and not host
@@ -272,8 +272,8 @@ def test_every_key_resting_for_minutes_is_an_error_at_once_and_does_not_sleep(ho
 def test_a_key_back_within_two_seconds_is_waited_for_once(host, monkeypatch, tmp_path):
     m = model()
     for key in (K1, K2):
-        engine().select("gemini:" + m, [K1, K2])
-        engine().mark("gemini:" + m, key, False, 1.0, "rate_limit", stated=True)
+        engine().select("gemini:" + m + ":global", [K1, K2])
+        engine().mark("gemini:" + m + ":global", key, False, 1.0, "rate_limit", stated=True)
     import time as _time
     monkeypatch.setattr(listen_mod, "_sleep", lambda seconds: (host.append(seconds), _time.sleep(seconds + 0.05)))
     out = make(monkeypatch, Gemini()).transcribe(clip(tmp_path), model=m)
@@ -312,7 +312,7 @@ def test_a_400_naming_thinking_is_retried_on_the_same_key_without_it(host, monke
     assert gemini.asked == [K1, K1]
     assert "thinkingConfig" in gemini.body(0)["generationConfig"]
     assert "thinkingConfig" not in gemini.body(1)["generationConfig"]
-    assert engine().healthy_count("gemini:" + m, [K1, K2]) == 2, "the key was not at fault"
+    assert engine().healthy_count("gemini:" + m + ":global", [K1, K2]) == 2, "the key was not at fault"
 
 
 def test_a_404_is_an_error_envelope_with_the_providers_detail(host, monkeypatch, tmp_path):
