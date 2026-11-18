@@ -183,7 +183,7 @@ def test_a_cosmetic_task_goes_to_the_last_model_of_the_same_provider():
     assert "title_generation" in text and "auxiliary.title_generation.provider: gemini" in text
     assert "auxiliary.title_generation.model: gemini-3.6-flash" in text
     assert "enabled: false" in text, "a title can also simply be turned off"
-    assert "KAME never changes this" in text
+    assert "API Rotation never changes this" in text
 
 
 def test_an_important_task_goes_to_the_first_fallback_of_the_same_provider():

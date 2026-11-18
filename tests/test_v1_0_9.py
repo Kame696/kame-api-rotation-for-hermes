@@ -244,12 +244,14 @@ class TestTheStatusLine:
         # The shape had to change to get past Desktop's gate; the vocabulary
         # did not. Two ports of one plugin that describe themselves
         # differently are two plugins to the person reading the screen.
+        # 1.9.0.3 (C4): the screen names the product "API Rotation" and says "ready" (the panel's word).
         line = dispatch_binding.status_line(15, 15)
-        assert "KAME" in line and "15/15" in line and "healthy" in line
+        assert "API Rotation" in line and "KAME" not in line and "15/15" in line and "ready" in line
+        assert "healthy" not in line
 
     def test_a_tail_is_appended_not_substituted(self):
         line = dispatch_binding.status_line(2, 15, "next key in 1m 23s")
-        assert "2/15 keys healthy" in line and line.endswith("next key in 1m 23s")
+        assert "2/15 keys ready" in line and line.endswith("next key in 1m 23s")
 
     def test_every_line_it_can_produce_survives_desktops_gate(self):
         # The gate is not a formality. A line that misses it does not merely
@@ -625,7 +627,7 @@ class TestKameLeavesTheHostsStreamRetriesAlone:
 
     def test_the_panel_says_kame_sets_none_of_them(self):
         text = "\n".join(menu.MenuCommand(None)._host_lines())
-        assert "KAME sets none of them" in text
+        assert "API Rotation sets none of them" in text
         assert "HERMES_STREAM_RETRIES" in text
 
 

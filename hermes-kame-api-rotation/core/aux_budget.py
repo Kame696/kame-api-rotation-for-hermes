@@ -117,6 +117,10 @@ def stop_message(task: str, model: str, tries: int, seconds: float) -> str:
             return "?"
         return kept
 
+    if int(tries) <= 0:
+        # 1.9.0.3 (C8): nothing was sent, so "timed out after 0 tries in 0s" described nothing that happened.
+        return (f"kame: background job {clean(task)} on {clean(model)} was stopped before it was sent"
+                " - its keys are kept for your chat")
     return (f"kame: background job {clean(task)} on {clean(model)} timed out after {int(tries)} "
             f"tries in {max(0, int(seconds))}s - its keys are kept for your chat")
 
@@ -137,6 +141,21 @@ def lane_message(task: str, model: str) -> str:
 
     return (f"kame: background job {clean(task)} not sent to {clean(model)} - KAME stopped it a moment ago; "
             "its keys are kept for your chat")
+
+
+def never_message(task: str, model: str) -> str:
+    """1.9.0.3 (C10): the error of a background job "Never" did not send to a model other than the chat's.
+
+    A plain failure of that lane, like :func:`lane_message`: none of the host's words (``_HOST_WORDS``), no
+    timeout in its name, so the host quarantines nothing."""
+    def clean(text: Any) -> str:
+        kept = "".join(c for c in str(text or "") if c.isalnum() or c in "._-/:")[:60]
+        if not kept or any(word in kept.lower() for word in _HOST_WORDS):
+            return "?"
+        return kept
+
+    return (f"kame: background job {clean(task)} not sent to {clean(model)} - "
+            '"Never" keeps background jobs on your model')
 
 
 #: The suggestion appears only when background jobs are a real share of the best model's requests.
@@ -185,7 +204,7 @@ def suggest(models: Any, primary: Any, chain: Any, written: Any, since: float) -
                 f"`auxiliary.{task}.provider: {provider}` and `auxiliary.{task}.model: {name}`.")
         if task == "title_generation":
             text += " Or turn titles off with `auxiliary.title_generation.enabled: false`."
-        return text + " KAME never changes this for you."
+        return text + " API Rotation never changes this for you."
     except Exception:
         return None
 

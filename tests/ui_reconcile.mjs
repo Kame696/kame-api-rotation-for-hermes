@@ -713,7 +713,7 @@ await check('the three sentences at the top say what is happening, what is wrong
 
   const busyEntry = { busy_kind: 'busy', busy_until: PANEL_NOW_S + 30, probe_at: PANEL_NOW_S + 14 }
   const busy = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'], { entry: busyEntry }), model('gemini:gemini-3.7-flash', ['r'])]), PANEL_NOW_MS)
-  assert.ok(busy.line2.startsWith('gemini-3.8-flash is busy'), busy.line2)
+  assert.ok(busy.line2.startsWith('gemini-3.8-flash is overloaded (the provider said so)'), busy.line2)
   assert.ok(busy.line3.includes('the next reply starts on gemini-3.7-flash') && busy.line3.includes('asked again in 14s'), busy.line3)
 
   const everyone = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'], { entry: busyEntry }), model('gemini:gemini-3.7-flash', ['r'], { entry: busyEntry })]), PANEL_NOW_MS)
@@ -732,7 +732,7 @@ await check('two raced models are named in the first sentence, and the retries n
   const racing = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], {
     activity: { attempt: 1, identity: 'gemini:gemini-3.8-flash', key: 'key:a1b2c3', kind: 'calling', model: 'gemini-3.8-flash', started_at: PANEL_NOW_S - 21, racing: ['gemini-3.7-flash', 'gemini-3.6-flash'] }
   }), PANEL_NOW_MS)
-  assert.equal(racing.line1, 'gemini-3.8-flash and gemini-3.7-flash are slow today — gemini-3.6-flash joined — 21.0 s')
+  assert.equal(racing.line1, 'gemini-3.8-flash and gemini-3.7-flash are slow to start — gemini-3.6-flash joined — 21.0 s')
   const one = P.nowSentences(world([model('gemini:gemini-3.8-flash', ['r'])], {
     activity: { attempt: 1, identity: 'gemini:gemini-3.8-flash', kind: 'calling', model: 'gemini-3.8-flash', started_at: PANEL_NOW_S - 9, racing: ['gemini-3.7-flash'] }
   }), PANEL_NOW_MS)

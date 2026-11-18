@@ -102,7 +102,7 @@ async def control(request: Request) -> Dict[str, Any]:
     directory = _data_dir()
     if not directory.is_dir():
         # The snapshot directory exists once the backend has loaded KAME.
-        raise HTTPException(status_code=409, detail="KAME has not started in this profile yet")
+        raise HTTPException(status_code=409, detail="API Rotation has not started in this profile yet")
     handle, temporary = tempfile.mkstemp(dir=directory, prefix=".control-", suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:

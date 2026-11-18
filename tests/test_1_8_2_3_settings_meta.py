@@ -115,13 +115,13 @@ class TestSettingsWiringMeta(unittest.TestCase):
             self.assertIn(key, settings.META, f"{key}: no META entry (invisible in panel)")
 
     def test_meta_titles_short_and_human(self):
-        banned = ("GCRA", "EWMA", "TTFT", "p90", "API", "cron")
+        banned = ("GCRA", "EWMA", "TTFT", "p90", "API", "cron")   # 1.9.0.3: the product name "API Rotation" is not jargon
         for key in self.everything:
             entry = settings.META.get(key)
             if not entry:
                 continue
-            title_text = entry[0]
-            self.assertLessEqual(len(title_text), 40, f"{key}: title {title_text!r} too long")
+            title_text = entry[0].replace("API Rotation", "")
+            self.assertLessEqual(len(entry[0]), 40, f"{key}: title {title_text!r} too long")
             for word in banned:
                 self.assertNotIn(word, title_text, f"{key}: title has jargon {word!r}")
 

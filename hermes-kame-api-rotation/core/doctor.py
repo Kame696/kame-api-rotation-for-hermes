@@ -194,7 +194,7 @@ def rest_lines(kinds: Sequence[Any]) -> List[str]:
     out.append("    that the provider's number was wrong.")
     out.append("")
     out.append("    The one ladder left is for a key the provider REFUSES —")
-    out.append("    401/403 — where 20s, 40s, 80s ... is how KAME counts to")
+    out.append("    401/403 — where 20s, 40s, 80s ... is how API Rotation counts to")
     out.append("    'this credential is not coming back' before retiring it.")
     out.append("")
     out.append("    A rate limit stopped climbing in 1.6.0.3: the provider")
@@ -221,7 +221,7 @@ def rest_lines(kinds: Sequence[Any]) -> List[str]:
     out.append("    it is saying the key is wrong, not that you should wait. So a")
     out.append("    refused key is offered LAST, and leaves rotation entirely")
     out.append("    after three in a row, or after one if the provider used the")
-    out.append("    words. It is never deleted: KAME does not write credentials.")
+    out.append("    words. It is never deleted: API Rotation does not write credentials.")
     return out
 
 
@@ -243,12 +243,12 @@ def evidence_lines(kinds: Sequence[Any]) -> List[str]:
 
     out = [
         f"  {total} {_plural(total, 'refusal')} recorded in the last fortnight",
-        f"  {sized} of them sized by KAME rather than by the host",
+        f"  {sized} of them sized by API Rotation rather than by the host",
         f"  {stated} carried a counter the provider named",
     ]
     if contradicted:
         out.append(
-            f"  {contradicted} where the provider named one counter and KAME acted"
+            f"  {contradicted} where the provider named one counter and API Rotation acted"
         )
         out.append(
             "     on another. That is the misclassification signal — worth a look,"
@@ -277,7 +277,7 @@ def trouble_lines(snapshot: Dict[str, Any], kinds: Sequence[Any]) -> List[str]:
             f"{'. ' + ', '.join(named) if named else '.'}"
         )
         trouble.append(
-            "     KAME has stopped offering "
+            "     API Rotation has stopped offering "
             + ("it" if retired == 1 else "them")
             + ", so nothing is being spent on "
         )
@@ -346,9 +346,9 @@ def trouble_lines(snapshot: Dict[str, Any], kinds: Sequence[Any]) -> List[str]:
 
 def render(snapshot: Dict[str, Any], kinds: Sequence[Any] = ()) -> str:
     """The whole report, as one block of text for a chat turn."""
-    out: List[str] = ["KAME doctor — what this process is actually doing"]
+    out: List[str] = ["API Rotation doctor — what this process is actually doing"]
 
-    out += _rule("Which KAME is running")
+    out += _rule("Which API Rotation is running")
     out += build_lines(snapshot)
 
     out += _rule("What it can see")

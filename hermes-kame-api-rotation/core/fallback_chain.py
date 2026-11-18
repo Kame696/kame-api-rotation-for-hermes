@@ -264,6 +264,27 @@ def later_entries(identity: str, home: Optional[Path] = None) -> List[str]:
     return []
 
 
+def auxiliary_model(task: str, home: Optional[Path] = None) -> Optional[str]:
+    """The model written for a background task in Hermes' config (``auxiliary.<task>.model``).
+
+    1.9.0.3 (C10). ``""`` when the task is not configured (absent, empty or ``auto``), the model as written
+    when it is, ``None`` when the config cannot be read - the caller then does nothing (fail open)."""
+    home = home if home is not None else _home()
+    kind, config, _memo = _config(home)
+    if kind != _OK or not isinstance(config, dict):
+        return None
+    block = config.get("auxiliary")
+    section = block.get(str(task or "")) if isinstance(block, dict) else None
+    if not isinstance(section, dict):
+        return ""
+    value = str(section.get("model") or "").strip()
+    if value.lower() not in ("", "auto"):
+        return value
+    # Design review 2026-11-18: a provider written for the task (with its default model) is a choice too.
+    provider = str(section.get("provider") or "").strip()
+    return "" if provider.lower() in ("", "auto", "main") else provider
+
+
 def primary_identity(home: Optional[Path] = None) -> Optional[str]:
     return read(home)[0]
 

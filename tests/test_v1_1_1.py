@@ -656,7 +656,7 @@ class TestWhatThePanelIsAllowedToAskFor:
         )
         control.poll()
         assert control.last_result()["ok"] is False
-        assert "is not something KAME does" in control.last_result()["detail"]
+        assert "is not something API Rotation does" in control.last_result()["detail"]
 
     def test_a_request_is_applied_once_and_the_file_is_removed(self, home, monkeypatch):
         monkeypatch.setattr(envfile, "path", lambda: home / ".env")

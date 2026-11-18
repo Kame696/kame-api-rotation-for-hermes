@@ -6,7 +6,7 @@
 
 ### All your API keys and models as one pool. A `429`, a spent quota or a slow model never stops your agent again.
 
-[![Version](https://img.shields.io/badge/version-1.9.0.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.3-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -69,7 +69,7 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.9.0.2-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.9.0.3-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -439,7 +439,14 @@ The panel explains every one of them in full, with its environment variable.
 <details>
 <summary><b>✅ Verified — tests and live checks</b></summary>
 
-**1.9.0.2** (2026-11-16), see the [changelog](CHANGELOG.md):
+**1.9.0.3** (2026-11-18), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite (1.9.0.3) | **0 failing**, 4,371 passing (one timing test that is slow only under load passed alone) |
+| Live (1.9.0.3) | Stop and Reset pool through the gateway; Gemini and NVIDIA replies; a request the provider refused (HTTP 410) shows the provider's own text in its row; transcription moved to the next Gemini model of the list when every key of the voice model was resting; chat titles made; KAME's idle threads at 1.3% of one core; four Hermes profiles, the daily live check in each |
+
+**1.9.0.2** (2026-11-16):
 
 | Check | Result |
 |---|---|
@@ -581,7 +588,22 @@ evidence above still describes what runs.
 
 <a id="new"></a>
 <details>
-<summary><b>📣 What's new in 1.9.0.2</b></summary>
+<summary><b>📣 What's new in 1.9.0.3</b></summary>
+
+**1.9.0.3 — the screen says what happened, voice is not lost.** From the first installed days of 1.9.0.2.
+
+- **Every failure row in the panel opens** and shows the provider's own text and the error type. A request the
+  provider refused (a model at its end of life, a wrong name) says so: it is the request, not a key.
+- **While the model is silent, the status row keeps saying so** every 5 s ("no first word yet"), with the backup
+  key or the other model racing it.
+- **The Speed line counts only the backup requests your Speed setting allows**, so it no longer reads as "your
+  setting is ignored" when the extra requests came from the provider refusing.
+- **"API Rotation" on screen** instead of "KAME"; "slow to start" and "overloaded" say what they mean.
+- **Voice is not lost when the voice model's keys rest:** transcription tries the Gemini models of your list
+  (with "Never switch", only the chosen model), and a failure is written in the log.
+- **"Never switch" also keeps Hermes' background requests on your model** (the title fallback after 30 s).
+- "stopped before it was sent" instead of "timed out after 0 tries"; the first-word wait help gives the real
+  numbers; the README says the wake word is Hermes' own setting.
 
 **1.9.0.2 — Stop stops, Reset works again, the wait is said.** Fixes only, from one installed week of 1.9.0.1.
 
@@ -818,6 +840,7 @@ In development since early 2026, and every release came from a real log, not fro
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.3** | The screen says what happened, voice is not lost | Every failure row opens with the provider's own text, and a refused request says it is the request, not a key; the status row speaks every 5 s while the model is silent; the Speed line counts only backup requests; "API Rotation" on screen; transcription moves to the next Gemini model of the list when the voice model's keys rest; "Never switch" keeps Hermes' background title fallback on your model; clearer slow, overloaded and stopped words |
 | **1.9.0.2** | Stop stops, Reset works again, the wait is said | Stop ends the key rotation; Reset pool clears Hermes' own marks again and names what failed; chat titles are made again (only on a model KAME may start on, each try bounded by the model's usual time to first word); a reply starts on the first model that is not failing while a model due a second look is asked beside it; voice and transcription share the chat's key memory; the waiting line gives the provider's own return time; one closing row per unanswered call |
 | **1.9.0.1** | A reply is never left waiting when something else could answer | A reply that stops mid-thought moves on to the next provider of your list once its extra requests are spent; one key or no list still gets an extra request (the same key again, or another key of the model); the only key busy counts as the model busy; an answer silent for 45 s after its first words is cut and continued (`KAME_ANSWER_QUIET_S`) |
 | **1.9.0.0** | Thoughts stay live, a stalled reply is raced again, a busy model is raced at once | A reply that stops mid-thought with nothing shown is asked again on another key and then on the next model of your list, while its thoughts keep showing live (at most two extra requests, asked only when a reply stays quiet past its learned limit, and counted with how many answered first); a model that answers 503 is raced by the next model of your list from the retry's first instant; a model left out after failing is looked at again (10 min, doubling, at most 2 h) and a best model that keeps failing is asked at most every 5 min; a background title on a failing or busy model moves to the next healthy model of your list |

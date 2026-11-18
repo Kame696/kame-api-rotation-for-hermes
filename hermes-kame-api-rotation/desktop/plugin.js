@@ -76,6 +76,8 @@ const ROUTE = '/kame'
 /** The name in the sidebar, the page heading and the chip's tooltip. One
  *  constant so the three can never drift apart. */
 const PRODUCT = 'KAME API Rotation'
+/** 1.9.0.3 (C4): what the sentences on screen call the product; PRODUCT stays the title of the page and the plugin. */
+const NAME = 'API Rotation'
 
 /** Schema of `state.json` this UI understands. A document from a newer Python
  *  half is refused with a readable reason rather than half-rendered.
@@ -377,8 +379,8 @@ function restProblem(error) {
 
   if (/\b404\b/.test(text)) {
     return /no snapshot/i.test(text)
-      ? 'No snapshot yet. KAME writes one as soon as the backend loads it.'
-      : "KAME's panel route is not mounted yet. Restart Hermes once after installing or updating KAME."
+      ? 'No snapshot yet. API Rotation writes one as soon as the backend loads it.'
+      : "API Rotation's panel route is not mounted yet. Restart Hermes once after installing or updating API Rotation."
   }
 
   return `The snapshot could not be read: ${text || 'unknown error'}`
@@ -473,7 +475,7 @@ async function readSnapshot() {
   if (document?.schema !== SCHEMA) {
     $snapshot.set(null)
     $problem.set(
-      `The installed KAME writes snapshot schema ${document?.schema ?? '?'}; this panel reads ${SCHEMA}. ` +
+      `The installed API Rotation writes snapshot schema ${document?.schema ?? '?'}; this panel reads ${SCHEMA}. ` +
         'The two halves ship together, so restarting Hermes usually settles it.'
     )
 
@@ -821,9 +823,9 @@ function KameChip() {
   if (problem) {
     lines.push(problem)
   } else if (!snap?.installed) {
-    lines.push(`${PRODUCT} is loaded but not rotating: ${snap?.reason ?? 'unknown'}`)
+    lines.push(`${NAME} is loaded but not rotating: ${snap?.reason ?? 'unknown'}`)
   } else if (!totals.keys) {
-    lines.push(`${PRODUCT} is running. No pooled key has been used yet.`)
+    lines.push(`${NAME} is running. No pooled key has been used yet.`)
   } else {
     const where = one.model ? `for ${modelOnly(one.model)}` : 'across every model'
 
@@ -888,7 +890,7 @@ function KameChip() {
           type: 'button'
         },
         h(StatusDot, { tone }),
-        h('span', { className: 'shrink-0' }, 'KAME'),
+        h('span', { className: 'shrink-0' }, 'API Rotation'),
         shown.length
           ? shown.map(pool => h(ChipPool, { key: pool.identity, now, pool, snap }))
           : h(
@@ -1453,6 +1455,22 @@ function oneCount(snap, nowMs) {
   }
 }
 
+/**
+ * 1.9.0.3 (C5). The hover of a model that is skipped for a while: what "slow to start" and "overloaded" mean.
+ * `undefined` for every other state. Pure; exported for the node checks.
+ */
+function modelStateTitle(model, nowMs) {
+  const entry = model.entry
+  const busy = untilEpoch(entry?.busy_until, nowMs)
+
+  if (!model.pool || !busy) return undefined
+
+  return entry?.busy_kind === 'slow'
+    ? 'This model did not say its first word within the wait limit, so the next replies start on another model ' +
+        `of your list for a while. It is asked again after ${duration(busy)}.`
+    : "The provider answered 'overloaded' or timed out on several keys. Each key rests 1 s; the model is skipped for a while."
+}
+
 /** What a model is doing, in a few words: `{ word, tone }`. Pure; exported for the node checks. */
 function modelState(model, snap, nowMs) {
   const { entry, pool } = model
@@ -1467,8 +1485,14 @@ function modelState(model, snap, nowMs) {
     const again = untilEpoch(entry?.probe_at, nowMs)
 
     return entry?.busy_kind === 'slow'
-      ? { tone: 'warn', word: `slow today — skipped for ${duration(busy)}` }
-      : { tone: 'warn', word: again ? `busy — asked again in ${duration(again)}` : 'busy — asked again soon' }
+      // 1.9.0.3 (C5): "slow today" and "busy" said little; the words now say what happened.
+      ? { tone: 'warn', word: `slow to start (no first word in time) — skipped for ${duration(busy)}` }
+      : {
+          tone: 'warn',
+          word: again
+            ? `overloaded (the provider said so) — asked again in ${duration(again)}`
+            : 'overloaded (the provider said so) — asked again soon'
+        }
   }
 
   const counts = keyCounts(pool)
@@ -1544,7 +1568,7 @@ function nowSentences(snap, nowMs) {
 
     line1 =
       (earlier.length
-        ? `${activity.model} and ${earlier.join(' and ')} are slow today — ${last} joined`
+        ? `${activity.model} and ${earlier.join(' and ')} are slow to start — ${last} joined`
         : `${activity.model} is late — ${last} races it`) +
       (started !== null ? ` — ${started.toFixed(1)} s` : '')
   } else if (activity?.kind === 'calling' && typeof activity.probe === 'string' && activity.probe) {
@@ -1588,26 +1612,26 @@ function nowSentences(snap, nowMs) {
     },
     { replace: 0, today: 0 }
   )
-  const busyModel = models.find(model => modelState(model, snap, nowMs).word.startsWith('busy') || modelState(model, snap, nowMs).word.startsWith('slow'))
+  const busyModel = models.find(model => modelState(model, snap, nowMs).word.startsWith('overloaded') || modelState(model, snap, nowMs).word.startsWith('slow'))
   const paused = Object.entries(snap?.speed?.paused_until ?? {}).find(([, until]) => until > nowSec)
   let line2 = 'Nothing wrong.'
   let tone = 'good'
 
   if (snap?.build?.complete === false) {
-    line2 = 'This install is incomplete — KAME is not rotating.'
+    line2 = 'This install is incomplete — API Rotation is not rotating.'
     tone = 'bad'
   } else if (ageSeconds(snap, nowMs) > STALE_AFTER_S) {
     line2 = `This reading is ${duration(ageSeconds(snap, nowMs))} old — Hermes may be restarting.`
     tone = 'warn'
   } else if (snap && snap.installed === false) {
-    line2 = 'KAME is loaded but not rotating — see the note below.'
+    line2 = 'API Rotation is loaded but not rotating — see the note below.'
     tone = 'warn'
   } else if (models.length && !usable && !untouched) {
     const everyoneBusy = models.every(model => model.pool && untilEpoch(model.entry?.busy_until, nowMs))
 
     line2 = everyoneBusy
-      ? 'Every model is busy — KAME keeps asking, your best first, until one answers.'
-      : 'No model can answer right now — KAME waits for the first key to come back.'
+      ? 'Every model is busy — API Rotation keeps asking, your best first, until one answers.'
+      : 'No model can answer right now — API Rotation waits for the first key to come back.'
     tone = 'bad'
   } else if (counts.replace > 0) {
     line2 = `${count(counts.replace, 'key', 'keys')} to replace — the provider refused ${counts.replace === 1 ? 'it' : 'them'} as credentials.`
@@ -1894,7 +1918,8 @@ function PoolRing({ model, snap, open, onToggle }) {
           'text-[0.6875rem] leading-snug',
           state.tone === 'bad' ? 'text-destructive' : state.tone === 'warn' ? 'text-amber-500' : 'text-(--ui-text-tertiary)'
         ),
-        key: 'state'
+        key: 'state',
+        title: modelStateTitle(model, now)      // 1.9.0.3 (C5)
       },
       answering && state.tone === 'good' ? 'answering now' : state.word
     ),
@@ -2080,7 +2105,7 @@ function ModelRings({ snap }) {
     {
       key: 'models',
       note: chain
-        ? 'In the order of your fallback list: KAME starts every reply on 1, and goes down the list when a model is busy, slow or out of quota.'
+        ? 'In the order of your fallback list: API Rotation starts every reply on 1, and goes down the list when a model is busy, slow or out of quota.'
         : 'One ring per provider and model. A key spent on one model keeps its allowance on another.',
       title: 'Your models'
     },
@@ -2126,7 +2151,7 @@ function Moves({ snap }) {
   const lifetime = lifetimeLine(snap?.lifetime)
 
   return Card(
-    { key: 'moves', title: 'What KAME did' },
+    { key: 'moves', title: 'What API Rotation did' },
     moves.length
       ? h(
           'ul',
@@ -2225,29 +2250,63 @@ function lifetimeLine(lifetime, locale) {
 
 const MOVE_ICON = { gave_up: '■', handover: '→', surfaced: '!', switch: '↻', wait: '⏸' }
 
-/** What the speed mode has really cost, against what it may. */
-function SpeedCost({ snap }) {
-  const speed = snap?.speed
-
-  if (!speed || !speed.cap_pct || !speed.hour) {
-    return null
-  }
+/**
+ * 1.9.0.3 (C3). What the Speed line says, in parts. Only backup requests draw from the Speed budget, so only they
+ * are compared with what Speed allows; the legs the budget does not limit (several keys asked together while the keys
+ * were running dry, other models of the list asked beside a late reply, a re-ask of a reply that stopped
+ * mid-thought) are named apart. Pure; exported for the node checks.
+ */
+function speedCostParts(speed) {
+  if (!speed || !speed.cap_pct || !speed.hour) return null
 
   const hour = speed.hour
   const sinceStart = speed.since_start
-  const over = hour.extra_pct !== null && speed.cap_pct > 0 && hour.extra_pct > speed.cap_pct * 1.5
+  const cap = speed.cap_pct
+  const limitedPct = hour.limited_pct ?? null
+  const over = limitedPct !== null && cap > 0 && limitedPct > cap * 1.5
+  const burst = Number(hour.burst ?? 0)
+  const race = Number(hour.race ?? 0)
+  const rescue = Number(hour.rescue ?? 0)
+  const unlimited = []
+
+  if (burst > 0) unlimited.push(`${burst} asked together while keys were running dry`)
+  if (race > 0) unlimited.push(`${race} asked of ${race === 1 ? 'another model' : 'other models'} of your list`)
+
+  return {
+    main: hour.replies
+      ? `Backup requests this hour: +${limitedPct ?? 0}% (${hour.replies} replies). Speed allows about +${cap}%.`
+      : `No replies this hour yet. Speed allows about +${cap}% backup requests.`,
+    notLimited: unlimited.length ? `Not limited by Speed: ${unlimited.join(', ')}.` : '',
+    // 1.8.4.3 (L7): a re-ask of a reply that stopped mid-thought is told, and how many paid off.
+    // a rescue on a key of the model draws from the Speed budget, one on another model does not: neither sentence above fits
+    rescue: rescue > 0 ? `${rescue} re-asked ${rescue === 1 ? 'a reply that stopped' : 'replies that stopped'} mid-thought.` : '',
+    rescueWon: rescue > 0 && Number(hour.rescue_won ?? 0) > 0 ? `${hour.rescue_won} of the re-asks answered first.` : '',
+    since:
+      sinceStart?.replies && sinceStart.limited_pct !== null && sinceStart.limited_pct !== undefined
+        ? `Since Hermes started: +${sinceStart.limited_pct}% backup requests.`
+        : '',
+    over
+  }
+}
+
+/** What the speed mode has really cost, against what it may. */
+function SpeedCost({ snap }) {
+  const parts = speedCostParts(snap?.speed)
+
+  if (!parts) {
+    return null
+  }
 
   return h(
     'p',
-    { className: cn('mt-2 text-xs', over ? 'text-amber-500' : 'text-(--ui-text-secondary)'), key: 'cost' },
-    hour.replies
-      ? `Extra requests this hour: +${hour.extra_pct ?? 0}% (${hour.replies} replies). Your setting allows about +${speed.cap_pct}%.`
-      : `No replies this hour yet. Your setting allows about +${speed.cap_pct}% extra requests.`,
-    // 1.8.4.3 (L7): a request asked for a reply that stopped mid-thought is told, and how many paid off.
-    hour.rescue > 0
-      ? ` ${hour.rescue} of them re-asked a reply that stopped mid-thought; ${hour.rescue_won ?? 0} answered first.`
+    { className: cn('mt-2 text-xs', parts.over ? 'text-amber-500' : 'text-(--ui-text-secondary)'), key: 'cost' },
+    parts.main,
+    parts.notLimited
+      ? h('span', { className: 'text-(--ui-text-tertiary)', key: 'unlimited' }, ` ${parts.notLimited}`)
       : '',
-    sinceStart?.replies && sinceStart.extra_pct !== null ? ` Since Hermes started: +${sinceStart.extra_pct}%.` : ''
+    parts.rescue ? ` ${parts.rescue}` : '',
+    parts.rescueWon ? ` ${parts.rescueWon}` : '',
+    parts.since ? ` ${parts.since}` : ''
   )
 }
 
@@ -2557,7 +2616,7 @@ function FlagSetting({ setting, busy }) {
       confirmLabel: 'Turn it on',
       key: 'confirm',
       description:
-        `${setting.help} This is the switch people reach for when they suspect KAME of breaking something — ` +
+        `${setting.help} This is the switch people reach for when they suspect API Rotation of breaking something — ` +
         'it is reversible, and nothing is uninstalled.',
       destructive: true,
       onClose: () => setConfirming(false),
@@ -2863,7 +2922,7 @@ function settingCards({ busy, fallback, groups, settings, showAdvanced }) {
     return [
       Card(
         { key: '_empty', title: 'Settings' },
-        h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, 'This KAME reports no settings.')
+        h('p', { className: 'text-sm text-(--ui-text-tertiary)' }, 'This API Rotation reports no settings.')
       )
     ]
   }
@@ -2979,7 +3038,7 @@ function FallbackList({ fallback }) {
               h('span', { className: 'font-mono', key: 'id' }, entry.identity),
               entry.role === 'primary' ? h('span', { className: 'text-xs text-(--ui-text-tertiary)', key: 'role' }, '(your model)') : null,
               !entry.kame_serves
-                ? h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'state' }, 'KAME has not served this model yet')
+                ? h('span', { className: 'text-xs text-(--ui-text-quaternary)', key: 'state' }, 'API Rotation has not served this model yet')
                 : h(
                     'span',
                     { className: 'text-xs text-(--ui-text-secondary)', key: 'state' },
@@ -3082,7 +3141,7 @@ function SettingsPage({ snap }) {
         note:
           'Everything works without changing anything here. Changes apply on the next message and ' +
           'survive restarts.',
-        title: changedCount ? `KAME settings · ${changedCount} changed` : 'KAME settings · all at their defaults'
+        title: changedCount ? `API Rotation settings · ${changedCount} changed` : 'API Rotation settings · all at their defaults'
       },
       h(
         'div',
@@ -3137,7 +3196,7 @@ function SettingsPage({ snap }) {
     h(ConfirmDialog, {
       confirmLabel: 'Reset everything',
       description:
-        'Every KAME setting goes back to its built-in default, and the KAME_ lines are removed from the .env. ' +
+        'Every API Rotation setting goes back to its built-in default, and the KAME_ lines are removed from the .env. ' +
         'Nothing else in that file is touched, and no key is affected.',
       destructive: true,
       key: 'confirm-reset',
@@ -3192,21 +3251,21 @@ const EVENT_LABELS = {
  */
 const EVENT_MEANING = {
   answered: 'The key this call went out on answered, first time. The time is the whole call; the reason says how long the first word took.',
-  gave_up: 'Every key stayed resting past your \u201cStop waiting\u201d time, so KAME stopped waiting and handed Hermes the original refusal.',
+  gave_up: 'Every key stayed resting past your \u201cStop waiting\u201d time, so API Rotation stopped waiting and handed Hermes the original refusal.',
   sent: 'A request went out on this key. Every request leaves one of these, so a slow answer is visible while it is still coming.',
   denied_model: 'The provider refused this key for THIS model only — a plan that does not include it, or an API not switched on. The key is fine everywhere else, and replacing it would change nothing.',
   invalid_key: 'The provider said this is not a valid credential. Replace it — waiting will not repair one.',
   quarantine: 'This key was rested for a minute or more before it will be offered again.',
-  recovery: 'A key answered after KAME had already rotated at least once. The rotation worked.',
+  recovery: 'A key answered after API Rotation had already rotated at least once. The rotation worked.',
   rotation: 'This key was rested briefly and the next call went somewhere else.',
-  setting: 'You changed one of KAME’s settings. Recorded here so a later question — “did that setting help?” — can be answered against what the pool did before and after it.',
+  setting: 'You changed one of API Rotation’s settings. Recorded here so a later question — “did that setting help?” — can be answered against what the pool did before and after it.',
   stitch: 'An answer that was cut short was continued on another key and joined back up.',
   storm: 'A lot of keys refused at once, which is usually the provider rather than your keys.',
   stream_drop: 'The provider stopped in the middle of an answer.',
   handover: 'Your model could not answer now \u2014 its provider said it is busy (overloaded, or timing out on several keys), it was far slower than usual, or every key was resting \u2014 so this reply fell back to the next model of your fallback list. The next reply starts on your best model again.',
-  surfaced: 'KAME could not fix this one, so Hermes got the error and decides what to do next.',
-  switch: 'The previous key did not answer, so KAME asked this one instead \u2014 or a slow reply got a backup key racing it.',
-  wait: 'Every key was resting, so KAME waited instead of spending a request it knew would be refused.'
+  surfaced: 'API Rotation could not fix this one, so Hermes got the error and decides what to do next.',
+  switch: 'The previous key did not answer, so API Rotation asked this one instead \u2014 or a slow reply got a backup key racing it.',
+  wait: 'Every key was resting, so API Rotation waited instead of spending a request it knew would be refused.'
 }
 
 /**
@@ -3226,10 +3285,12 @@ const REASON_WORDS = {
   denied: 'this key may not use this model',
   host_breaker: 'Hermes stopped the call itself',
   insufficient_quota: 'the account is out of credit',
-  other: 'an error nothing recognised',
+  // 1.9.0.3 (C1): a refused request has its own words; an unknown error is no longer a dead end (its row opens).
+  other: 'an error API Rotation does not recognise - click to read it',
   per_minute: 'a per-minute rate limit',
   rate_limit: 'a rate limit',
   refused: 'the provider refused the call',
+  request: 'the provider refused the request itself, not a key - often a model name or address it does not know',
   server: 'the provider had a server error',
   timeout: 'the provider did not answer in time'
 }
@@ -3278,7 +3339,7 @@ const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait', 'setting', '
 /** The three views. `id` is what the filter chip stores. */
 const EVENT_VIEWS = [
   ['all', 'Everything', () => true],
-  ['did', 'What KAME did', event => GOOD_KINDS.has(event.kind)],
+  ['did', 'What API Rotation did', event => GOOD_KINDS.has(event.kind)],
   ['wrong', 'What went wrong', event => !GOOD_KINDS.has(event.kind)]
 ]
 
@@ -3405,6 +3466,29 @@ function sizedByLabel(source) {
     : ['unknown source', 'weak']
 }
 
+/**
+ * 1.9.0.3 (C1). Whether a row opens in the inspector. A bad or warn row always does: the panel used to say
+ * "an error nothing recognised" about a refused request and give no way to read it, because that row carried no
+ * text. A good row stays closed (nothing to check); a plain row opens only with a text.
+ */
+function canInspectEvent(event) {
+  const tone = (EVENT_LABELS[event.kind] ?? [event.kind, 'plain'])[1]
+  if (tone === 'good') return false
+  if (tone === 'bad' || tone === 'warn') return true
+
+  return Boolean(event.detail)
+}
+
+/** 1.9.0.3 (C1). What the inspector shows: the provider's text, or - when it sent none - that fact and what is known. */
+function inspectorText(event) {
+  if (event.detail) return event.detail
+  const lines = ['The provider sent no text with this error.']
+  if (event.error_type) lines.push(`Error type: ${event.error_type}`)
+  if (event.code) lines.push(`HTTP status: ${event.code}`)
+
+  return lines.join('\n')
+}
+
 function EventRow({ event, now }) {
   const [label, tone] = EVENT_LABELS[event.kind] ?? [event.kind, 'plain']
   // 1.5.0: the payload opens in an inspector, and only for a failure.
@@ -3422,7 +3506,8 @@ function EventRow({ event, now }) {
   // stays selectable, Escape closes it), and only on a row that represents a
   // failure. A recovery has nothing to inspect and no longer pretends to.
   const when = new Date((event.at ?? 0) * 1000)
-  const canInspect = Boolean(event.detail) && tone !== 'good'
+  // 1.9.0.3 (C1): a bad or warn row always opens - with no text from the provider it says so.
+  const canInspect = canInspectEvent(event)
   const sized = sizedByLabel(event.sized_by)
   // Relative, because this list redraws itself once a second and "4m ago" is
   // the question a person is actually asking of it. The wall clock stays, on
@@ -3657,7 +3742,7 @@ function PayloadInspector() {
             'font-mono text-[0.6875rem] leading-relaxed text-(--ui-text-secondary) select-text',
           key: 'payload'
         },
-        event.detail
+        inspectorText(event)
       )
     )
   )
@@ -3692,19 +3777,19 @@ function Heartbeat({ snap, now }) {
 
   let sentence
   if (!snap.installed) {
-    sentence = 'KAME is not installed in this Hermes process, so nothing will be recorded here.'
+    sentence = 'API Rotation is not installed in this Hermes process, so nothing will be recorded here.'
   } else if (stale) {
     sentence =
       `This reading is ${ago(readAge)} — the Hermes process that writes it may have stopped. ` +
       'Everything below is what it last knew, not what is happening now.'
   } else if (!calls) {
-    sentence = 'KAME is running and has not been asked to route a call yet in this process.'
+    sentence = 'API Rotation is running and has not been asked to route a call yet in this process.'
   } else if (lastCall) {
     sentence =
-      `KAME is running. ${calls} call${calls === 1 ? '' : 's'} routed, the last one ` +
+      `API Rotation is running. ${calls} call${calls === 1 ? '' : 's'} routed, the last one ` +
       `${ago((now - lastCall * 1000) / 1000)}. An empty list above means nothing failed.`
   } else {
-    sentence = `KAME is running. ${calls} call${calls === 1 ? '' : 's'} routed. An empty list above means nothing failed.`
+    sentence = `API Rotation is running. ${calls} call${calls === 1 ? '' : 's'} routed. An empty list above means nothing failed.`
   }
 
   return h(
@@ -3800,7 +3885,7 @@ function StillWaiting({ snap, channel }) {
         `${channel === 'main' ? 'chat' : taskLabel(row.task)} · ${modelOnly(row.identity)} — no answer for ${duration(row.waiting_s)}` +
           (row.failures ? `, ${count(row.failures, 'refusal', 'refusals')} so far` : '') +
           (row.reason ? `; last: ${REASON_WORDS[row.reason] ?? row.reason}` : '') +
-          '. KAME keeps trying, as configured.'
+          '. API Rotation keeps trying, as configured.'
       )
     )
   )
@@ -3966,7 +4051,7 @@ function EventsPage({ snap }) {
           active: view === 'did',
           count: good.length,
           key: 'did',
-          label: 'KAME rotating',
+          label: 'API Rotation rotating',
           onClick: () => setView('did'),
           title: 'Rotations, recoveries, continued answers and waits — the plugin doing its job.',
           tone: 'good'
@@ -3977,7 +4062,7 @@ function EventsPage({ snap }) {
           key: 'wrong',
           label: 'providers refusing',
           onClick: () => setView('wrong'),
-          title: 'What the providers said. A refusal here is not a fault in KAME; it is what KAME is for.',
+          title: 'What the providers said. A refusal here is not a fault in API Rotation; it is what API Rotation is for.',
           tone: bad ? 'bad' : 'plain'
         }),
         // 1.8.2.7: Hermes' background jobs are one click away, never mixed
@@ -4061,7 +4146,7 @@ function FirstRun() {
       h(
         'p',
         null,
-        'KAME is running, and no pooled key has been used yet. Nothing is wrong — this page fills in the first time ' +
+        'API Rotation is running, and no pooled key has been used yet. Nothing is wrong — this page fills in the first time ' +
           'a call goes out.'
       ),
       h(
@@ -4071,7 +4156,7 @@ function FirstRun() {
           'li',
           null,
           'Open Settings and paste several keys into one provider key field, separated by commas. Hermes stores ' +
-            'them as one credential; KAME reads them as the several keys they are.'
+            'them as one credential; API Rotation reads them as the several keys they are.'
         ),
         h('li', null, '/kame-keys does the same thing in bulk, from the chat.'),
         h('li', null, 'Send a message. The status bar chip starts showing this pool from the first call.')
@@ -4179,7 +4264,7 @@ function Neighbours({ snap }) {
               key: 'work'
             },
             other.installed === false
-              ? 'KAME not installed there'
+              ? 'API Rotation not installed there'
               : (() => {
                   const calls = Number(other.counters?.calls ?? 0)
                   const last = Number(other.counters?.last_call_at ?? 0)
@@ -4209,7 +4294,7 @@ function Neighbours({ snap }) {
           'p',
           { className: 'mt-2 text-xs text-amber-500', key: 'behind' },
           `${behind.length === 1 ? 'One of them is' : `${behind.length} of them are`} running a ` +
-            'different build of KAME than this Hermes. They load the plugin at start-up, so the ' +
+            'different build of API Rotation than this Hermes. They load the plugin at start-up, so the ' +
             'one that is behind will stay behind until it is restarted — and it is handling its ' +
             'own share of your traffic with the older code.'
         )
@@ -4226,7 +4311,7 @@ function WhatItSees({ snap }) {
       note:
         'Rows are what Hermes stored; keys are what they turned out to be. More keys than rows means a field ' +
         'holding several keys was read as several keys.',
-      title: 'What KAME can see'
+      title: 'What API Rotation can see'
     },
     !seen.readable
       ? h(
@@ -4429,7 +4514,7 @@ function KamePage() {
       h(
         'p',
         { className: 'text-xs text-(--ui-text-quaternary)', key: 'hint' },
-        'This page reads a file the backend half of KAME writes. If Hermes has just started, give it a moment.'
+        'This page reads a file the backend half of API Rotation writes. If Hermes has just started, give it a moment.'
       )
     )
   }
@@ -4466,7 +4551,7 @@ function KamePage() {
           h(
             'p',
             { className: 'font-medium', key: 'headline' },
-            'This install is incomplete — KAME is not rotating.'
+            'This install is incomplete — API Rotation is not rotating.'
           ),
           h(
             'p',
@@ -4505,7 +4590,7 @@ function KamePage() {
     ),
 
     !snap.installed &&
-      Note(`KAME is loaded but every call keeps the key Hermes resolved: ${snap.reason}`, 'plain', 'not-rotating'),
+      Note(`API Rotation is loaded but every call keeps the key Hermes resolved: ${snap.reason}`, 'plain', 'not-rotating'),
 
     h(StaleNote, { key: 'stale', snap }),
 
@@ -4522,7 +4607,7 @@ function KamePage() {
       Note(
         `${count(retired, 'key', 'keys', 'has', 'have')} left rotation — the provider refused ` +
           `${retired === 1 ? 'it' : 'them'} as ${retired === 1 ? 'a credential' : 'credentials'}, ` +
-          `so KAME no longer offers ${retired === 1 ? 'it' : 'them'} and nothing is being spent on ` +
+          `so API Rotation no longer offers ${retired === 1 ? 'it' : 'them'} and nothing is being spent on ` +
           `${retired === 1 ? 'it' : 'them'}. Nothing was deleted: paste the replacement over ` +
           `${retired === 1 ? 'it' : 'them'} in Hermes\u2019 own provider/key settings and ${retired === 1 ? 'it comes' : 'they come'} ` +
           'back by itself. Your other keys are carrying every turn meanwhile.',
@@ -4585,7 +4670,7 @@ function KamePage() {
               Field('Calls', counters.calls ?? 0),
               Field('Rotations', counters.rotations ?? 0),
               Field('Recovered', counters.recovered ?? 0, 'answered after a rotation'),
-              Field('Surfaced', counters.surfaced ?? 0, 'errors KAME let through'),
+              Field('Surfaced', counters.surfaced ?? 0, 'errors API Rotation let through'),
               counters.handed_over
                 ? Field('Fallbacks', counters.handed_over, 'replies your fallback list answered: the model was busy, resting or too slow')
                 : null,
@@ -4883,8 +4968,13 @@ function chipRowStatus(model, snap, nowMs) {
     const again = untilEpoch(entry?.probe_at, nowMs)
 
     return entry?.busy_kind === 'slow'
-      ? { text: `slow today · skipped for ${duration(busy)}`, tone: 'warn' }
-      : { text: again ? `busy · asked again in ${duration(again)}` : 'busy · asked again soon', tone: 'warn' }
+      ? { text: `slow to start (no first word in time) · skipped for ${duration(busy)}`, tone: 'warn' }
+      : {
+          text: again
+            ? `overloaded (the provider said so) · asked again in ${duration(again)}`
+            : 'overloaded (the provider said so) · asked again soon',
+          tone: 'warn'
+        }
   }
 
   const counts = keyCounts(pool)
@@ -4932,9 +5022,9 @@ function chipPopoverModel(snap, nowMs) {
   let sentence
 
   if (!snap) {
-    sentence = `${PRODUCT} has not been read yet.`
+    sentence = `${NAME} has not been read yet.`
   } else if (!snap.installed) {
-    sentence = `${PRODUCT} is loaded but not rotating: ${snap.reason ?? 'unknown'}`
+    sentence = `${NAME} is loaded but not rotating: ${snap.reason ?? 'unknown'}`
   } else if (said.tone !== 'good') {
     sentence = said.line2
   } else if (activity) {
@@ -4988,7 +5078,7 @@ function chipPopoverModel(snap, nowMs) {
     stale,
     title: 'API Rotation',
     tone: toneFor(snap, nowMs),
-    version: snap?.version ? `KAME ${snap.version}` : 'KAME'
+    version: snap?.version ? `API Rotation ${snap.version}` : 'API Rotation'
   }
 }
 
@@ -5208,7 +5298,7 @@ export default {
         area: PALETTE_AREA,
         data: {
           id: 'kame.open',
-          label: 'KAME: Open rotation panel',
+          label: 'API Rotation: Open rotation panel',
           keywords: ['kame', 'rotation', 'keys', 'quota', 'pool', 'api'],
           run: () => host.navigate(ROUTE)
         }
@@ -5220,7 +5310,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, pillRestorePlan, quotaShare, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, toneFor, watchPillRestore }
+export const panelHelpers = { KEY_STATE, PANEL_READS, canInspectEvent, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, modelStateTitle, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, inspectorText, pillRestorePlan, quotaShare, reasonText, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, speedCostParts, toneFor, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

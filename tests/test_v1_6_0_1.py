@@ -749,7 +749,7 @@ class TestTheDoctorLivesInThePlugin:
 
     def test_the_whole_report_renders_without_a_journal(self):
         text = self._doctor().render(self.SNAP, ())
-        for heading in ("Which KAME is running", "What it can see",
+        for heading in ("Which API Rotation is running", "What it can see",
                         "What each error costs a key", "Worth a person's time"):
             assert heading in text
 

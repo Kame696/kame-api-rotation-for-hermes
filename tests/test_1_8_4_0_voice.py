@@ -512,7 +512,7 @@ def test_no_key_appears_in_logs_or_in_the_wav_path(host, monkeypatch, caplog, tm
 def test_the_provider_states_what_the_host_reads(host, monkeypatch):
     provider = make(monkeypatch, Gemini())
     assert provider.name == "kame-gemini"
-    assert provider.display_name == "Gemini speech (KAME keys)"
+    assert provider.display_name == "API Rotation Gemini speech"
     assert provider.voice_compatible is True
     assert provider.streams_pcm is True and provider.stream_sample_rate == 24000
     voices = provider.list_voices()
@@ -724,7 +724,7 @@ def test_the_rotation_switch_off_stops_synthesize_and_stream_before_any_request(
     monkeypatch.setenv("KAME_ROTATION_DISABLED", "1")
     with pytest.raises(voice_mod.SpeechUnavailable) as caught:
         provider.synthesize("Hello.", str(tmp_path / "x.wav"), model=model())
-    assert "KAME rotation is off" in str(caught.value)
+    assert "API Rotation is off" in str(caught.value)
     with pytest.raises(voice_mod.SpeechUnavailable):
         list(provider.stream("Hello.", model=model(), format="pcm"))
     assert asked == [] and not (tmp_path / "x.wav").exists()

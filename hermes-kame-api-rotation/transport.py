@@ -621,13 +621,36 @@ def status_line(
 
     Shaped to pass :func:`passes_desktop_status_gate` — see the note above the
     gate for what happens to a line that does not. Within that constraint it
-    keeps what Agent Zero's spinner says, ``KAME`` and ``X/Y healthy``, because
+    keeps what Agent Zero's spinner says, ``API Rotation`` and ``X/Y keys ready``, because
     two ports of one plugin that describe themselves differently are two
     plugins to the person reading the screen.
+
+    1.9.0.3 (C4): the words were ``KAME`` and ``keys healthy``; the screen names the product "API Rotation"
+    and says "ready", the word the panel already uses. Agent Zero's spinner takes the same words in its own
+    release (parity ledger).
     """
     head = f"{symbol} {opener} {subject}".rstrip()
-    line = f"{head} — KAME {healthy}/{total} keys healthy"
+    line = f"{head} — API Rotation {healthy}/{total} keys ready"
     return f"{line}, {tail}" if tail else line
+
+
+#: 1.9.0.3 (C2): while a main-channel reply has no first word on any leg, the status row is redrawn this often.
+#: Hermes Desktop erases the provider-wait row on every delta it receives, and `_Spinner` will not repeat the same
+#: text inside `_REFRESH_S`, so the line KAME drew once at the start of an attempt was often gone (a reply silent
+#: for 85-218 s showed only Hermes' own clock). The text changes every time (it carries the seconds).
+_SILENT_LINE_EVERY_S = 5.0
+#: 1.9.0.3 (C10): a background request of the same task on another model this soon after an unanswered one is
+#: Hermes' auxiliary fallback hop (its own timeout is 30 s), which "Never" does not send.
+_AUX_HOP_WINDOW_S = 120.0
+
+
+def silent_wait_line(healthy: int, total: int, subject: str, seconds: float, extras: Sequence[str] = ()) -> str:
+    """1.9.0.3 (C2): the row while the model has said nothing yet - shaped to pass the Desktop's gate.
+
+    ``extras`` are the other things asked for this reply and still running ("a backup key is asking too",
+    "<model> is asking too"); ``seconds`` count from the reply's first attempt."""
+    tail = f"no first word yet ({max(0, int(seconds))}s)" + "".join(f"; {extra}" for extra in extras)
+    return status_line(healthy, total, tail, subject=subject)
 
 
 def recovery_clock(eta: Optional[float]) -> str:
@@ -741,7 +764,10 @@ class _Spinner:
                 cls._state.clear()
 
     @classmethod
-    def update(cls, owner: str, text: str, *, interval: Optional[float] = None) -> None:
+    def update(cls, owner: str, text: str, *, interval: Optional[float] = None, force: bool = False) -> None:
+        """1.9.0.3 (C1): ``force`` skips the same-text dedupe and the changed-text floor (the live-status switch
+        is still respected and the state is still recorded). Used once: the refused-request line, which must not
+        be swallowed because it came back less than a second after the attempt line."""
         if settings.is_on(settings.LIVE_STATUS_DISABLED):
             return
         every = cls._DEFAULT_INTERVAL_S if interval is None else interval
@@ -749,11 +775,12 @@ class _Spinner:
         key = str(owner)
         with cls._lock:
             last_say, last_text = cls._state.get(key, (0.0, ""))
-            if text == last_text and now - last_say < cls._REFRESH_S:
-                return
-            gate = cls._CHANGED_FLOOR_S if text != last_text else every
-            if now - last_say < gate:
-                return
+            if not force:
+                if text == last_text and now - last_say < cls._REFRESH_S:
+                    return
+                gate = cls._CHANGED_FLOOR_S if text != last_text else every
+                if now - last_say < gate:
+                    return
             cls._state[key] = (now, text)
             cls._state.move_to_end(key)
             while len(cls._state) > cls._MAX_TRACKED:
@@ -805,7 +832,7 @@ class _Vigil:
             when = f"next key in {format_duration(eta)}"
         resting = max(total - healthy, 0)
         self._emit(
-            f"KAME: {self.label} — {resting} of {total} key(s) resting, {when}. "
+            f"API Rotation: {self.label} — {resting} of {total} key(s) resting, {when}. "   # 1.9.0.3 (C4)
             f"Waiting {format_duration(waited)} so far; no requests are being "
             f"sent. Press stop to cancel."
         )
@@ -815,7 +842,7 @@ class _Vigil:
         if not self.notices:
             return
         self._emit(
-            f"KAME: {self.label} — back up after {format_duration(self.waited)}."
+            f"API Rotation: {self.label} — back up after {format_duration(self.waited)}."   # 1.9.0.3 (C4)
         )
 
     def _emit(self, message: str) -> None:
@@ -1585,6 +1612,8 @@ class KameTransport:
         #: were stopped early. Dict writes on the stop path only.
         self._aux_memo: Dict[Tuple[str, str], float] = {}
         self._aux_stopped: Dict[str, int] = {}
+        #: 1.9.0.3 (C10): task -> (identity, monotonic) of its latest request not yet answered.
+        self._aux_recent: Dict[str, Tuple[str, float]] = {}
         #: 1.8.2.9 (decisions/0032 A7): hour -> identity -> [chat requests, background requests], and
         #: hour -> (identity, task) -> background requests. An integer add where a request starts;
         #: 24 hourly buckets. Read by the publisher thread (``quota_use_view``).
@@ -1768,6 +1797,12 @@ class KameTransport:
         terminal error still tells us nothing bad about the key, and a
         mid-stream drop still does.
         """
+        if call is not None:
+            # 1.9.0.3 (C1): set below only when THIS failure is a refused request; cleared on every attempt.
+            try:
+                setattr(call, "_kame_refused_request", False)
+            except Exception:  # pragma: no cover - a test double without attributes
+                pass
         # 1.4.0: read the failure for everything it is willing to say, before
         # anything decides anything.
         #
@@ -2106,6 +2141,12 @@ class KameTransport:
             logger.info(
                 "kame: %s %s — the request itself was refused, not the key", label, type(exc).__name__
             )
+            if call is not None:
+                # 1.9.0.3 (C1): the surfaced row says "request" (not "other") and the rail says so.
+                try:
+                    setattr(call, "_kame_refused_request", True)
+                except Exception:  # pragma: no cover - a test double without attributes
+                    pass
             return "raise", kind, status
         # 1.7.0.0. Captured here because ``verdict`` is rebound to the storm
         # filter's verdict a few lines below, and this is the last point where
@@ -2683,6 +2724,24 @@ class KameTransport:
             vigil = None                                            # review L3: its label named the old model
             # pool_waited is kept: it is the user's "Give up after" clock (review M4)
 
+        if aux is not None and self._aux_hop_under_never(call, identity):
+            # 1.9.0.3 (C10): "Never" keeps a background job on the model Hermes first sent it to. On `auto` the
+            # host's own 30 s timeout made its auxiliary client try its fallback entry (a hop that never passes
+            # the classification hook): that hop is not sent. The FIRST request of a job is never stopped, whatever
+            # model Hermes chose for it (the chat's model of that conversation, or the provider's fast model for
+            # titles) - design review 2026-11-18.
+            _never_task = str(getattr(call, "task", "") or "")
+            self._aux_stopped[_never_task or "?"] = self._aux_stopped.get(_never_task or "?", 0) + 1
+            _emit(call,
+                  "gave_up",
+                  identity=identity,
+                  reason=f"background job {_never_task or 'unnamed'} not sent to {model_label(identity)}: "
+                         '"Never" keeps background jobs on your model')
+            _publish(self, None)
+            raise KameAuxStopped(aux_budget.never_message(_never_task, model_label(identity)))
+        if aux is not None:
+            self._note_aux_request(call, identity)      # 1.9.0.3 (C10): what a later hop is compared with
+
         if aux is not None:
             # A background job that cannot start well does not start: no request at all.
             refusal = self._aux_refusal(identity, keys, aux)
@@ -2860,15 +2919,21 @@ class KameTransport:
                         raise aux_stop("its wait ended")
                 if not recovered and total_cap > 0 and pool_waited >= total_cap and last_error is None:
                     self.surfaced += 1
-                    raise _with_retry_hint(ConnectionError(
+                    _waited_out = ConnectionError(
                         f"kame: every key for {label} stayed resting for {format_duration(pool_waited)}, "
-                        "past max_total_wait_seconds"))
+                        "past max_total_wait_seconds")
+                    # 1.9.0.3 (C1): one surfaced row for this error too
+                    self._surface(call, identity, "stopped waiting - past your Stop waiting time", exc=_waited_out)
+                    raise _with_retry_hint(_waited_out)
                 if not recovered:
                     if seen:
                         self.mid_stream_cuts += 1
                         raise call.cut(last_error)
                     if last_error is not None:
                         self.surfaced += 1
+                        # 1.9.0.3 (C1): one surfaced row for this error too
+                        self._surface(call, identity, last_kind or "refused", exc=last_error,
+                                      code=getattr(last_error, "status_code", None))
                         raise _with_retry_hint(host_text.take_off_the_advice(last_error), kind=last_kind,
                                                quota_window=last_window)
                     raise _with_retry_hint(call.cancel_error())
@@ -3120,7 +3185,13 @@ class KameTransport:
                         # off) is watched for a silence after its text too.
                         _answer_quiet = self._answer_quiet_s(call)
                         if _answer_quiet > 0.0:
-                            raw = _WatchedStream(raw, _answer_quiet)
+                            # 1.9.0.3 (C2): and, for a chat reply's first attempt, the silent-wait line until the
+                            # first chunk (a stream that is not raced has no other wait of KAME's to draw it in).
+                            _tick = None
+                            if getattr(call, "channel", "main") == "main" and not seen:
+                                _tick = lambda: self._say_silent_wait(     # noqa: E731
+                                    call, identity, keys, getattr(call, "_kame_started", started))
+                            raw = _WatchedStream(raw, _answer_quiet, tick=_tick)
                     _won = getattr(call, "_kame_answered_by", None)
                     if _won and _won != identity:
                         # 1.8.2.8 (review R1): the next model won the race - the rest of
@@ -3372,13 +3443,29 @@ class KameTransport:
                     raise call.cut(exc)
                 if verdict == "raise":
                     self.surfaced += 1
+                    # 1.9.0.3 (C1): a refused request (the is_terminal branch of _on_failure) is "request", not
+                    # "other"; every surfaced row carries the provider's text (advice off, redacted in
+                    # Events.add) and the error's class, so the panel row can always be opened.
+                    _refused = bool(getattr(call, "_kame_refused_request", False))
                     _emit(call, 
                         "surfaced",
                         identity=identity,
                         key=fingerprint(key),
-                        reason=kind or "refused",
+                        reason="request" if _refused else (kind or "refused"),
                         code=status,
+                        detail=host_text.without_advice(str(exc)),
+                        error_type=type(exc).__name__,
                     )
+                    if _refused:
+                        try:
+                            _Spinner.update(
+                                call.status_owner(),
+                                f"⚠ model returned {'HTTP ' + str(status) if status else 'an error'} for "
+                                f"{model_label(identity)} — the request itself was refused, not a key; "
+                                "Hermes decides what happens next",
+                                interval=0.0, force=True)
+                        except Exception:  # pragma: no cover - a courtesy line
+                            logger.debug("kame: could not say the refused request on the rail", exc_info=True)
                     raise host_text.take_off_the_advice(exc)
                 if verdict == "stitch":
                     # The 1.6.0.0 progress rule, which 1.8.1.8 applied to the
@@ -3528,6 +3615,8 @@ class KameTransport:
                         key=fingerprint(key),
                         reason="timeout",
                         code=status,
+                        detail=host_text.without_advice(str(exc)),      # 1.9.0.3 (C1)
+                        error_type=type(exc).__name__,
                     )
                     raise host_text.take_off_the_advice(exc)
                 if kind == "denied" and all(k in verdicts for k in set(keys)) and all(
@@ -3536,6 +3625,7 @@ class KameTransport:
                     # none of them has): no key can serve this pairing, the same proof as
                     # the unanimity rule below (review H1).
                     self.surfaced += 1
+                    self._surface(call, identity, kind, exc=exc, code=status, key=key)      # 1.9.0.3 (C1)
                     logger.error(
                         "kame: %s every key was refused [%s] - no key can serve this "
                         "request. Surfacing it instead of rotating for ever.", label, status)
@@ -3543,6 +3633,7 @@ class KameTransport:
                 if self._pool_agrees_it_is_the_request(verdicts, keys, kind, status) or (
                         self._pool_agrees_no_clock_fixes_it(identity, verdicts, keys, kind)):
                     self.surfaced += 1
+                    self._surface(call, identity, kind or "refused", exc=exc, code=status, key=key)   # 1.9.0.3 (C1)
                     logger.error(
                         "kame: %s every key answered %s%s and none answered at "
                         "all — that is evidence about the request, not about "
@@ -3755,6 +3846,8 @@ class KameTransport:
             carried = (bool(answered_with_text or saw_tools or shown or seen) if stream
                        else not _result_is_empty(result))
             if carried:
+                if aux is not None:
+                    self._aux_recent.pop(str(getattr(call, "task", "") or ""), None)   # 1.9.0.3 (C10): answered
                 self._note_reply_facts(call, aux_requests, resumes, pool_waited)
                 self._after_answer(call, identity, progress)
                 try:
@@ -4334,6 +4427,7 @@ class KameTransport:
         stall_handed = False
         key2_tried = False
         last_work_at = race_started
+        silent_next = race_started + _SILENT_LINE_EVERY_S      # 1.9.0.3 (C2): the next silent-wait line
         wire = getattr(call, "wire", wires.CHAT)
         try:
             setattr(call, "_kame_rescued", False)
@@ -4615,7 +4709,7 @@ class KameTransport:
                                                 ceiling=_SLOW_MAX_S, call=call)
                                 noted_slow.add(getattr(cross_leg, "cross"))
                         _emit(call, "switch", identity=identity,
-                              reason="every model of your list is slow right now - KAME keeps waiting for "
+                              reason="every model of your list is slow right now - API Rotation keeps waiting for "   # 1.9.0.3 (C4)
                                      "the first of them; nothing is cut")
                         slow_after = None
                         handover = None
@@ -4828,6 +4922,19 @@ class KameTransport:
                     if call.cancelled():
                         abort_all()
                         raise call.cancel_error()
+                    # 1.9.0.3 (C2): no first sign on any leg of a chat reply - keep the row saying so.
+                    if (provisional is None and winner is None and getattr(call, "channel", "main") == "main"
+                            and time.monotonic() >= silent_next):
+                        silent_next = time.monotonic() + _SILENT_LINE_EVERY_S
+                        extras = []
+                        live = [item for item in legs if not item.done]
+                        if any(item.is_hedge and not getattr(item, "cross", None) for item in live):
+                            extras.append("a backup key is asking too")
+                        for other in dict.fromkeys(getattr(item, "cross", None) for item in live):
+                            if other:
+                                extras.append(f"{model_label(other)} is asking too")
+                        self._say_silent_wait(call, identity, keys, getattr(call, "_kame_started", race_started),
+                                              extras)
                     if time.monotonic() - last_beat >= self.KEEPALIVE_S:
                         last_beat = time.monotonic()
                         yield _KEEPALIVE
@@ -5502,6 +5609,64 @@ class KameTransport:
         if len(busy_keys) >= self._busy_need(keys):
             return True
         return bool(busy_keys) and time.time() < self._busy_until.get(identity, 0.0) + _BUSY_FIRST_S
+
+    def _surface(self, call: "Call", identity: str, reason: str, *, exc: Optional[BaseException] = None,
+                 code: Optional[int] = None, key: str = "") -> None:
+        """1.9.0.3 (C1): the one ``surfaced`` event of an error that goes back to Hermes. The text is the
+        provider's own without Hermes' appended advice (``Events.add`` redacts it); never raises."""
+        try:
+            _emit(call, "surfaced", identity=identity, key=fingerprint(key) if key else "", reason=reason,
+                  code=code, detail=host_text.without_advice(str(exc)) if exc is not None else "",
+                  error_type=type(exc).__name__ if exc is not None else "")
+        except Exception:  # pragma: no cover - a readout must not end a turn
+            logger.debug("kame: could not record the surfaced error", exc_info=True)
+
+    def _say_silent_wait(self, call: "Call", identity: str, keys: Sequence[str], since: float,
+                         extras: Sequence[str] = ()) -> None:
+        """1.9.0.3 (C2): one silent-wait line on the status row (never raises; a courtesy)."""
+        try:
+            line = silent_wait_line(self.engine.healthy_count(identity, keys), len(keys),
+                                    model_label(identity), time.monotonic() - since, extras)
+            _Spinner.update(call.status_owner(), line, interval=0.0)
+        except Exception:  # pragma: no cover - the status line is a courtesy
+            logger.debug("kame: could not say the silent wait on the status line", exc_info=True)
+
+    def _aux_hop_under_never(self, call: "Call", identity: str) -> bool:
+        """1.9.0.3 (C10): true when "Never" is in force, the task is `auto` or unset in Hermes' config, and the
+        previous request of the same task went to ANOTHER model less than ``_AUX_HOP_WINDOW_S`` ago and has not
+        answered - Hermes' own auxiliary fallback hop. False whenever anything is unknown (no task name, a config
+        that cannot be read, no earlier request): then the job is sent as before (fail open).
+
+        Design review 2026-11-18: the first version compared the request with the main model of config.yaml, which
+        would have stopped legitimate first requests (a conversation on another model, a provider's fast model
+        for titles). Only a hop is stopped now."""
+        try:
+            if not (settings.is_on(settings.NO_MODEL_FALLBACK) or settings.model_switch_mode() == "never"):
+                return False
+            task = str(getattr(call, "task", "") or "").strip()
+            if not task:
+                return False
+            earlier = self._aux_recent.get(task)
+            if not earlier or time.monotonic() - earlier[1] >= _AUX_HOP_WINDOW_S:
+                return False
+            from .core import fallback_chain
+
+            if fallback_chain.auxiliary_model(task) != "":      # None: unreadable; text: the user chose a model
+                return False
+            return not fallback_chain._same(str(identity or "").strip().lower(), earlier[0])
+        except Exception:
+            return False
+
+    def _note_aux_request(self, call: "Call", identity: str) -> None:
+        """1.9.0.3 (C10): remember the model a background job was sent to, so a hop can be told from a start."""
+        try:
+            task = str(getattr(call, "task", "") or "").strip()
+            if task:
+                self._aux_recent[task] = (str(identity or "").strip().lower(), time.monotonic())
+                while len(self._aux_recent) > 64:
+                    self._aux_recent.pop(next(iter(self._aux_recent)))
+        except Exception:  # pragma: no cover - bookkeeping must never cost a job
+            pass
 
     def _aux_refusal(self, identity: str, keys: Sequence[str], aux: Any) -> str:
         """Why a background job should not even start, or ``""`` (decisions/0032 A3, step 1).
@@ -6339,9 +6504,22 @@ class KameTransport:
             replies, backup, race, burst, circle, rescue, rescue_won = (
                 list(v) + [0] * _SPEED_COLUMNS)[:_SPEED_COLUMNS]
             extra = backup + race + burst + rescue
+            # 1.9.0.3 (C3): only the legs that draw a token from the Speed budget are limited by Speed.
+            # Checked against the code, kind by kind:
+            #   backup - limited: `_hedge.may_start_backup` / `should_hedge`, then `note_hedge` (the budget).
+            #   burst  - NOT limited: `not burst and not may_start_backup` skips the check; the non-stream
+            #            probe burst (`_SPEED_BURST` in the probe path) never asks it either.
+            #   race   - NOT limited: cross-model races and the widen only ask `_race_ready` / `_claim_probe`.
+            #   rescue - mixed: a rescue on a KEY of the model asks `burst or may_start_backup`, a rescue on
+            #            another MODEL of the list does not. One column, so it is not in `limited`, and the panel
+            #            does not list it as "not limited by Speed" either (false for key rescues): it has its
+            #            own neutral sentence.
+            limited = backup
             return {"replies": replies, "backup": backup, "race": race, "burst": burst, "circle": circle,
                     "rescue": rescue, "rescue_won": rescue_won,
-                    "extra_pct": round(100.0 * extra / replies, 1) if replies else None}
+                    "extra_pct": round(100.0 * extra / replies, 1) if replies else None,
+                    "limited": limited,
+                    "limited_pct": round(100.0 * limited / replies, 1) if replies else None}
 
         return {"hour": pack(hour), "since_start": pack(list(self._speed_total))}
 
@@ -7220,11 +7398,13 @@ class _WatchedStream:
     The stream is read on its own thread so the reader can stop waiting; on a silence past the limit the
     stream is closed under it and the reader gets an :class:`_AnswerQuiet`."""
 
-    def __init__(self, stream: Any, quiet_s: float) -> None:
+    def __init__(self, stream: Any, quiet_s: float, tick: Any = None) -> None:
         self.stream = stream
         self.quiet_s = float(quiet_s or 0.0)
         self.q: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
         self.stop = threading.Event()
+        #: 1.9.0.3 (C2): called every ``_SILENT_LINE_EVERY_S`` while nothing at all has come from the stream.
+        self.tick = tick
 
     def _pump(self) -> None:
         stream = self.stream
@@ -7254,12 +7434,22 @@ class _WatchedStream:
         watch = _AnswerWatch(self.quiet_s)
         context = contextvars.copy_context()
         threading.Thread(target=context.run, args=(self._pump,), name="kame-answer-watch", daemon=True).start()
+        heard = False                           # 1.9.0.3 (C2): has anything come from the stream yet?
         while True:
+            limit = watch.timeout()
+            ticking = self.tick is not None and not heard and limit is None
             try:
-                kind, payload = self.q.get(timeout=watch.timeout())
+                kind, payload = self.q.get(timeout=_SILENT_LINE_EVERY_S if ticking else limit)
             except queue.Empty:
+                if ticking:
+                    try:
+                        self.tick()
+                    except Exception:  # pragma: no cover - a courtesy line
+                        logger.debug("kame: could not say the silent wait", exc_info=True)
+                    continue
                 self._cut()
                 raise watch.error()
+            heard = True
             if kind == "chunk":
                 watch.saw(payload)
                 yield payload

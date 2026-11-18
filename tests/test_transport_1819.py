@@ -479,7 +479,7 @@ class TestTheStatusLineReachesTheTurn:
         script = Script({KEYS[0]: [per_minute()], KEYS[1]: [[text("Hello", "stop")]]})
         list(_transport(clock).stream(FakeCall(script)))
         lines = [m for k, m in rail if k == "activity"]
-        assert lines[0] == "⏳ waiting on gemini-test — KAME 3/3 keys healthy"
+        assert lines[0] == "⏳ waiting on gemini-test — API Rotation 3/3 keys ready"
         assert all(transport.passes_desktop_status_gate(m) for m in lines)
         # A changed line waits at most the 1.8.1.7.2 floor of one second.
         clock.sleep(1.5)
@@ -491,7 +491,7 @@ class TestTheStatusLineReachesTheTurn:
         t.engine.mark(IDENTITY, KEYS[0], False, 30.0, "rate_limit")
         list(t.stream(call))
         assert [m for k, m in rail if k == "activity"][0] == (
-            "↻ waiting on gemini-test — KAME 2/3 keys healthy, trying the next key")
+            "↻ waiting on gemini-test — API Rotation 2/3 keys ready, trying the next key")
 
     def test_a_wait_counts_down_and_a_long_one_is_announced(self, clock, rail):
         t = _transport(clock)
@@ -501,7 +501,7 @@ class TestTheStatusLineReachesTheTurn:
         activity = [m for k, m in rail if k == "activity"]
         assert any("a key to come back" in m and "next key in" in m for m in activity)
         lifecycle = [m for k, m in rail if k == "lifecycle"]
-        assert any(m.startswith("KAME:") and "resting" in m for m in lifecycle)
+        assert any(m.startswith("API Rotation:") and "resting" in m for m in lifecycle)
         assert any("back up after" in m for m in lifecycle)
         # 1.8.1.8's throttle: a line whose text changed waits at most one second.
         assert len(activity) <= 400 + 5

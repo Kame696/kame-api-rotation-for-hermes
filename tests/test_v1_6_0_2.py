@@ -637,7 +637,7 @@ class TestNeighboursShowTheirWork:
 
     def test_the_row_reports_calls_and_installation(self):
         panel = (PLUGIN_DIR / "desktop" / "plugin.js").read_text(encoding="utf-8")
-        assert "KAME not installed there" in panel
+        assert "API Rotation not installed there" in panel
         assert "other.counters?.calls" in panel
         assert "other.installed === false" in panel
 

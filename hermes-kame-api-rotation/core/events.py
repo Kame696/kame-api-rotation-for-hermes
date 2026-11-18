@@ -134,6 +134,7 @@ class Events:
         detail: str = "",
         sized_by: str = "",
         task: str = "",
+        error_type: str = "",
     ) -> Dict[str, Any]:
         """Record one event. Never raises — a readout must not end a turn.
 
@@ -173,6 +174,10 @@ class Events:
             # that have one, so a Main row reads exactly as it always did.
             if task:
                 row["task"] = str(task)[:40]
+            # 1.9.0.3 (C1): the class name of the error a ``surfaced`` row carries ("NotFoundError"), so a
+            # row the provider sent no text with can still be read. Only on the rows that have one.
+            if error_type:
+                row["error_type"] = str(error_type)[:60]
         except Exception:
             return {}
         with self._lock:

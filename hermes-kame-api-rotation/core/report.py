@@ -107,14 +107,14 @@ def _stat_lines(stat: WindowStat) -> List[str]:
 
     counted = f"    {stat.blocks} block(s)"
     if stat.kame_sized:
-        counted += f", {stat.kame_sized} sized by KAME"
+        counted += f", {stat.kame_sized} sized by API Rotation"
     else:
-        counted += ", none sized by KAME"
+        counted += ", none sized by API Rotation"
     if stat.kame_dropped:
         # Said plainly because it is the one line here that is about the
         # plugin rather than about the provider: KAME read these, named a
         # deadline for them, and the pool kept a different one.
-        counted += f", {stat.kame_dropped} KAME sized but the pool did not keep"
+        counted += f", {stat.kame_dropped} API Rotation sized but the pool did not keep"
     if stat.shortest_predicted is not None and stat.longest_predicted is not None:
         if stat.shortest_predicted == stat.longest_predicted:
             counted += f", held {humanize(stat.shortest_predicted)}"
@@ -128,7 +128,7 @@ def _stat_lines(stat: WindowStat) -> List[str]:
     if stat.recoveries:
         observed = f"    came back after {humanize(stat.fastest_recovery)} at the fastest"
         if stat.early_recoveries:
-            observed += f", {stat.early_recoveries} before KAME expected"
+            observed += f", {stat.early_recoveries} before API Rotation expected"
         lines.append(observed)
 
     # The two findings worth a sentence of their own, and they are still
@@ -150,8 +150,8 @@ def _stat_lines(stat: WindowStat) -> List[str]:
         lines.append("    keys here recover earlier than they are held")
     if stat.looks_ignored:
         lines.append(
-            "    every deadline KAME read here was dropped before it reached the"
-            " pool — the cooldowns you are seeing are the host's, not KAME's"
+            "    every deadline API Rotation read here was dropped before it reached the"
+            " pool — the cooldowns you are seeing are the host's, not API Rotation's"
         )
     return lines
 
@@ -239,7 +239,7 @@ def render_asked(rows: Optional[List]) -> List[str]:
         if row.worth_pointing_at:
             # The inert-plugin signature, and the only line here that is a
             # claim about KAME rather than about the provider.
-            line += "  ← a wait KAME could not read"
+            line += "  ← a wait API Rotation could not read"
         lines.append(line)
     return lines
 
@@ -326,7 +326,7 @@ def render_repeat_offenders(
             f" · the provider {what}"
         )
     lines.append(
-        "  KAME keeps rotating past these. Replacing one is the only thing "
+        "  API Rotation keeps rotating past these. Replacing one is the only thing "
         "that clears it."
     )
     return lines
@@ -334,7 +334,7 @@ def render_repeat_offenders(
 
 def render_learning(stats: List[WindowStat]) -> List[str]:
     if not stats:
-        return ["  nothing recorded yet — no real refusal has passed through KAME"]
+        return ["  nothing recorded yet — no real refusal has passed through API Rotation"]
     lines: List[str] = []
     for stat in stats:
         lines.extend(_stat_lines(stat))
@@ -374,7 +374,7 @@ def render_kinds(stats: List[KindStat]) -> List[str]:
         if stat.provider != provider:
             provider = stat.provider
             lines.append(f"  {provider or '?'}")
-        detail = f"{stat.kame_sized} sized by KAME" if stat.kame_sized else "none sized"
+        detail = f"{stat.kame_sized} sized by API Rotation" if stat.kame_sized else "none sized"
         line = f"    {stat.kind:<26} ×{stat.blocks:<4} {detail}"
         if stat.contradicted:
             line += (
@@ -402,7 +402,7 @@ def render(
     quiet: Optional[List] = None,
     footer: str = "",
 ) -> str:
-    lines = ["KAME — per-model quota", "", "Benched right now"]
+    lines = ["API Rotation — per-model quota", "", "Benched right now"]
     lines.extend(render_benches(ledger, now=now, labels=labels))
     # Between the two older sections on purpose: benched keys are what is
     # unavailable, this is what is being used instead, and the learning tally
@@ -413,7 +413,7 @@ def render(
     # has to be asked first: was KAME even consulted, and could it answer?
     # A learning section that is empty because nothing failed and one that is
     # empty because every failure was declined are different problems.
-    lines.extend(["", "What KAME was asked (since Hermes started)"])
+    lines.extend(["", "What API Rotation was asked (since Hermes started)"])
     lines.extend(render_asked(asked))
     # Appended to the same section rather than given one of its own: it is the
     # same question — what reached KAME and what it could make of it — and on
@@ -424,7 +424,7 @@ def render(
     # the right answer to it. The tally below then says how well KAME is
     # reading each window.
     lines.extend(render_kinds(count_kinds(book, now=now)))
-    lines.extend(["", "What KAME has seen (last 14 days)"])
+    lines.extend(["", "What API Rotation has seen (last 14 days)"])
     lines.extend(render_learning(summarize(book, now=now)))
     # Last, and usually absent. It is the only section that asks the reader
     # to do something, so it belongs after the picture that justifies it.

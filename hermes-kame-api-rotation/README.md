@@ -83,6 +83,12 @@ tts:
 Hermes' live voice mode is OpenAI only, so it cannot use these keys. Agent Zero's voice runs
 locally and needs no key, so there is nothing to rotate there.
 
+The wake word is Hermes', not API Rotation's. If your Hermes config has `wake_word:` with
+`enabled: true`, Hermes itself listens for the phrase and opens voice mode when it hears it; its
+own log (`tools.wake_word`, "phrase detected - firing callback") shows each time. API Rotation
+never starts the microphone: it only transcribes what Hermes records. To stop voice mode opening
+by itself, set `wake_word.enabled: false` in Hermes' `config.yaml`.
+
 ## How it plugs into Hermes
 
 No runtime overrides. Hermes asks a provider profile for its model client

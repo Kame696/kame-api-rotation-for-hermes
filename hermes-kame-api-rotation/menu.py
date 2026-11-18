@@ -59,7 +59,7 @@ from .core.events import EVENTS
 logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame"
-COMMAND_DESCRIPTION = "KAME rotation status and settings (KAME)"
+COMMAND_DESCRIPTION = "API Rotation status and settings"
 COMMAND_ARGS_HINT = "[get | set <key> <value> | doctor]"
 
 #: Nominal label width. Kept as a parameter callers can pass so the intent of
@@ -96,7 +96,7 @@ ever touched, and the file is never printed back.
 Switches take true/false, on/off, or 1/0. Numbers are in seconds.
 
 Related: /kame-keys adds pooled keys in bulk, /kame-quota shows what is
-benched per model and what KAME has learned about each deadline."""
+benched per model and what API Rotation has learned about each deadline."""
 
 
 def _wrap(text: str, width: int) -> List[str]:
@@ -235,7 +235,7 @@ class MenuCommand:
             lines.append(
                 "  HERMES_STREAM_STALE_TIMEOUT is the lever; the ordinal arithmetic"
             )
-            lines.append("  itself is the host's, not KAME's.")
+            lines.append("  itself is the host's, not API Rotation's.")
             lines.append("")
             lines.append(
                 "  Since 1.1.1 this only happens when the answer could not be"
@@ -294,7 +294,7 @@ class MenuCommand:
         the note under the table is why that was a mistake worth naming rather
         than quietly reverting.
         """
-        lines = ["Host settings KAME reads:", ""]
+        lines = ["Host settings API Rotation reads:", ""]
         for name, default, what in _HOST_VARS:
             value = os.environ.get(name)
             shown = value if value is not None else f"{default} (host default)"
@@ -302,7 +302,7 @@ class MenuCommand:
         if settings.number(settings.STREAM_SILENCE_TIMEOUT, 0.0) > 0:
             lines.append("")
             lines.append(
-                "  KAME lowers HERMES_STREAM_READ_TIMEOUT around one attempt and puts"
+                "  API Rotation lowers HERMES_STREAM_READ_TIMEOUT around one attempt and puts"
             )
             lines.append(
                 "  it straight back, because stream_silence_timeout_seconds is set."
@@ -313,7 +313,7 @@ class MenuCommand:
             lines.append("  a local endpoint. Set that setting to 0 to stop it entirely.")
         else:
             lines.append("")
-            lines.append("  KAME sets none of them.")
+            lines.append("  API Rotation sets none of them.")
         return lines
 
     def _desktop_lines(self) -> List[str]:
@@ -428,9 +428,9 @@ class MenuCommand:
 
     def get(self) -> str:
         rows = [
-            f"KAME settings — {__version__}",
+            f"API Rotation settings — {__version__}",
             "",
-            "The value in force, and where it came from. KAME works with none",
+            "The value in force, and where it came from. API Rotation works with none",
             "of these touched.",
         ]
         # Grouped the same way, and for the same reason, as the panel: twelve
@@ -479,7 +479,7 @@ class MenuCommand:
             listing = "\n".join(
                 f"  {name}" for name in list(settings.ALL_FLAGS) + list(settings.ALL_NUMBERS)
             )
-            return f"Unknown setting {key}. KAME understands:\n{listing}"
+            return f"Unknown setting {key}. API Rotation understands:\n{listing}"
         variable = settings.env_name(key)
         if not variable:
             return f"{key} has no environment variable, so it cannot be set from here."
@@ -542,10 +542,10 @@ class MenuCommand:
         """
         binding = self._binding
         if binding is None:
-            return "  KAME is not installed in this Hermes process."
+            return "  API Rotation is not installed in this Hermes process."
         calls = int(getattr(binding, "calls", 0) or 0)
         if not calls:
-            return "  KAME is running and has not been asked to route a call yet."
+            return "  API Rotation is running and has not been asked to route a call yet."
         import time as _time
 
         last = float(getattr(binding, "last_call_at", 0.0) or 0.0)
@@ -554,21 +554,21 @@ class MenuCommand:
             if last
             else ""
         )
-        return f"  KAME is running — {calls} call(s) routed{when}."
+        return f"  API Rotation is running — {calls} call(s) routed{when}."
 
     def events(self, limit: int = 20) -> str:
         """The recent decisions, newest first. Fingerprints only — never a key."""
         rows = EVENTS.recent(limit)
         if not rows:
             return (
-                "KAME events\n\n"
+                "API Rotation events\n\n"
                 "  Nothing recorded yet. Rotations, quarantines, cut streams and\n"
                 "  continuations appear here as they happen.\n\n"
                 + self._alive()
             )
         import time as _time
 
-        out = [f"KAME events — the last {len(rows)}, newest first", ""]
+        out = [f"API Rotation events — the last {len(rows)}, newest first", ""]
         for row in rows:
             when = _time.strftime("%H:%M:%S", _time.localtime(row.get("at", 0)))
             parts = [row.get("kind", "?")]
@@ -632,7 +632,7 @@ class MenuCommand:
         except Exception:
             logger.debug("kame: doctor could not read the snapshot", exc_info=True)
             return (
-                "KAME doctor\n\n"
+                "API Rotation doctor\n\n"
                 "  This process could not read its own state. That is itself\n"
                 "  the finding: see the Hermes log for the exception."
             )

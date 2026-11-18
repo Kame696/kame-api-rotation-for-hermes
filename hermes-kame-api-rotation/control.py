@@ -116,7 +116,7 @@ def poll() -> bool:
             {
                 "id": identifier,
                 "ok": False,
-                "detail": f"this KAME understands control schema {SCHEMA}, "
+                "detail": f"this API Rotation understands control schema {SCHEMA}, "
                 f"the panel wrote {request.get('schema')!r}",
             }
         )
@@ -135,7 +135,7 @@ def poll() -> bool:
         # ``poll`` promises never to raise, and the panel waits on this id:
         # an unrecorded crash reads there as "the backend is not running".
         logger.warning("kame: panel request %s failed", action, exc_info=True)
-        ok, detail = False, "KAME could not apply that — see the log"
+        ok, detail = False, "API Rotation could not apply that — see the log"
     _record({"id": identifier, "action": action, "key": key, "ok": ok, "detail": detail})
     if identifier:
         _applied.append(identifier)
@@ -300,7 +300,7 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
     from . import envfile, settings
 
     if action not in ACTIONS:
-        return False, f"{action or 'a request with no action'} is not something KAME does"
+        return False, f"{action or 'a request with no action'} is not something API Rotation does"
 
     if action == "forget_busy":
         # 1.8.2.9 (decisions/0031 2.7): the panel's 'Try this model now'. Applied on the heartbeat,
@@ -327,7 +327,7 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
             from .core.carousel import ENGINE
 
             if not ENGINE.known(name):
-                return False, f"KAME has not used {name} yet, so there is nothing to clear"
+                return False, f"API Rotation has not used {name} yet, so there is nothing to clear"
             ENGINE.reset_pool(name)
             try:
                 from . import facade
@@ -426,7 +426,7 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
     # panel built against an older release keeps working.
     key = settings.canonical(key)
     if not settings.known(key):
-        return False, f"{key or 'an unnamed setting'} is not a KAME setting"
+        return False, f"{key or 'an unnamed setting'} is not an API Rotation setting"
 
     if action == "reset":
         return _forget_one(key)

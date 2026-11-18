@@ -275,15 +275,16 @@ def _fallback_view(rows: List[Dict[str, Any]], binding: Any = None) -> Dict[str,
                 "kame_serves": bool(row),
             }
 
+        # 1.9.0.3 (C4): the sentences below are read on the panel: they name the product "API Rotation".
         entries = ([entry(primary, "primary")] if primary else []) + [entry(i, "fallback") for i in chain]
         flag_on = settings.is_on(settings.NO_MODEL_FALLBACK)
         mode = settings.model_switch_mode()
         threshold = settings.number(settings.FAILOVER_AFTER, 60.0) if mode == "timed" else 0.0
         if not chain:
-            state, why = "no_chain", ("Switching: off - no fallback models are set in Hermes, so KAME waits for your keys. "
+            state, why = "no_chain", ("Switching: off - no fallback models are set in Hermes, so API Rotation waits for your keys. "
                                  "Add some with hermes fallback add and switching is automatic.")
         elif flag_on:
-            state, why = "off_by_flag", "Switching: off - \"Ignore my fallback list\" is on, so KAME waits for your keys."
+            state, why = "off_by_flag", "Switching: off - \"Ignore my fallback list\" is on, so API Rotation waits for your keys."
         elif mode == "never":
             state, why = "off_by_zero", "Fallback: off - 'Fallback' is set to Never."
         elif mode == "timed" and threshold <= 0:
@@ -294,7 +295,7 @@ def _fallback_view(rows: List[Dict[str, Any]], binding: Any = None) -> Dict[str,
                                 "as soon as it can answer.")
         else:
             state, why = "on", ("Switching: automatic - when your provider is busy, Hermes answers with the next "
-                                "model below at once; when your keys are resting, after a few seconds (KAME learns "
+                                "model below at once; when your keys are resting, after a few seconds (API Rotation learns "
                                 "how long your model usually takes). Your model comes back as soon as it can answer, "
                                 "and the first model in the list is always tried first.")
         # 1.8.2.7: Hermes switches at most agent.api_max_retries times in one

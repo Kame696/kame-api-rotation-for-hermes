@@ -7,6 +7,40 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.3] - 2026-11-18 - what the screen says, and voice that does not get lost (in development, not released)
+
+Words on the screen, one lost-voice fix, and a few more things the panel could not tell you. Nothing here changes
+which key or model answers.
+
+- **Every failure row can be opened.** A request the provider itself refused (for example "404 page not found")
+  is now a row that says so, and opening it shows what the provider sent, or says the provider sent no text and
+  gives the error type and HTTP status. The rail says it too: a refused request is not a key problem, Hermes decides
+  what happens next. Rows that were "an error nothing recognised" now say "click to read it".
+- **The status row keeps talking while the model is silent.** From the fifth second with no first word, the row is
+  redrawn every five seconds with the seconds so far, the keys ready, and which backup key or other model is asking too.
+- **The Speed line compares like with like.** It now counts only backup requests against what Speed allows. Keys
+  asked together while they were running dry and other models of your list asked beside a late reply are listed
+  apart, as not limited by Speed; re-asks of a reply that stopped mid-thought have their own sentence.
+- **"API Rotation" on the screen instead of "KAME"** (chip, panel sentences, the status row, waiting notices,
+  settings, slash-command answers, the voice providers' names). Command names, setting keys and log lines keep
+  their `kame` names.
+- **"Slow" and "busy" say what they mean:** "slow to start (no first word in time)" and "overloaded (the provider
+  said so)", each with a hover that explains it.
+- **Voice is not lost when the voice model's keys rest.** Listening tries the Gemini models of your list in its order
+  before giving up, within the same 30 seconds, never another provider, and only the chosen model under "Never". The
+  error names the model; a failed recording leaves a line in the log.
+- **The wake word is Hermes', not API Rotation's.** The README now says where to turn it off.
+- **A background job stopped before it was sent no longer says "timed out after 0 tries".**
+- **The help of "Wait for the first token" now says the real numbers** (30 s, 120 s for thinking models, a second
+  more per 2,000 prompt tokens).
+- **"Never" keeps background jobs on their model too.** When a background job whose model is left on `auto` in
+  Hermes does not answer, Hermes' own fallback used to send it to the next model of its list; with "Never" that hop
+  is no longer sent. The job's first request is never stopped.
+
+Record: `PLAN_1.9.0.3.md`.
+
+---
+
 ## [1.9.0.2] - 2026-11-16 - Stop stops; Reset works again; the wait is said
 
 Fixes only, from one installed week of 1.9.0.1 read in its own logs. No new setting, no new behaviour.

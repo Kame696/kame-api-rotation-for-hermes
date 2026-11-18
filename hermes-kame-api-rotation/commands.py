@@ -41,7 +41,7 @@ from .core.multikey import split_value
 logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame-keys"
-COMMAND_DESCRIPTION = "Bulk-add and inspect pooled API keys (KAME)"
+COMMAND_DESCRIPTION = "Bulk-add and inspect pooled API keys"
 COMMAND_ARGS_HINT = "add <k1,k2,k3> | import <file> | split | status | reset"
 
 DEFAULT_PROVIDER = "gemini"

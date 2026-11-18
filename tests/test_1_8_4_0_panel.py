@@ -65,7 +65,7 @@ def test_rows_without_key_states_do_not_break_the_totals():
 def test_only_the_three_quick_controls_have_a_line():
     lines = {key: settings.describe(key)["line"] for key in (settings.HEDGE_MODE, settings.MODEL_SWITCH, settings.REPLY_NOTICE)}
     assert lines == {
-        "hedge_mode": "How hard KAME works to answer sooner.",
+        "hedge_mode": "How hard API Rotation works to answer sooner.",
         "model_switch": "When your model cannot answer, the next one on your list does.",
         "reply_notice": "A short notice after each reply.",
     }

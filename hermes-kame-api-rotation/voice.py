@@ -13,7 +13,7 @@ under two seconds is waited for, once), and Hermes shows its own speech error. O
 budget of 60 s, and a second transport error in it ends it at once.
 
 The rotation switch stops speech too: with KAME's rotation off, a sentence raises
-``SpeechUnavailable("KAME rotation is off")``. The host does not fall back to another speech
+``SpeechUnavailable("API Rotation is off")``. The host does not fall back to another speech
 provider by itself (voice mode calls ``synthesize`` without asking ``is_available``), so choose
 another ``tts.provider`` in the profile if you want speech while rotation is off.
 
@@ -45,7 +45,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "kame-gemini"
-DISPLAY_NAME = "Gemini speech (KAME keys)"
+DISPLAY_NAME = "API Rotation Gemini speech"
 SAMPLE_RATE = 24000
 FALLBACK_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_VOICE = "Kore"
@@ -303,7 +303,7 @@ def _speak(text: str, voice: str, model: str) -> bytes:
     # F9: the rotation switch stops speech too. The host does not ask ``is_available`` before it
     # calls ``synthesize`` in voice mode, so the provider cannot rely on being skipped.
     if not _facade().enabled():
-        raise SpeechUnavailable("KAME rotation is off")
+        raise SpeechUnavailable("API Rotation is off")   # 1.9.0.3 (C4)
     engine = transport.engine
     base = _base_url()
     identity = _identity(model, base)        # 1.9.0.2 (H3): the chat's bucket

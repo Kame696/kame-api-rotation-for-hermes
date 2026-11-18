@@ -297,7 +297,7 @@ def test_a_missing_key_is_an_error_envelope(host, monkeypatch, tmp_path):
 def test_rotation_off_is_an_error_envelope(host, monkeypatch, tmp_path):
     monkeypatch.setattr(facade, "enabled", lambda: False)
     out = make(monkeypatch, Gemini()).transcribe(clip(tmp_path), model=model())
-    assert out["success"] is False and "rotation is off" in out["error"]
+    assert out["success"] is False and "API Rotation is off" in out["error"]
 
 
 # --- refusals that are not the key's -------------------------------------------------------------

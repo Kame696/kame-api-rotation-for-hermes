@@ -311,7 +311,7 @@ def check_host_seams() -> Dict[str, object]:
         summary = (
             "REQUIRED HOST SEAMS MISSING: "
             + ", ".join(req_missing)
-            + " — KAME may not rotate"
+            + " — API Rotation may not rotate"
         )
 
     if drift:
@@ -345,7 +345,7 @@ def describe(report: Dict[str, object]) -> str:
         return f"build {report.get('fingerprint')} — complete"
     missing = report.get("missing_required") or []
     return (
-        "this install is incomplete and KAME will not rotate with it: "
+        "this install is incomplete and API Rotation will not rotate with it: "
         + ", ".join(str(m) for m in missing)
         + f" missing from {report.get('root')}. Re-deploy the whole package "
         "directory — a copy that does not recurse drops core/ and leaves a "

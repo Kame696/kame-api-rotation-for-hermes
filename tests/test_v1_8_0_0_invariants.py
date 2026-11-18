@@ -435,7 +435,7 @@ class TestI6KameVoiceNeverEntersHistory:
         vigil.started -= dispatch_binding.VIGIL_FIRST_S + 1  # force "waited long enough"
         vigil.maybe_speak(healthy=0, total=1, eta=5.0)
         assert vigil.agent.status_calls, "the notice never fired"
-        assert any("KAME:" in msg for msg in vigil.agent.status_calls)
+        assert any("API Rotation:" in msg for msg in vigil.agent.status_calls)
         # Nothing was written to the text channel a model turn would be built
         # from -- the vigil has no way to reach it at all.
         assert vigil.agent.shown == []

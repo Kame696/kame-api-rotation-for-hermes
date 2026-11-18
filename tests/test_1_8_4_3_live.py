@@ -670,8 +670,8 @@ def test_l7_rescues_asked_is_in_the_row_only_above_zero(guard, monkeypatch, tmp_
 
 def test_l7_the_panel_says_it_and_reads_the_fields():
     js = (HERE / "hermes-kame-api-rotation" / "desktop" / "plugin.js").read_text(encoding="utf-8")
-    assert "of them re-asked a reply that stopped mid-thought;" in js
-    assert "answered first." in js and "hour.rescue_won ?? 0" in js
+    assert "re-asked ${rescue === 1" in js and "mid-thought." in js
+    assert "of the re-asks answered first." in js and "hour.rescue_won" in js
     assert "'speed.hour.rescue'," in js and "'speed.hour.rescue_won'," in js
     fields = js[js.index("'speed.cap_pct'"):js.index("'totals.physical_keys'")]
     names = [line.strip().strip(",").strip("'") for line in fields.splitlines() if line.strip().startswith("'")]

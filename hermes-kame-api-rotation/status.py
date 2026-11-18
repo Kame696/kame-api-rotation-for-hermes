@@ -28,7 +28,7 @@ from .core.ledger import Ledger
 logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame-quota"
-COMMAND_DESCRIPTION = "Show per-model quota benches and what KAME has learned (KAME)"
+COMMAND_DESCRIPTION = "Show per-model quota benches and what API Rotation has learned"
 COMMAND_ARGS_HINT = "[reset]"
 
 _FOOTER = (
@@ -40,7 +40,7 @@ _FOOTER = (
 
 _HELP = """/kame-quota — per-model quota state
 
-  /kame-quota          what is benched now, and what KAME has recorded
+  /kame-quota          what is benched now, and what API Rotation has recorded
   /kame-quota reset    forget the recorded history and the counts below
                        (live benches and the pool are left alone)
   /kame-quota help     this text
@@ -54,18 +54,18 @@ field has no model in it.
 just the model that hit it — so the key is held everywhere until it lapses.
 Without that wording, the limit is treated as this model's alone.
 
-"tested N×" means a model had no usable key left and KAME handed this one
+"tested N×" means a model had no usable key left and API Rotation handed this one
 back anyway, to check whether the deadline it chose was too long. It never
 does that while any other key is available for that model.
 
 "tested and it worked" means one of those tries came back clean. The deadline
 was wrong, so the key is back in rotation for good — the row stays on this
-list only because it is what lets KAME keep overriding Hermes' own cooldown
+list only because it is what lets API Rotation keep overriding Hermes' own cooldown
 until that cooldown runs out on its own.
 
 "held longer, this deadline proved short before" means the opposite mistake:
 twice in a row this key came back at the deadline and was refused again within
-minutes, on this same model and this same kind of limit. So KAME is holding it
+minutes, on this same model and this same kind of limit. So API Rotation is holding it
 past what the provider said — doubling each time it happens again, never more
 than 8× and never more than a day, and never for a limit that reads like the
 key is simply used up. The provider's own number is left untouched underneath,
@@ -78,18 +78,18 @@ cap that rolls at midnight — "held longer" means half an hour later, then an
 hour, then two. Not double: a clock that is a few minutes off is off by
 minutes, and the next midnight is already a day away.
 
-"What KAME was asked" counts every failure the classification hook saw since
-Hermes started, and how many of them KAME could size. Most lines will say "none
+"What API Rotation was asked" counts every failure the classification hook saw since
+Hermes started, and how many of them API Rotation could size. Most lines will say "none
 sized, left to the host" and that is the plugin working as designed: it declines
 everything it does not genuinely recognise, because the built-in classifier is
 good and overriding it with a guess is worse than staying quiet. The line worth
 looking at is a rate limit — a 429 — with nothing sized, because reading the
 wait out of a 429 is the entire job on that status. A column of those means the
-provider changed the shape of its answer and KAME has gone quiet without saying
+provider changed the shape of its answer and API Rotation has gone quiet without saying
 so. Counts only: provider and status number, never any part of the error text.
 
 A line in that section reading "answered with nothing" is a call that came back
-without a word and without a tool call. It only appears when it happens. KAME
+without a word and without a tool call. It only appears when it happens. API Rotation
 normally treats a call that answers as proof the key works and drops the bench
 on it for good, but a key that has run out does not always say so — on a free
 tier it can return an empty turn instead of a refusal — so an empty answer is
@@ -101,7 +101,7 @@ looks healthy, the key is the thing to look at, not the plugin.
 "How the requests are spread" is the other half of the plugin, the half that
 works while nothing is wrong: of the keys that are healthy, which one gets the
 next request. Hermes' own answer is the first one on the list every time, so a
-per-minute limit is hit by one key while the rest sit idle. KAME hands out the
+per-minute limit is hit by one key while the rest sit idle. API Rotation hands out the
 least recently loaded instead, counts it as busy the moment it is handed out
 so two calls at once do not pick the same key, and puts a key whose bench just
 lapsed behind the ones that have been resting. The numbers here are exactly
@@ -315,11 +315,11 @@ class QuotaCommand:
         if self._binding is None:
             asked = self._asked()
             lines = [
-                "Per-model quota memory is not active — KAME is sizing cooldowns",
+                "Per-model quota memory is not active — API Rotation is sizing cooldowns",
                 "but the credential pool binding did not install. Check the log",
                 "for the reason; the plugin is still doing its first job.",
                 "",
-                "What KAME was asked (since Hermes started)",
+                "What API Rotation was asked (since Hermes started)",
             ]
             # The one thing that can still be said truthfully in this mode,
             # and the thing worth saying: whether the half that *is* running

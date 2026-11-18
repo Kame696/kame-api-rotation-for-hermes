@@ -372,7 +372,7 @@ class TestTheReport:
             block(book, at=NOW + index * HOUR, sized_by=SIZED_BY_KAME)
         text = report.render(Ledger(), book, now=NOW + 2 * HOUR)
         assert "did not keep" not in text
-        assert "2 sized by KAME" in text
+        assert "2 sized by API Rotation" in text
 
     def test_the_report_says_it_only_watches(self):
         text = report.render(Ledger(), Journal(), now=NOW, footer="observations only")
@@ -447,7 +447,7 @@ class TestTheAskedSection:
 
     def test_a_quiet_process_says_so_rather_than_showing_a_blank(self):
         text = report.render(Ledger(), Journal(), now=NOW)
-        assert "What KAME was asked (since Hermes started)" in text
+        assert "What API Rotation was asked (since Hermes started)" in text
         assert "nothing has failed yet since Hermes started" in text
 
     def test_it_shows_how_much_of_what_it_saw_it_could_read(self):
@@ -464,7 +464,7 @@ class TestTheAskedSection:
 
     def test_a_rate_limit_it_never_read_is_pointed_at(self):
         lines = report.render_asked([self._seen("gemini", 429, 12, 0)])
-        assert "a wait KAME could not read" in lines[0]
+        assert "a wait API Rotation could not read" in lines[0]
 
     def test_and_one_reading_takes_the_flag_away(self):
         lines = report.render_asked([self._seen("gemini", 429, 12, 1)])
@@ -541,8 +541,8 @@ class TestTheEmptyAnswerLines:
         text = report.render(
             Ledger(), Journal(), now=NOW, quiet=[self._seen("gemini", 2)]
         )
-        asked = text.index("What KAME was asked (since Hermes started)")
-        learned = text.index("What KAME has seen (last 14 days)")
+        asked = text.index("What API Rotation was asked (since Hermes started)")
+        learned = text.index("What API Rotation has seen (last 14 days)")
         assert asked < text.index("answered with nothing") < learned
 
     def test_it_never_claims_a_failure_happened(self):

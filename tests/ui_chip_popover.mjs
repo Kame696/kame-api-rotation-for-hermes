@@ -71,7 +71,7 @@ const view = (snap, at = NOW) => chipPopoverModel(snap, at * 1000)
 
 let v = view(snapshot())
 assert.equal(v.title, 'API Rotation')
-assert.equal(v.version, 'KAME 1.8.3.1')
+assert.equal(v.version, 'API Rotation 1.8.3.1')   // 1.9.0.3 (C4): the screen names the product API Rotation
 assert.equal(v.button, 'Open API Rotation')
 assert.equal(v.sentence, 'Ready - next reply: main-model')
 // 1.8.4.0 (U1): ONE count on the screen - the keys of the model the next reply goes to. This line used
@@ -123,13 +123,13 @@ const busy = snapshot({
 })
 
 v = view(busy)
-assert.equal(v.models[0].status, 'busy · asked again in 30s')
+assert.equal(v.models[0].status, 'overloaded (the provider said so) · asked again in 30s')
 assert.equal(v.models[0].tone, 'warn')
 v = view({
   ...busy,
   fallback: { entries: [{ busy_kind: 'slow', busy_until: NOW + 600, identity: 'gemini:main-model' }, { identity: 'gemini:second' }], state: 'on' }
 })
-assert.equal(v.models[0].status, 'slow today · skipped for 10m 00s')
+assert.equal(v.models[0].status, 'slow to start (no first word in time) · skipped for 10m 00s')
 
 // resting, and out for today
 v = view(snapshot({ pools: [{ identity: 'gemini:main-model', key_states: [['k0', 's', NOW + 130], ['k1', 's', NOW + 300]], keys: 2 }] }))
@@ -163,10 +163,10 @@ assert.equal(v.tone, 'muted')
 
 // not installed, and nothing read yet
 v = view({ installed: false, reason: 'no hermes', updated_at: NOW, version: '1.8.3.1' })
-assert.equal(v.sentence, 'KAME API Rotation is loaded but not rotating: no hermes')
+assert.equal(v.sentence, 'API Rotation is loaded but not rotating: no hermes')
 assert.deepEqual(v.models, [])
 v = chipPopoverModel(null, NOW * 1000)
-assert.equal(v.sentence, 'KAME API Rotation has not been read yet.')
-assert.equal(v.version, 'KAME')
+assert.equal(v.sentence, 'API Rotation has not been read yet.')
+assert.equal(v.version, 'API Rotation')
 
 console.log('chip popover: ok')

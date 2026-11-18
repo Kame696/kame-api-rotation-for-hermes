@@ -1167,7 +1167,7 @@ CONSEQUENTIAL = frozenset({ROTATION_DISABLED, CAROUSEL_DISABLED})
 #: read in.
 META = {
     ROTATION_DISABLED: (
-        "Turn KAME off",
+        "Turn API Rotation off",
         "Every call keeps the key Hermes resolved and failures follow Hermes' "
         "own retry rules. The plugin stays installed and does nothing.",
     ),
@@ -1178,7 +1178,7 @@ META = {
     ),
     RESOLVER_DISABLED: (
         "Send multi-key values whole",
-        "KAME stops keeping a comma-separated key variable as one pool row per "
+        "API Rotation stops keeping a comma-separated key variable as one pool row per "
         "key, and Hermes reads it as one long key again, which no provider "
         "accepts. `/kame-keys split` still does it once by hand.",
     ),
@@ -1202,7 +1202,7 @@ META = {
         "Stop continuing cut answers",
         "An answer cut off mid-stream is handed back to Hermes, which restarts "
         "it behind a '[System: The previous response was cut off...]' note, "
-        "instead of KAME continuing it on another key.",
+        "instead of API Rotation continuing it on another key.",
     ),
     DAILY_COOLDOWN: (
         "Daily quota cooldown",
@@ -1221,7 +1221,7 @@ META = {
     # untouched — a title is read once and a name is typed for years.
     STREAM_SILENCE_TIMEOUT: (
         "Wait for the first token",
-        "For a provider that accepts a request and then sends nothing. KAME "
+        "For a provider that accepts a request and then sends nothing. API Rotation "
         "waits this long for the first character — and for every character "
         "after it — before dropping that key and asking the next one. Zero, "
         "the default, means only Hermes' own 120s applies. Leave it at zero "
@@ -1238,7 +1238,7 @@ META = {
     ),
     RECORDER_DISABLED: (
         "Stop recording refusals",
-        "KAME writes each refusal a provider sends to refusals.jsonl beside its "
+        "API Rotation writes each refusal a provider sends to refusals.jsonl beside its "
         "own state — status, message and body, with API keys removed first — and "
         "decides nothing from it. It is there because the field that tells a "
         "per-minute quota from a per-day one could not be read before 1.7.0.0, "
@@ -1248,7 +1248,7 @@ META = {
     ),
     CALL_TIMINGS_DISABLED: (
         "Stop timing calls",
-        "KAME writes one line per attempt to calls.jsonl beside its own state: "
+        "API Rotation writes one line per attempt to calls.jsonl beside its own state: "
         "how long until anything came back, how long until the answer started, "
         "how long the attempt took in total, and how much of the turn had "
         "already been spent waiting for a key. It exists so “is it slow, and "
@@ -1264,17 +1264,17 @@ META = {
         "Stop reading the quota window",
         "Google's per-minute and per-day free-tier quotas report the identical "
         "metric name and differ only in one field, quotaId, which Hermes' Gemini "
-        "adapter drops before KAME sees the error. KAME reads the refusal body on "
+        "adapter drops before API Rotation sees the error. API Rotation reads the refusal body on "
         "its own connection so that field survives; nothing else about the error "
         "changes. Turn this on to leave the refusal exactly as Hermes reads it.",
     ),
     NO_MODEL_FALLBACK: (
         "Ignore my fallback list",
-        "KAME itself never chooses a model. Off (the default): if you have set "
+        "API Rotation itself never chooses a model. Off (the default): if you have set "
         "fallback models in Hermes (hermes fallback add), they are used "
         "automatically when every key of your model is resting for long, and "
         "Hermes comes back to your model once its keys return. With no list "
-        "nothing ever switches. On: your list is ignored and KAME waits for "
+        "nothing ever switches. On: your list is ignored and API Rotation waits for "
         "your keys however long that takes, and tells Hermes not to fall back "
         "on the errors it classifies (Hermes can still move on its own for "
         "some errors it sees itself, such as repeated timeouts). Summarisation "
@@ -1348,11 +1348,11 @@ META = {
         "Works only when you have set fallback models in Hermes (hermes "
         "fallback add); with no list nothing ever switches. "
         "When every key of the model you picked is resting and the soonest one "
-        "is more than this many seconds away, KAME stops waiting and lets "
+        "is more than this many seconds away, API Rotation stops waiting and lets "
         "Hermes answer with the next model in your list. Hermes brings you back "
         "to the model you picked on the next message once its keys return. "
         "Short rests (a minute of rate limit) are waited out on the model you "
-        "picked. 0 means never hand over. KAME itself never chooses a model.",
+        "picked. 0 means never hand over. API Rotation itself never chooses a model.",
     ),
     UNSIZED_THROTTLE_REST: (
         "Rest after an unsized throttle",
@@ -1376,7 +1376,7 @@ META = {
     ),
     HEDGING_DISABLED: (
         "Stop adaptive hedging",
-        "When hedging is active and a reply is slower than usual, KAME asks "
+        "When hedging is active and a reply is slower than usual, API Rotation asks "
         "a second key (and, if that is slow too, a third) and uses whichever "
         "answers first. In the chat the race is decided by the first word: "
         "the moment one key starts answering, the others are cut. Each "
@@ -1407,7 +1407,7 @@ META = {
     PROBE_BURST: (
         "Keys asked at once when quota runs out",
         "When two keys in a row are refused because their quota is spent, "
-        "asking the rest one at a time costs almost a second each. KAME then "
+        "asking the rest one at a time costs almost a second each. API Rotation then "
         "asks 4 keys at once, then 8, then 16, and the first that answers "
         "wins; in a chat the others are cut (a call that does not stream asks "
         "at most 4 at once, and those finish on their own). Keys the provider "
@@ -1440,7 +1440,7 @@ META = {
     ),
     HEDGE_COLD_S: (
         "First backup while still learning",
-        "Before KAME has learned how fast this model usually answers, a call "
+        "Before API Rotation has learned how fast this model usually answers, a call "
         "slower than this still gets a backup. Keep it well above the "
         "slowest honest first token so a merely normal call is never doubled.",
         "Leave at 6s.",
@@ -1454,9 +1454,9 @@ META = {
     ),
     THOUGHT_QUIET_S: (
         "Quiet limit while thinking",
-        "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks "
+        "How long a reply may stay quiet after it started thinking, with nothing shown yet, before API Rotation asks "
         "it again on another key (and later on the next model of your list). Its thoughts keep showing live "
-        "meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is "
+        "meanwhile. Left alone, API Rotation learns it for each model: 8 to 20 seconds, longer for a model that is "
         "quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
         "Leave unset. It costs one extra request when a healthy model is quiet longer than the limit, "
         "which happens when it writes a very large tool call in one piece (Gemini). The page counts it in "
@@ -1465,7 +1465,7 @@ META = {
     ANSWER_QUIET_S: (
         "Quiet limit while answering",
         "How long a reply that has already started to show its answer may stay completely silent (the "
-        "provider sends nothing at all) before KAME cuts it and asks again to continue it, on another key or on "
+        "provider sends nothing at all) before API Rotation cuts it and asks again to continue it, on another key or on "
         "the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds "
         "by default; 0 turns the watch off. A model running on your own machine is never cut.",
         "Leave at 45. A tool the provider runs on its side (a web search, code execution) is never cut "
@@ -1480,7 +1480,7 @@ META = {
     PACING_RPM_OVERRIDES: (
         "Per-model requests-per-minute limits",
         "Tell the pacer what a provider really allows, e.g. "
-        "'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most KAME will "
+        "'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most API Rotation will "
         "assume; a real per-minute refusal can still lower it, and nothing "
         "learned can raise it above this. Leave empty to let it learn from "
         "real answers and refusals.",
@@ -1514,16 +1514,19 @@ META = {
         "Automatic: in time is about three times the model's usual first word, 6 "
         "to 20 s, learned on this computer. Set time: the seconds below. Never: "
         "always wait for this model's keys. The next reply starts on your best "
-        "model again; one KAME knows is still busy or resting is passed down "
+        "model again; one API Rotation knows is still busy or resting is passed down "
         "without spending a request. Nothing switches after part of an answer is "
         "on screen.",
         "Leave on Automatic.",
     ),
     FIRST_TOKEN_WAIT: (
         "Wait for the first token",
-        "How long a key may stay silent before KAME drops it and asks the next "
+        "How long a key may stay silent before API Rotation drops it and asks the next "
         "one. Automatic learns each model's usual first-word time and drops a key "
-        "only when it is far past it (20 s at least, 60 s for thinking models); "
+        # 1.9.0.3 (C9): the numbers of transport._AUTO_SILENCE_S (the help said 20 s / 60 s).
+        "only when it is far past it (30 s at least, 120 s for thinking models, one "
+        "more second for every 2,000 tokens of the prompt, never more than "
+        "Hermes' own 120 s); "
         "never for a model on this computer. Backup keys still race a slow reply "
         "much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
         "Leave on Automatic.",
@@ -1540,7 +1543,7 @@ META = {
         "When several keys belong to one provider project they share one "
         "quota. Name the group for each key, e.g. 'key:a1b2c3=proj1, "
         "key:d4e5f6=proj1' — the keys as the Events tab shows them (the six "
-        "characters alone also work). KAME then counts them together, and "
+        "characters alone also work). API Rotation then counts them together, and "
         "never sends a backup request to a key of the same group.",
         "Leave empty unless your keys share a project.",
     ),
@@ -1573,19 +1576,19 @@ _PLAIN: Dict[str, Tuple[Optional[str], str]] = {
     ),
     HEDGE_MODE: (
         "Speed",
-        "How soon KAME races a second key when a reply is late. The line under the "
+        "How soon API Rotation races a second key when a reply is late. The line under the "
         "buttons says what the chosen mode costs in extra requests.",
     ),
     STREAM_SILENCE_TIMEOUT: (
         "First-token wait (seconds)",
         "Only with 'Wait for the first token' set to 'Set time': how many seconds a "
-        "key may stay silent before KAME asks the next one; 60 suits most "
+        "key may stay silent before API Rotation asks the next one; 60 suits most "
         "providers. 0 (default) leaves the wait to Hermes' own 120 s.",
     ),
     KEY_QUOTA_GROUPS: (
         None,
         "If several keys come from the same provider account, give them the same "
-        "name so KAME knows they run out together (e.g. key:a1b2c3=work).",
+        "name so API Rotation knows they run out together (e.g. key:a1b2c3=work).",
     ),
     SHARE_POOL_HEALTH: (
         "Profiles share what they learn",
@@ -1663,7 +1666,7 @@ def parse(key: str, raw: object) -> Tuple[Optional[str], str]:
     """
     key = canonical(key)
     if not known(key):
-        return None, f"{key} is not a KAME setting"
+        return None, f"{key} is not an API Rotation setting"
     text = str(raw).strip() if raw is not None else ""
     if key in ALL_STRINGS:
         lowered = text.lower()
@@ -1855,28 +1858,28 @@ _WHEN: Dict[str, str] = {
     MODEL_SWITCH: "Leave on Automatic. Never if you would rather always wait for the model you picked.",
     FIRST_TOKEN_WAIT: "Leave on Automatic. Set time only if a provider hangs in silence and Automatic is too patient for you.",
     REPLY_NOTICE: "Only another model, if a notice after every reply is too much.",
-    NO_MODEL_FALLBACK: "Only if you keep a fallback list in Hermes but want KAME to wait for your keys anyway.",
+    NO_MODEL_FALLBACK: "Only if you keep a fallback list in Hermes but want API Rotation to wait for your keys anyway.",
     MAX_TOTAL_WAIT: "Change only if you would rather get an error than wait for your keys to come back.",
     FAILOVER_AFTER: "Only with 'Set time'. Lower to fall back sooner, raise to stay on your best model longer.",
-    ROTATION_DISABLED: "Only to check whether KAME is behind a problem. Everything goes back to plain Hermes.",
+    ROTATION_DISABLED: "Only to check whether API Rotation is behind a problem. Everything goes back to plain Hermes.",
     SHARE_POOL_HEALTH: "Keep on when several Hermes profiles use the same keys.",
     STREAM_SILENCE_TIMEOUT: "Only with 'Set time'. 60 is a safe number for most providers.",
     UNSIZED_THROTTLE_BACKOFF: "Keep on. It retries a bare 'rate limit' after 1, 2, 4… seconds instead of a fixed wait.",
     HEDGE_BUDGET_PCT: "Lower it to spend fewer extra requests on backups; raise it for faster worst cases.",
     HEDGE_MAX_LEGS: "Lower to 2 to cap a slow call at one backup.",
     PROBE_BURST: "Rarely. Lower it if every request costs you money; 0 asks keys one by one.",
-    DAILY_COOLDOWN: "Only if your provider's daily quota resets at a known time KAME cannot read.",
+    DAILY_COOLDOWN: "Only if your provider's daily quota resets at a known time API Rotation cannot read.",
     MAX_HOLD: "The longest any key is ever benched. Lower it to retry spent keys sooner.",
     KEY_RESERVE: "Only if some of your keys are paid and the others are free.",
     KEY_QUOTA_GROUPS: "Rarely. Each key is normally its own account; only if two keys share one account's quota.",
     HEDGE_BURST: "Rarely. How many backups may go out back to back.",
     HEDGE_QUANTILE: "Rarely. Lower = backups sooner.",
-    HEDGE_COLD_S: "Rarely. Used only until KAME has learned a model's normal speed.",
+    HEDGE_COLD_S: "Rarely. Used only until API Rotation has learned a model's normal speed.",
     HEDGE_COLD_REASONING_S: "Rarely. Same as above, for thinking models.",
     THOUGHT_QUIET_S: "Rarely. Only to turn the watch off (0) or to set one number for every model.",
     ANSWER_QUIET_S: "Rarely. Only to turn the watch off (0) or to wait longer for a very slow model.",
     HEDGE_MAX_PROMPT_TOKENS: "Rarely. Very long prompts are not duplicated, to save quota.",
-    PACING_RPM_OVERRIDES: "Only if you know a model's per-minute limit and KAME keeps hitting it.",
+    PACING_RPM_OVERRIDES: "Only if you know a model's per-minute limit and API Rotation keeps hitting it.",
     STREAM_RESUME_LIMIT: "Rarely. Caps how often one cut answer is continued.",
     UNSIZED_THROTTLE_REST: "Rarely. The wait for a rate limit that states no time, when the ladder is off.",
     UNSIZED_BACKOFF_MAX: "Rarely. Where the 1, 2, 4… ladder stops.",
@@ -1889,7 +1892,7 @@ _WHEN: Dict[str, str] = {
 #: behind its "Why?" toggle. Only the three quick controls have one. The words are identical in
 #: the Agent Zero port (settings words are shared, agent-zero/decisions/0015).
 LINE: Dict[str, str] = {
-    HEDGE_MODE: "How hard KAME works to answer sooner.",
+    HEDGE_MODE: "How hard API Rotation works to answer sooner.",
     MODEL_SWITCH: "When your model cannot answer, the next one on your list does.",
     REPLY_NOTICE: "A short notice after each reply.",
 }
@@ -1907,7 +1910,7 @@ def when_to_change(key: str) -> str:
     if key in _WHEN:
         return _WHEN[key]
     if key in DISABLE_FLAGS:
-        return "Only to check whether this part of KAME is behind a problem."
+        return "Only to check whether this part of API Rotation is behind a problem."
     return ""
 
 
@@ -1944,7 +1947,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
     (
         "speed",
         "Speed",
-        "How KAME keeps answers fast. Already tuned; the first two are the ones "
+        "How API Rotation keeps answers fast. Already tuned; the first two are the ones "
         "worth knowing.",
         (HEDGE_MODE, FIRST_TOKEN_WAIT, STREAM_SILENCE_TIMEOUT, HEDGE_MAX_LEGS, PROBE_BURST, HEDGE_BUDGET_PCT, HEDGE_BURST,
          HEDGE_QUANTILE, HEDGE_COLD_S, HEDGE_COLD_REASONING_S, THOUGHT_QUIET_S, ANSWER_QUIET_S,
@@ -1954,7 +1957,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "keyring",
         "Your API keys",
         "One key per account (for Gemini, one per Google project): every key "
-        "brings its own quota, and KAME rotates between them.",
+        "brings its own quota, and API Rotation rotates between them.",
         (SHARE_POOL_HEALTH, PACING_RPM_OVERRIDES, KEY_REGION_OVERRIDES),
     ),
     (
@@ -1967,9 +1970,9 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
     ),
     (
         "off",
-        "Troubleshooting: turn parts of KAME off",
-        "Each switch turns one part of KAME off and gives that job back to "
-        "Hermes. For finding out whether KAME is behind a problem. Leave them "
+        "Troubleshooting: turn parts of API Rotation off",
+        "Each switch turns one part of API Rotation off and gives that job back to "
+        "Hermes. For finding out whether API Rotation is behind a problem. Leave them "
         "alone unless something is wrong.",
         DISABLE_FLAGS,
     ),

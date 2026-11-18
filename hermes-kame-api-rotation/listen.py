@@ -37,7 +37,7 @@ from . import voice
 logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "kame-gemini"
-DISPLAY_NAME = "Gemini listening (KAME keys)"
+DISPLAY_NAME = "API Rotation Gemini listening"
 FALLBACK_MODEL = "gemini-3.6-flash"
 
 #: One transcription has one budget (the short wait counts against it).
@@ -177,39 +177,78 @@ def _names_thinking(response: httpx.Response) -> bool:
     return response.status_code == 400 and "think" in voice._detail(response).lower()
 
 
-def _transcribe(file_path: str, model: str, language: Optional[str], hint: Any) -> str:
-    """The transcript of one recording, on as many keys as the budget allows. Raises ``ListenError`` (or the
-    provider's own refusal) when it cannot."""
-    from .core.carousel import format_duration
+class _ModelSpent(Exception):
+    """1.9.0.3 (C6): one candidate model cannot answer this recording now; the next one is tried.
 
-    suffix = os.path.splitext(str(file_path))[1].lower()
-    mime = _MIME.get(suffix)
-    if mime is None:
-        raise ListenError(f"unsupported audio type {suffix or 'without an extension'}")
-    size = os.path.getsize(file_path)
-    if size > MAX_BYTES:
-        raise ListenError("audio file is larger than 15 MB")
-    with open(file_path, "rb") as handle:
-        data = base64.b64encode(handle.read()).decode("ascii")
+    ``kind`` is ``"resting"`` (its keys rest; ``back`` is when the first returns) or ``"refused"`` (every key
+    refused it; ``last`` is the provider's last message)."""
 
-    transport = voice._facade().TRANSPORT
-    if not voice._facade().enabled():
-        raise ListenError("KAME rotation is off")
-    engine = transport.engine
-    base = _base_url()
-    identity = _identity(model, base)        # 1.9.0.2 (H3): the chat's bucket
-    keys = voice._keys()
-    if not keys:
-        raise ListenError("no Gemini key")
-    deadline = _monotonic() + UTTERANCE_BUDGET_S
-    url = f"{base}/models/{model}:generateContent"
-    prompt = _prompt(language, hint)
+    def __init__(self, kind: str, back: Optional[float] = None, last: str = "") -> None:
+        super().__init__(kind)
+        self.kind, self.back, self.last = kind, back, last
+
+
+def _never_switch() -> bool:
+    from . import settings
+
+    return settings.model_switch_mode() == "never" or settings.is_on(settings.NO_MODEL_FALLBACK)
+
+
+def _candidates(model: str, base: str) -> list:
+    """1.9.0.3 (C6): the models one recording may be tried on - ``[(model, identity)]``, the chosen one first.
+
+    Audit V1: on 17/11 397 recordings were lost in 52 minutes, every one "every Gemini key is resting", while the
+    chat answered on another Gemini model of the same list. Then come the Gemini models of the user's list, in
+    its order (the main model and the fallback entries); no other provider, nobody is invented. With "Never" in
+    force (or the no-fallback switch) the chosen model is the only one."""
+    chosen = (model, _identity(model, base))
+    found = [chosen]
+    if _never_switch():
+        return found
+    try:
+        from .core import fallback_chain
+
+        primary, chain = fallback_chain.read()
+        for entry in ([primary] if primary else []) + list(chain):
+            provider, _, rest = str(entry).partition(":")
+            if provider != "gemini" or not rest:
+                continue
+            source = fallback_chain.entry_source(entry)
+            written = (source[0] if source and source[0] else rest).strip()
+            if not written:
+                continue
+            ident = _identity(written, base)
+            if all(ident != other for _, other in found):
+                found.append((written, ident))
+    except Exception:
+        logger.debug("kame: the fallback list could not be read for listening", exc_info=True)
+    return found
+
+
+class _Run:
+    """What the candidates of one recording share: the clock, the audio, the one short wait, the transport errors."""
+
+    def __init__(self, deadline: float, prompt: str, mime: str, data: str, keys: list, base: str) -> None:
+        self.deadline, self.prompt, self.mime, self.data = deadline, prompt, mime, data
+        self.keys, self.base = keys, base
+        self.waited = False
+        self.unreachable = 0
+        self.seconds = 0.0
+
+
+def _listen_on(run: "_Run", transport: Any, engine: Any, model: str, identity: str) -> str:
+    """The transcript from one model, on as many of its keys as the shared budget allows.
+
+    Raises :class:`_ModelSpent` when this model cannot answer (the caller tries the next one) and
+    ``ListenError`` / the provider's own refusal when nothing else should be tried."""
+    keys = run.keys
+    url = f"{run.base}/models/{model}:generateContent"
     thinking = _thinking_config(model)
-    attempt, waited, last, unreachable = 0, False, "", 0
+    attempt, last = 0, ""
     retry_key: Optional[str] = None
     started = time.perf_counter()
     while attempt < len(keys):
-        left = deadline - _monotonic()
+        left = run.deadline - _monotonic()
         if left <= 0:
             raise ListenError("no Gemini key answered in time")
         if retry_key is not None:
@@ -220,18 +259,17 @@ def _transcribe(file_path: str, model: str, language: Optional[str], hint: Any) 
             raise ListenError("no Gemini key")
         if status == "EXHAUSTED":
             back = engine.next_recovery_seconds(identity, keys)
-            if back is not None and back < SHORT_WAIT_S and not waited:
-                waited = True
+            if back is not None and back < SHORT_WAIT_S and not run.waited:
+                run.waited = True
                 _sleep(max(0.0, back) + 0.05)
                 continue
-            when = format_duration(back) if back is not None else "a moment"
-            raise ListenError(f"every Gemini key is resting; the first is back in {when}")
+            raise _ModelSpent("resting", back)
         attempt += 1
         voice._count_request(transport, identity)
         try:
-            left = max(0.001, deadline - _monotonic())
-            response = voice._http(base).post(
-                url, json=_payload(prompt, mime, data, thinking),
+            left = max(0.001, run.deadline - _monotonic())
+            response = voice._http(run.base).post(
+                url, json=_payload(run.prompt, run.mime, run.data, thinking),
                 timeout=httpx.Timeout(min(REQUEST_TIMEOUT_S, left), connect=min(CONNECT_TIMEOUT_S, left)),
                 headers={"Content-Type": "application/json", "x-goog-api-key": key})
             if response.status_code != 200:
@@ -251,18 +289,77 @@ def _transcribe(file_path: str, model: str, language: Optional[str], hint: Any) 
                 logger.debug("kame: listening refusal could not be read", exc_info=True)
                 verdict = "raise"
             if isinstance(error, httpx.TransportError):
-                unreachable += 1
-                if unreachable >= 2:
+                run.unreachable += 1
+                if run.unreachable >= 2:
                     raise ListenError(f"Gemini could not be reached ({type(error).__name__})") from None
             if verdict == "rotate":
                 last = str(error)
                 continue
             raise
         engine.mark(identity, key, True)
-        logger.info("kame: listened %.1f s of audio in %.1f s on %s", _seconds_of(size, suffix),
-                    time.perf_counter() - started, model)
+        run.seconds = time.perf_counter() - started
         return text
-    raise ListenError("every Gemini key refused this recording" + (f": {last}" if last else ""))
+    raise _ModelSpent("refused", None, last)
+
+
+def _other_models(others: int) -> str:
+    return f"{others} other model{'' if others == 1 else 's'}"
+
+
+def _transcribe(file_path: str, model: str, language: Optional[str], hint: Any) -> str:
+    """The transcript of one recording, on as many keys as the budget allows. Raises ``ListenError`` (or the
+    provider's own refusal) when it cannot.
+
+    1.9.0.3 (C6): when every key of the chosen model rests, the Gemini models of the user's list are tried in
+    its order, inside the one budget of the recording (see :func:`_candidates`)."""
+    from .core.carousel import format_duration
+
+    suffix = os.path.splitext(str(file_path))[1].lower()
+    mime = _MIME.get(suffix)
+    if mime is None:
+        raise ListenError(f"unsupported audio type {suffix or 'without an extension'}")
+    size = os.path.getsize(file_path)
+    if size > MAX_BYTES:
+        raise ListenError("audio file is larger than 15 MB")
+    with open(file_path, "rb") as handle:
+        data = base64.b64encode(handle.read()).decode("ascii")
+
+    transport = voice._facade().TRANSPORT
+    if not voice._facade().enabled():
+        raise ListenError("API Rotation is off")   # 1.9.0.3 (C4): read in the Desktop voice error
+    engine = transport.engine
+    base = _base_url()
+    keys = voice._keys()
+    if not keys:
+        raise ListenError("no Gemini key")
+    run = _Run(_monotonic() + UTTERANCE_BUDGET_S, _prompt(language, hint), mime, data, keys, base)
+    candidates = _candidates(model, base)       # the first is the chosen model, in the chat's bucket (1.9.0.2 H3)
+    spent: list = []
+    for index, (name, identity) in enumerate(candidates):
+        try:
+            text = _listen_on(run, transport, engine, name, identity)
+        except _ModelSpent as why:
+            spent.append(why)
+            logger.info("kame: listening skipped %s (%s)", name,
+                        "its keys rest" if why.kind == "resting" else "every key refused it")
+            continue
+        if index:
+            logger.info("kame: listened %.1f s of audio in %.1f s on %s instead of %s (its keys rest)",
+                        _seconds_of(size, suffix), run.seconds, name, model)
+        else:
+            logger.info("kame: listened %.1f s of audio in %.1f s on %s", _seconds_of(size, suffix),
+                        run.seconds, name)
+        return text
+    others = len(candidates) - 1
+    resting = [why for why in spent if why.kind == "resting"]
+    if resting:
+        backs = [why.back for why in resting if why.back is not None]
+        when = format_duration(min(backs)) if backs else "a moment"
+        subject = f"every key of {model}" if not others else f"every key of {model} and of {_other_models(others)} of your list"
+        raise ListenError(f"{subject} is resting; the first is back in {when}")
+    last = next((why.last for why in reversed(spent) if why.last), "")
+    subject = f"every key of {model}" if not others else f"every key of {model} and of {_other_models(others)} of your list"
+    raise ListenError(f"{subject} refused this recording" + (f": {last}" if last else ""))
 
 
 def _seconds_of(size: int, suffix: str) -> float:
@@ -315,6 +412,13 @@ def make_provider() -> Optional[Any]:
                     message = str(error)
                 else:
                     message = f"Gemini listening failed ({type(error).__name__})"
+                # 1.9.0.3 (C6): a failed recording used to leave no line in the log at all (audit V1).
+                try:
+                    from .core.redact import redact
+
+                    logger.warning("kame: listening failed on %s: %s", locals().get("chosen") or "?", redact(message))
+                except Exception:  # pragma: no cover - a log line must never break the envelope
+                    pass
                 return {"success": False, "transcript": "", "provider": PROVIDER_NAME, "error": message}
 
     return KameGeminiListening()

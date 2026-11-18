@@ -240,7 +240,7 @@ class TestShowingTheSpread:
         binding._dispersion = self.FakeDispersion(boom=True)
         text = command.handle("")
         assert "nothing has been handed out yet" in text
-        assert "What KAME has seen" in text
+        assert "What API Rotation has seen" in text
 
     def test_an_entry_with_no_readable_key_is_named_from_the_pool_listing(self):
         # mark_id falls back to the bare credential id for an OAuth entry, and
@@ -294,14 +294,14 @@ class TestShowingWhatItWasAsked:
         self._runtime().note_classification("gemini", 429, sized=False)
         text = status.QuotaCommand(None).handle("")
         assert "not active" in text
-        assert "a wait KAME could not read" in text
+        assert "a wait API Rotation could not read" in text
 
     def test_and_says_nothing_has_failed_when_nothing_has(self):
         assert "nothing has failed yet" in status.QuotaCommand(None).handle("")
 
     def test_the_help_explains_the_section(self):
         text = status.QuotaCommand(None).handle("help")
-        assert "What KAME was asked" in text
+        assert "What API Rotation was asked" in text
         assert "never any part of the error text" in text
 
 

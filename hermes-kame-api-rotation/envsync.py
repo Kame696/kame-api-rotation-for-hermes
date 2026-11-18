@@ -141,7 +141,7 @@ def _sync_one(provider: str, var: str, base_url: str, report: List[str], backup:
             _remove(pool, entry)
         if is_source_suppressed(provider, env_source):
             unsuppress_credential_source(provider, env_source)
-        report.append(f"{provider}: {var} holds one key again; {len(ours)} KAME row(s) removed")
+        report.append(f"{provider}: {var} holds one key again; {len(ours)} API Rotation row(s) removed")
         return
 
     from . import commands
