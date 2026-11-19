@@ -169,13 +169,14 @@ def test_an_entry_already_refused_busy_as_a_race_leg_in_this_reply_is_not_the_on
     # at once. Try 2: the home retry is silent; the next model is already known busy in this reply, so the
     # THIRD model is the one raced from the first instant.
     call = SeqCall(by_model={M_HOME: [[0.6, overloaded()], silent(), silent()],
-                             M_NEXT: [[overloaded()], silent()],
+                             M_NEXT: [[overloaded()], [overloaded()], silent()],
                              M_THIRD: [reply("third")]})
     out, elapsed = run(guard, call)
     assert R.shown(out) == "third answer"
     assert elapsed < 3.0
     models = call.models()
-    assert models.count(M_NEXT) == 1, "the model refused busy as a leg was not asked a second time: %s" % models
+    # 1.9.0.4 (R4): the raced leg that was refused is replaced ONCE on another key of its model (also refused here)
+    assert models.count(M_NEXT) == 2, "the model refused busy as a leg was asked at most once more: %s" % models
     assert models.index(M_THIRD) > models.index(M_NEXT)
     assert any("said it is busy" in r for r in reasons()), reasons()
 

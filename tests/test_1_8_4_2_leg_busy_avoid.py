@@ -77,14 +77,16 @@ def test_the_hand_over_does_not_circle_back_to_a_model_whose_leg_was_refused_bus
     chain_mod.forget()
     call = Sequence(silent_pool(), {
         "gemini-race": [[0.9, Refusal(503, OVERLOADED)], [0.8, Refusal(503, OVERLOADED)]],
-        "gemini-race-two": [[0.2, Refusal(503, OVERLOADED)], answer()],       # a second ask WOULD answer
-        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], answer()],
+        # 1.9.0.4 (R4): a raced leg that is refused is replaced ONCE on another key (refused too here); a THIRD
+        # ask, the hand-over circling back, WOULD answer
+        "gemini-race-two": [[0.2, Refusal(503, OVERLOADED)], [0.1, Refusal(503, OVERLOADED)], answer()],
+        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], [0.1, Refusal(503, OVERLOADED)], answer()],
         "gemini-race-four": [answer()],
     })
     out = list(fresh.stream(call))
     assert R.shown(out) == "answered here"
-    assert call.models_asked.count("gemini-race-two") == 1, call.models_asked
-    assert call.models_asked.count("gemini-race-three") == 1, call.models_asked
+    assert call.models_asked.count("gemini-race-two") == 2, call.models_asked
+    assert call.models_asked.count("gemini-race-three") == 2, call.models_asked
     assert call.models_asked[-1] == "gemini-race-four", call.models_asked
     assert getattr(call, "_kame_answered_by", "") == "gemini:gemini-race-four"
 
@@ -94,12 +96,13 @@ def test_with_nothing_left_the_hand_over_goes_to_hermes_as_today(fresh, tmp_path
     chain_mod.forget()
     call = Sequence(silent_pool(), {
         "gemini-race": [[0.9, Refusal(503, OVERLOADED)], [0.8, Refusal(503, OVERLOADED)]],
-        "gemini-race-two": [[0.2, Refusal(503, OVERLOADED)], answer()],
-        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], answer()],
+        "gemini-race-two": [[0.2, Refusal(503, OVERLOADED)], [0.1, Refusal(503, OVERLOADED)], answer()],
+        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], [0.1, Refusal(503, OVERLOADED)], answer()],
     })
     with pytest.raises(transport.KamePoolResting):
         list(fresh.stream(call))
-    assert call.models_asked.count("gemini-race-two") == 1 and call.models_asked.count("gemini-race-three") == 1, \
+    # 1.9.0.4 (R4): the leg and its one replacement; the hand-over never asks either model a third time
+    assert call.models_asked.count("gemini-race-two") == 2 and call.models_asked.count("gemini-race-three") == 2, \
         call.models_asked
 
 
@@ -109,13 +112,14 @@ def test_a_429_on_the_raced_leg_is_not_busy_and_the_model_stays_a_candidate(fres
     call = Sequence(silent_pool(), {
         "gemini-race": [[0.9, Refusal(503, OVERLOADED)], [0.8, Refusal(503, OVERLOADED)]],
         "gemini-race-two": [[0.2, R.per_minute()], answer()],                 # a throttle: not the provider's trouble
-        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], answer()],
+        "gemini-race-three": [[0.2, Refusal(503, OVERLOADED)], [0.1, Refusal(503, OVERLOADED)], answer()],
         "gemini-race-four": [answer()],
     })
     out = list(fresh.stream(call))
     assert R.shown(out) == "answered here"
-    assert call.models_asked.count("gemini-race-two") == 2, call.models_asked   # it was asked again
-    assert call.models_asked.count("gemini-race-three") == 1, call.models_asked
+    # 1.9.0.4 (R4): it was asked again at once, on another key of the model, and that ask answered
+    assert call.models_asked.count("gemini-race-two") == 2, call.models_asked
+    assert call.models_asked.count("gemini-race-three") <= 2, call.models_asked
 
 
 def test_the_avoid_list_is_for_this_reply_only(fresh, tmp_path):

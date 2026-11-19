@@ -7,6 +7,30 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.4] - 2026-11-19 - the race asks the model that answers, when it usually answers (in development, not released)
+
+Which models race a slow reply, and when, now follow what each model has actually done. Nothing here changes how a
+reply starts.
+
+- **A faster model that answers first does not make your model "slow".** When the raced model answers inside your model's own usual time (three times its usual first word, at most half the slow bound), your model gets no slow window and no failure in its record, so the next reply still starts on it; the reply row says "faster".
+
+- **Models that keep failing are not raced.** A model remembered as failing (its retest not yet due) is left out of
+  the race, and the whole list is looked at, not only the next two entries: a fast model of your list that sat
+  fourth is reached.
+- **The fastest known model goes first.** Models with a learned first-word time faster than the main model's come
+  first, fastest first; models with nothing learned keep your list order; models learned slower come last.
+- **The next model joins when it usually answers**, not when the main model is usually slow: Balanced at its own
+  median first word (2 s at least), Faster at half of it (1 s at least), never later than before. The cost is
+  said plainly: with a thinking main model most replies send one more request, to a faster model of your list,
+  and its answer is the reply when it comes first.
+- **A raced model that fails is replaced at once** by another key of the same model (once per model per reply,
+  not for a refused request). Its key's verdict is written when it fails, not when the reply ends.
+- **First-word times are remembered on disk** (seven days, 20 per model and class), so a restart does not forget
+  how fast a model is and a model that rarely answers still has a number. Clear pool forgets them too.
+- `KAME_NO_REMEMBERED_TROUBLE=1` keeps 1.9.0.3's choice and timing of the raced models.
+
+---
+
 ## [1.9.0.3] - 2026-11-18 - what the screen says, and voice that does not get lost (in development, not released)
 
 Words on the screen, one lost-voice fix, and a few more things the panel could not tell you. Nothing here changes

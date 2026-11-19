@@ -6,7 +6,7 @@
 
 ### All your API keys and models as one pool. A `429`, a spent quota or a slow model never stops your agent again.
 
-[![Version](https://img.shields.io/badge/version-1.9.0.3-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.4-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -69,7 +69,7 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.9.0.3-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+Download **`KAME-for-Hermes-1.9.0.4-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
 
 Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
 
@@ -243,7 +243,7 @@ flowchart TD
 <table>
 <tr><th>Step</th><th>What KAME does</th></tr>
 <tr><td>🔑 Pick</td><td>The key with the fewest requests in the last 60 s; a key is marked busy the moment it is handed out, so parallel agents spread across keys.</td></tr>
-<tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. At about 3×: your next model also gets the request. A reply that thinks and then goes quiet is asked again; one that stops half-way is continued. First to answer wins.</td></tr>
+<tr><td>🏁 Race</td><td>Silent at about 2× the usual first word: a backup key of the same model. The fastest model of your list that is not failing also gets it: at its own usual first word when it is faster than the first model, otherwise at about 3×. A reply that thinks and then goes quiet is asked again; one that stops half-way is continued. First to answer wins.</td></tr>
 <tr><td>💤 Rest</td><td>Exactly as long as the provider says, never more than an hour. A spent key still works on your other models.</td></tr>
 <tr><td>🔀 Fallback</td><td>Your Hermes fallback list (`hermes fallback add`). Only models <b>you</b> listed, never after part of the reply is on screen, for any model a reply starts on (that model, then your main model, then the rest of the list), and every new reply starts on the model you picked.</td></tr>
 </table>
@@ -439,7 +439,14 @@ The panel explains every one of them in full, with its environment variable.
 <details>
 <summary><b>✅ Verified — tests and live checks</b></summary>
 
-**1.9.0.3** (2026-11-18), see the [changelog](CHANGELOG.md):
+**1.9.0.4** (2026-11-19), see the [changelog](CHANGELOG.md):
+
+| Check | Result |
+|---|---|
+| Plugin suite (1.9.0.4) | **0 failing**, 4,415 passing (two timing tests that are slow only under load passed alone) |
+| Live (1.9.0.4) | On a list whose first model thinks for ~22 s: the race asked the model that answers in ~6 s at 6.6 s and a second one at 12.6 s (1.9.0.3 asked a model that had not answered in ten days at 31 s); a model that keeps failing was left out; first-word times seeded from the call log and kept across Reset pool; Stop, Reset pool, Gemini and NVIDIA replies, chat titles; KAME's idle threads at 1.6% of one core; four Hermes profiles |
+
+**1.9.0.3** (2026-11-18):
 
 | Check | Result |
 |---|---|
@@ -588,7 +595,24 @@ evidence above still describes what runs.
 
 <a id="new"></a>
 <details>
-<summary><b>📣 What's new in 1.9.0.3</b></summary>
+<summary><b>📣 What's new in 1.9.0.4</b></summary>
+
+**1.9.0.4 — the race asks the model that answers, when it usually answers.** From the owner's test with a thinking
+model first in his list.
+
+- **The race picks by record, not by place.** A model of your list that keeps failing is left out of the race
+  (it is still looked at again when its retest is due), and the model that usually answers fastest goes first,
+  even when it is lower in your list.
+- **It joins when that model usually answers.** With a slow thinking model first, the next model used to join at
+  three times the slow model's own time (31 s in the owner's test); now it joins at its own usual first word
+  (6.6 s in the same list), never later than before.
+- **What KAME learns is kept.** Each model's time to first word is kept on disk (last 20, seven days) and read
+  after a restart; on the first start it is learned from the plugin's own call log.
+- **A raced model that fails is replaced at once** by another key of that model (once per reply), and its key's
+  rest is written at the moment it failed.
+- **What it costs:** with a first model that usually takes longer than a model below it, most replies send one
+  more request, to that faster model of your list; its answer is the reply when it comes first. Saver turns the
+  race off.
 
 **1.9.0.3 — the screen says what happened, voice is not lost.** From the first installed days of 1.9.0.2.
 
@@ -840,6 +864,7 @@ In development since early 2026, and every release came from a real log, not fro
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.4** | The race asks the model that answers, when it usually answers | The race leaves out a model that keeps failing and asks the fastest model of your list first, when it usually answers (not at three times the first model's time); first-word times kept on disk and seeded from the call log; a raced model that fails is replaced by another of its keys at once |
 | **1.9.0.3** | The screen says what happened, voice is not lost | Every failure row opens with the provider's own text, and a refused request says it is the request, not a key; the status row speaks every 5 s while the model is silent; the Speed line counts only backup requests; "API Rotation" on screen; transcription moves to the next Gemini model of the list when the voice model's keys rest; "Never switch" keeps Hermes' background title fallback on your model; clearer slow, overloaded and stopped words |
 | **1.9.0.2** | Stop stops, Reset works again, the wait is said | Stop ends the key rotation; Reset pool clears Hermes' own marks again and names what failed; chat titles are made again (only on a model KAME may start on, each try bounded by the model's usual time to first word); a reply starts on the first model that is not failing while a model due a second look is asked beside it; voice and transcription share the chat's key memory; the waiting line gives the provider's own return time; one closing row per unanswered call |
 | **1.9.0.1** | A reply is never left waiting when something else could answer | A reply that stops mid-thought moves on to the next provider of your list once its extra requests are spent; one key or no list still gets an extra request (the same key again, or another key of the model); the only key busy counts as the model busy; an answer silent for 45 s after its first words is cut and continued (`KAME_ANSWER_QUIET_S`) |
