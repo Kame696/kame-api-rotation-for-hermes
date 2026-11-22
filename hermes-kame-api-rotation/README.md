@@ -35,6 +35,15 @@ Free, open source, no telemetry. Gemini, OpenAI, OpenRouter, Anthropic, NVIDIA, 
 - **Extra requests:** a slow reply may be raced by your next model, and while every key rests one of them is asked
   again after 20 s, 40 s, 80 s, 160 s, then every 5 minutes. Providers do not bill refused requests.
 - **Privacy:** keys stay in Hermes' own files; nothing is sent anywhere but to your provider; no key is ever printed.
+- **What it writes:** with `/kame-keys add|import`, or a key field holding several keys, one pool row per key in
+  `auth.json` through Hermes' pool API (a backup first, last 5 kept); settings as `KAME_*` lines in `.env`; small
+  local logs, a status file and per-model health counters in the profile (no key, prompt or text). The Desktop page
+  reads them through the plugin's own route and, after a fallback answered, sets that chat's model back
+  (`config.set --session`, never global).
+- **Where it connects:** only your provider's own endpoints. `/kame-keys add` checks each new Gemini key with one
+  request to Google.
+- **Waiting:** when every key rests and no model of your list can take over, chats keep waiting (each key at most
+  an hour) and cron gives up after 300 s; `max_total_wait_seconds` bounds it.
 - **Voice:** an optional speech provider `kame-gemini` speaks with your rotated Gemini keys (`tts.provider: kame-gemini`).
 - **Optional bridge:** `hermes-kame-bridge` (separate, not in the catalog) adds the spinner line early. It patches
   Hermes at runtime and is not supported by Hermes.
