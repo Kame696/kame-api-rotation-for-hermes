@@ -29,8 +29,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-#: 1.8.1.9 ships two plugins: the rotation plugin and its provider half.
-SOURCES = (ROOT / "hermes-kame-api-rotation", ROOT / "hermes-kame-provider")
+#: 1.9.0.5: ONE package. The provider profiles moved into the rotation plugin (``provider_profiles.py``);
+#: ``hermes-kame-provider/`` stays in the repository, untouched, but is no longer built or shipped.
+SOURCES = (ROOT / "hermes-kame-api-rotation",)
 #: 1.8.2.7: the optional bridge ships beside them in every release (not in the
 #: catalog entry); built here so its ZIP always carries the same version.
 OPTIONAL = (ROOT / "hermes-kame-bridge",)
@@ -105,6 +106,27 @@ def build(source: Path) -> int:
     return 0
 
 
+def build_all_in_one(sources: tuple) -> int:
+    """``KAME-for-Hermes-<version>-all-in-one.zip``: every shipped plugin directory in one archive (1.9.0.5:
+    the rotation plugin and, when present, the optional bridge; never ``hermes-kame-provider``)."""
+    version = manifest_version(SOURCE / "plugin.yaml")
+    DIST.mkdir(exist_ok=True)
+    target = DIST / f"KAME-for-Hermes-{version}-all-in-one.zip"
+    count = 0
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        for source in sources:
+            for path in shipped_files(source):
+                archive.write(path, path.relative_to(source.parent).as_posix())
+                count += 1
+    with zipfile.ZipFile(target) as archive:
+        roots = sorted({name.split("/", 1)[0] for name in archive.namelist()})
+    if "hermes-kame-provider" in roots:
+        print("FAIL: hermes-kame-provider must not be in the all-in-one")
+        return 1
+    print(f"wrote   : {target}  ({count} file(s), {target.stat().st_size:,} bytes; roots: {', '.join(roots)})")
+    return 0
+
+
 def main() -> int:
     everything = SOURCES + tuple(o for o in OPTIONAL if (o / "plugin.yaml").exists())
     versions = {manifest_version(source / "plugin.yaml") for source in everything}
@@ -115,7 +137,7 @@ def main() -> int:
         code = build(source)
         if code:
             return code
-    return 0
+    return build_all_in_one(everything)
 
 
 if __name__ == "__main__":

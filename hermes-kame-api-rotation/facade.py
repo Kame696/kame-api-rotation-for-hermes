@@ -897,6 +897,87 @@ def make_client(provider: str, client_kwargs: Dict[str, Any], api_mode: str = ""
         return None
 
 
+# --- a profile that supplies its own client (1.9.0.5, B1) --------------------
+
+
+_PROFILE_CLASSES: Dict[type, Any] = {}
+
+
+def _profile_client_class(own_cls: type) -> Any:
+    """``KameProfileClient``: ``own_cls`` (the bundled profile's client type) with the carousel in front."""
+    cached = _PROFILE_CLASSES.get(own_cls)
+    if cached is not None:
+        return cached
+
+    class KameProfileClient(_KameMixin, own_cls):  # type: ignore[misc, valid-type]
+        """The client a bundled profile built, with every request going through KAME's carousel.
+
+        One inner client per key, each made by the bundled profile's own ``create_client`` (Hermes'
+        native Gemini client: Interactions or generateContent per model, keep-alive http, TLS). Nothing
+        of the wire is re-implemented here.
+        """
+
+        def _kame_build(self, key: str) -> Any:
+            inner = self._kame_base.create_client(
+                self._kame_profile, **dict(self._kame_build_kwargs, api_key=key))
+            return inner if inner is not None else self._kame_own
+
+        def close(self) -> None:
+            # Hermes reads ``is_closed`` on a client it is done with (the old Gemini wrapper set it too).
+            self.is_closed = True
+            self._kame_close()
+            close = getattr(self._kame_own, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # pragma: no cover - closing a client
+                    logger.debug("kame: could not close the profile's own client", exc_info=True)
+
+    KameProfileClient.__name__ = KameProfileClient.__qualname__ = "KameProfileClient"
+    _PROFILE_CLASSES[own_cls] = KameProfileClient
+    return KameProfileClient
+
+
+def _has_chat_completions(client: Any) -> bool:
+    try:
+        return callable(client.chat.completions.create)
+    except Exception:
+        return False
+
+
+def make_profile_client(provider: str, profile: Any, base_cls: type, client_kwargs: Dict[str, Any],
+                        own: Any) -> Any:
+    """KAME's client around ``own``, the client the bundled ``profile`` built itself - or ``own`` untouched.
+
+    Wrapped only when KAME is on, the profile speaks a plain API key (an OAuth or external-process client
+    is never rotated), ``own`` has ``chat.completions.create`` and there is a key to rotate. Never raises.
+    """
+    try:
+        if own is None or not enabled():
+            return own
+        if str(getattr(profile, "auth_type", "") or "") != "api_key" or not _has_chat_completions(own):
+            return own
+        api_key = client_kwargs.get("api_key")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return own
+        _follow_the_list(api_key)
+        cls = _profile_client_class(type(own))
+        client = cls.__new__(cls)
+        client.__dict__.update(own.__dict__)
+        client._kame_own = own
+        client._kame_base = base_cls
+        client._kame_profile = profile
+        client._kame_build_kwargs = dict(client_kwargs)
+        client._kame_setup(provider, client_kwargs)
+        from types import SimpleNamespace
+
+        client.chat = SimpleNamespace(completions=SimpleNamespace(create=client._kame_create))
+        return client
+    except Exception:
+        logger.warning("kame: could not wrap the %s client; Hermes keeps its own", provider, exc_info=True)
+        return own
+
+
 # --- the Anthropic Messages wire ---------------------------------------------
 
 

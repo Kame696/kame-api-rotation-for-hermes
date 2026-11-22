@@ -145,6 +145,15 @@ def _sync_one(provider: str, var: str, base_url: str, report: List[str], backup:
         return
 
     from . import commands
+    from .core.carousel import fingerprint
+    from .core.keys import shape_problem
+
+    # 1.9.0.5 (D2): a key the provider's shape rule refuses is still the user's variable, so it is kept in the
+    # pool; it is named (fingerprint only) in the log at every start and in /kame-keys.
+    misshapen = [fingerprint(k) for k in keys if shape_problem(provider, k)]
+    if misshapen:
+        logger.warning("kame: %s: %s holds %d key(s) that do not look like a %s key: %s", provider, var,
+                       len(misshapen), provider, ", ".join(misshapen))
 
     wanted = set(keys)
     stale = [e for e in ours if _token(e) not in wanted]
@@ -272,3 +281,104 @@ def _sync_all() -> List[str]:
     for line in report:
         logger.info("kame: %s", line)
     return report
+
+
+def remove_all(provider: Optional[str] = None) -> List[Dict[str, Any]]:
+    """1.9.0.5 (D1): take back everything :func:`sync` put in place, so the plugin can be uninstalled.
+
+    For every key variable Hermes declares (or only ``provider``'s): drop the pool rows this module made
+    (source ``manual:kame-env:<VAR>``), lift the suppression of ``env:<VAR>`` and, when the variable in
+    ``.env`` still holds several keys, back ``.env`` up and keep only the first, so Hermes seeds one valid
+    key instead of the whole list as one credential. Rows the user added by hand are never touched.
+
+    Returns one dict per variable that had something to take back: ``provider``, ``var``, ``removed`` (count),
+    ``fingerprints`` (of the removed rows), ``unsuppressed``, ``env`` (``envfile.keep_first_key`` outcome),
+    ``held``, ``kept`` (fingerprint), ``env_backup``, ``auth_backup``. Key material is never in it. Runs even
+    with the resolver switched off (it is the user's explicit request); never raises.
+    """
+    try:
+        with _profile_scope():
+            return _remove_all(provider)
+    except Exception:
+        logger.warning("kame: remove-all failed", exc_info=True)
+        return []
+
+
+def _remove_all(provider: Optional[str]) -> List[Dict[str, Any]]:
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import is_source_suppressed, unsuppress_credential_source
+
+    from . import envfile
+    from .core.carousel import fingerprint
+
+    wanted = str(provider or "").strip().lower()
+    results: List[Dict[str, Any]] = []
+    saved: List[Optional[str]] = []
+    env_saved: List[str] = []  # the one .env backup of this call
+    with _lock():
+        for name, var, _url in _variables():
+            if wanted and name.lower() != wanted:
+                continue
+            source = _source_for(var)
+            env_source = f"env:{var}"
+            try:
+                pool = load_pool(name)
+                ours = [e for e in pool.entries() if str(getattr(e, "source", "")) == source]
+                suppressed = bool(is_source_suppressed(name, env_source))
+                if not ours and not suppressed:
+                    continue
+                if not saved:
+                    from . import commands
+
+                    saved.append(commands._backup_auth_store())
+                row: Dict[str, Any] = {
+                    "provider": name, "var": var, "removed": 0, "fingerprints": [], "unsuppressed": False,
+                    "env": "absent", "held": 0, "kept": "", "env_backup": None,
+                    "auth_backup": saved[0],
+                }
+                for entry in ours:
+                    row["fingerprints"].append(fingerprint(_token(entry)))
+                    row["removed"] += int(_remove(pool, entry))
+                if suppressed:
+                    unsuppress_credential_source(name, env_source)
+                    row["unsuppressed"] = True
+                several = len(split_value(_env_value(var))[0])
+                outcome, held, env_backup, kept = envfile.keep_first_key(var, env_saved)
+                row.update(env=outcome, held=held or several, kept=kept, env_backup=env_backup)
+                if outcome == "trimmed":
+                    import os
+
+                    first = split_value(os.environ.get(var, ""))[0]
+                    if first:
+                        os.environ[var] = first[0]
+                results.append(row)
+            except Exception as exc:
+                logger.warning("kame: could not take back %s: %s", var, type(exc).__name__)
+                logger.debug("kame: remove-all failure", exc_info=True)
+    for row in results:
+        logger.info("kame: remove-all %s/%s: %d row(s) removed, .env %s", row["provider"], row["var"],
+                    row["removed"], row["env"])
+    return results
+
+
+def describe_removal(results: List[Dict[str, Any]]) -> str:
+    """The reply for :func:`remove_all`: counts and fingerprints only."""
+    if not results:
+        return ("Nothing to remove: API Rotation has no key rows of its own in your pool "
+                "(keys you added with /kame-keys add or in Hermes stay where they are).")
+    lines: List[str] = []
+    for row in results:
+        prints = ", ".join(row["fingerprints"])
+        lines.append(f"{row['provider']}: {row['var']}: {row['removed']} API Rotation row(s) removed"
+                     + (f" ({prints})" if prints else "") + (", source un-suppressed" if row["unsuppressed"] else ""))
+        if row["env"] == "trimmed":
+            lines.append(f"  .env: {row['var']} held {row['held']} keys; kept the first ({row['kept']}). "
+                         f"Backup: {row['env_backup']}")
+        elif row["env"] == "absent" and row["held"] > 1:
+            lines.append(f"  {row['var']} holds {row['held']} keys outside Hermes' .env (your system environment); "
+                         "API Rotation does not edit that. Keep one key there, or Hermes reads the list as one key.")
+        elif row["env"] == "error":
+            lines.append(f"  .env: {row['var']} was not changed (backup or write failed); "
+                         "Hermes may read its list as one key until you edit it.")
+    lines.append("Keys you added by hand or in Hermes were not touched. API Rotation can now be uninstalled.")
+    return "\n".join(lines)

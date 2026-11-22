@@ -1,5 +1,5 @@
 name: hermes-kame-bridge
-version: "1.9.0.4"
+version: "1.9.0.5"
 manifest_version: 1
 api_version: 1
 author: Kame696
@@ -8,4 +8,4 @@ homepage: https://github.com/Kame696/kame-api-rotation-for-hermes
 tags:
   - api-key-rotation
   - status
-description: "Companion to hermes-kame-api-rotation (install all three KAME packages for every feature). Disclosure - this plugin deliberately wraps Hermes core at runtime (catalog rule 9), only on a Hermes that lacks the real seams, until the upstream PRs are merged: notify_turn_status (NousResearch/hermes-agent#133474) puts KAME's live rotation line on the spinner; ProviderProfile.create_messages_client (NousResearch/hermes-agent#133461) lets KAME rotate keys on the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding). It adds one of its own: a short Desktop notice naming the model that answered each reply, and a filter that keeps Hermes' own 'Model fallback' line out of the chat when KAME made the switch on purpose (it wraps agent.turn_api_call.perform_api_call and agent.status_output.StatusOutputMixin._emit_diagnostic_status). Each seam whose real version already ships in Hermes is left alone, so it does nothing once both PRs are merged; remove it then. No network access, no credentials, no files."
+description: "Optional companion to hermes-kame-api-rotation (install it after that plugin, only if you want the extras below). Disclosure - this plugin deliberately wraps Hermes core at runtime (catalog rule 9), only on a Hermes that lacks the real seams, until the upstream PRs are merged: notify_turn_status (NousResearch/hermes-agent#133474) puts KAME's live rotation line on the spinner; ProviderProfile.create_messages_client (NousResearch/hermes-agent#133461) lets KAME rotate keys on the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding). It adds one of its own: a short Desktop notice naming the model that answered each reply, and a filter that keeps Hermes' own 'Model fallback' line out of the chat when KAME made the switch on purpose (it wraps agent.turn_api_call.perform_api_call and agent.status_output.StatusOutputMixin._emit_diagnostic_status). Each seam whose real version already ships in Hermes is left alone, so it does nothing once both PRs are merged; remove it then. No network access, no credentials, no files."

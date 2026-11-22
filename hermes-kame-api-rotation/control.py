@@ -46,7 +46,7 @@ SCHEMA = 1
 
 #: Every action this module will carry out. Anything else is reported back as
 #: unknown — including, deliberately, anything to do with keys.
-ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events", "refresh", "forget_busy")
+ACTIONS = ("set", "reset", "reset_all", "clear_pool", "clear_events", "refresh", "forget_busy", "undo_setup")
 
 #: The request most recently applied, kept so the panel can tell "saved" from
 #: "still waiting" without polling anything else.
@@ -296,6 +296,34 @@ def _clear_benches_on_disk(storage: "list | None" = None) -> "tuple[str, list[st
     return ", ".join(done), failed
 
 
+def _report_reset() -> None:
+    """1.9.0.5 (E3): one log line and one ``reset`` event saying what *Clear pool* is about to forget.
+
+    Counts only (keys held, longest hold left, holds by kind, account holds, busy/slow windows still open): no
+    key and no fingerprint. Never raises and never blocks the reset it describes.
+    """
+    try:
+        from .core.carousel import ENGINE
+        from .core.events import EVENTS
+
+        summary = ENGINE.reset_summary()
+        try:
+            from . import facade
+
+            summary["windows_open"] = int(facade.TRANSPORT.open_windows())
+        except Exception:
+            summary["windows_open"] = 0
+        kinds = summary["by_kind"]
+        sentence = (f"Clear pool: {summary['keys_held']} key(s) were resting (longest {summary['longest_hold_s']:.0f}s left; "
+                    f"daily {kinds['daily']}, account {kinds['account']}, stated {kinds['stated']}, "
+                    f"unsized {kinds['unsized']}); {summary['account_holds']} account hold(s); "
+                    f"{summary['windows_open']} busy/slow window(s) stay open")
+        logger.info("kame: %s", sentence)
+        EVENTS.add("reset", reason=sentence, seconds=float(summary["longest_hold_s"]), detail=json.dumps(summary))
+    except Exception:
+        logger.debug("kame: could not report what the reset cleared", exc_info=True)
+
+
 def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
     from . import envfile, settings
 
@@ -318,6 +346,14 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         if not dropped:
             return False, f"{name} is not known busy or slow right now"
         return True, f"{name} will be asked first on the next reply"
+
+    if action == "undo_setup":
+        # 1.9.0.5 (D1): "Remove API Rotation's keys". Takes back what the plugin put in the pool and, for a key
+        # variable that holds a list, cuts ``.env`` to its first key (backed up first). No key is read out,
+        # added or shown: the reply carries counts and fingerprints. ``key`` may name one provider.
+        from . import envsync
+
+        return True, envsync.describe_removal(envsync.remove_all(str(key or "").strip().lower() or None))
 
     if action == "clear_pool" and str(key or "").strip():
         # 1.8.2.9 (decisions/0031 2.7): ONE model ('Wake this model'). Its keys start again; no other
@@ -355,6 +391,7 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         # on each pooled credential. All four are cleared now.
         failures = []
         storage: list = []
+        _report_reset()
         try:
             from .core.carousel import ENGINE
 

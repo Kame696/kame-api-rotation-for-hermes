@@ -41,7 +41,7 @@ from collections import OrderedDict, deque
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
-from . import host_text, recorder, runtime, settings, timings, wires
+from . import chat_line, host_text, recorder, runtime, settings, timings, wires
 from .core import aux_budget, evidence, multikey, provider_quirks, stitch, vocabulary
 from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
@@ -568,6 +568,7 @@ def _emit(call: Any, kind: str, **fields: Any) -> Dict[str, Any]:
     whenever the channel is absent, which is any caller that does not
     future path that forgets — a missed split degrades, it never throws.
     """
+    chat_line.note(call, kind, str(fields.get("reason") or ""), fields)  # 1.9.0.5 (C2): never raises, never blocks
     try:
         from .core.events import INFLIGHT as _inflight
         _inflight.note(call, kind, str(fields.get("reason") or ""),
@@ -768,6 +769,7 @@ class _Spinner:
         """1.9.0.3 (C1): ``force`` skips the same-text dedupe and the changed-text floor (the live-status switch
         is still respected and the state is still recorded). Used once: the refused-request line, which must not
         be swallowed because it came back less than a second after the attempt line."""
+        chat_line.note_status(owner, text)  # 1.9.0.5 (C2): the chat line says the same words; never raises
         if settings.is_on(settings.LIVE_STATUS_DISABLED):
             return
         every = cls._DEFAULT_INTERVAL_S if interval is None else interval
@@ -1655,6 +1657,8 @@ class KameTransport:
         # was spent waiting is the number that explains a slow session.
         self.waited_s = 0.0
         self.waits = 0
+        #: 1.9.0.5 (E1): re-tests sent while every key rested (decisions/0036).
+        self.retests = 0
         # Since 1.0.9. Every one of these makes Hermes append a synthetic
         # continuation row the client never renders, which is what makes the
         # client's ordinal disagree with the server's and makes rewind and
@@ -2860,6 +2864,12 @@ class KameTransport:
                 yield from self._plain(call, stream)
                 return
 
+            # 1.9.0.5 (E1, decisions/0036): every key rests on a label and the re-test is due: the pending request
+            # itself goes to one label-held key. A refusal comes back through ``mark`` like any other and the
+            # loop lands here again, not due until the next interval. The pick is made below, right before the
+            # wait (review fix 5): a free next model (hand-over, wrap, stand-in) is used first.
+            retesting = False
+
             if status == "EXHAUSTED":
                 # Every key is resting. Calling one anyway would spend a request
                 # already known to be refused and deepen the cooldown that
@@ -2903,52 +2913,65 @@ class KameTransport:
                     if wrapped is not None:
                         circle_to(wrapped, "has every key resting")
                         continue
-                    wait_started = time.monotonic()
-                    bound = {"budget": total_cap - pool_waited} if total_cap > 0 else {}
-                    _probe_in = self._next_probe_in(identity)
-                    if _probe_in is not None:
-                        # wake when a model of the list is due another look
-                        bound["budget"] = min(bound.get("budget", _probe_in + 0.5), _probe_in + 0.5)
-                    # 1.8.2.7 (review H1/M3): held back only by the short hand-over
-                    # memo? Wake when it ends, so the hand-over is asked again then.
-                    _memo_left = self._handover_until.get(self._memo_key(call, identity), 0.0) - time.time()
-                    if _memo_left > 0:
-                        bound["budget"] = min(bound.get("budget", _memo_left + 0.5), _memo_left + 0.5)
-                    if aux_left is not None:
-                        bound["budget"] = min(bound.get("budget", aux_left), aux_left)
-                    recovered = yield from self._wait_for_recovery(call, identity, keys, vigil, **bound)
-                    pool_waited += max(0.0, time.monotonic() - wait_started)
-                    if aux_left is not None and not recovered:
-                        raise aux_stop("its wait ended")
-                if not recovered and total_cap > 0 and pool_waited >= total_cap and last_error is None:
-                    self.surfaced += 1
-                    _waited_out = ConnectionError(
-                        f"kame: every key for {label} stayed resting for {format_duration(pool_waited)}, "
-                        "past max_total_wait_seconds")
-                    # 1.9.0.3 (C1): one surfaced row for this error too
-                    self._surface(call, identity, "stopped waiting - past your Stop waiting time", exc=_waited_out)
-                    raise _with_retry_hint(_waited_out)
-                if not recovered:
-                    if seen:
-                        self.mid_stream_cuts += 1
-                        raise call.cut(last_error)
-                    if last_error is not None:
+                    if aux is None:
+                        _retest_key = self._retest_pick(call, identity, keys)
+                        if _retest_key is not None:
+                            key, status, retesting = _retest_key, "RETEST", True
+                    if not retesting:
+                        wait_started = time.monotonic()
+                        bound = {"budget": total_cap - pool_waited} if total_cap > 0 else {}
+                        _probe_in = self._next_probe_in(identity)
+                        if _probe_in is not None:
+                            # wake when a model of the list is due another look
+                            bound["budget"] = min(bound.get("budget", _probe_in + 0.5), _probe_in + 0.5)
+                        # 1.8.2.7 (review H1/M3): held back only by the short hand-over
+                        # memo? Wake when it ends, so the hand-over is asked again then.
+                        # 1.9.0.5 (E1): wake when the live re-test of a label-held pool is due.
+                        try:
+                            _retest_in = self.engine.retest_due_in(identity, keys) if aux is None else None
+                        except Exception:  # pragma: no cover - a readout of the engine
+                            _retest_in = None
+                        if _retest_in is not None:
+                            bound["budget"] = min(bound.get("budget", _retest_in + 0.05), _retest_in + 0.05)
+                        _memo_left = self._handover_until.get(self._memo_key(call, identity), 0.0) - time.time()
+                        if _memo_left > 0:
+                            bound["budget"] = min(bound.get("budget", _memo_left + 0.5), _memo_left + 0.5)
+                        if aux_left is not None:
+                            bound["budget"] = min(bound.get("budget", aux_left), aux_left)
+                        recovered = yield from self._wait_for_recovery(call, identity, keys, vigil, **bound)
+                        pool_waited += max(0.0, time.monotonic() - wait_started)
+                        if aux_left is not None and not recovered:
+                            raise aux_stop("its wait ended")
+                if not retesting:
+                    if not recovered and total_cap > 0 and pool_waited >= total_cap and last_error is None:
                         self.surfaced += 1
+                        _waited_out = ConnectionError(
+                            f"kame: every key for {label} stayed resting for {format_duration(pool_waited)}, "
+                            "past max_total_wait_seconds")
                         # 1.9.0.3 (C1): one surfaced row for this error too
-                        self._surface(call, identity, last_kind or "refused", exc=last_error,
-                                      code=getattr(last_error, "status_code", None))
-                        raise _with_retry_hint(host_text.take_off_the_advice(last_error), kind=last_kind,
-                                               quota_window=last_window)
-                    raise _with_retry_hint(call.cancel_error())
-                slept = True
-                consecutive_timeouts = 0
-                try:
-                    keys = call.keys() or keys
-                except Exception:
-                    logger.debug("kame: could not refresh the keys after a wait", exc_info=True)
-                continue
+                        self._surface(call, identity, "stopped waiting - past your Stop waiting time", exc=_waited_out)
+                        raise _with_retry_hint(_waited_out)
+                    if not recovered:
+                        if seen:
+                            self.mid_stream_cuts += 1
+                            raise call.cut(last_error)
+                        if last_error is not None:
+                            self.surfaced += 1
+                            # 1.9.0.3 (C1): one surfaced row for this error too
+                            self._surface(call, identity, last_kind or "refused", exc=last_error,
+                                          code=getattr(last_error, "status_code", None))
+                            raise _with_retry_hint(host_text.take_off_the_advice(last_error), kind=last_kind,
+                                                   quota_window=last_window)
+                        raise _with_retry_hint(call.cancel_error())
+                    slept = True
+                    consecutive_timeouts = 0
+                    try:
+                        keys = call.keys() or keys
+                    except Exception:
+                        logger.debug("kame: could not refresh the keys after a wait", exc_info=True)
+                    continue
 
-            if attempt > 1:
+            if attempt > 1 and not retesting:
                 _emit(call, 
                     "switch",
                     identity=identity,
@@ -6540,6 +6563,32 @@ class KameTransport:
             _Spinner.update(call.status_owner(), line, interval=0.0)
         except Exception:  # pragma: no cover - a courtesy line
             logger.debug("kame: could not say the circle back", exc_info=True)
+
+    def _retest_pick(self, call: "Call", identity: str, keys: Sequence[str]) -> Optional[str]:
+        """1.9.0.5 (E1): the key to re-test now, with its ``retest`` event, or ``None``. Never raises."""
+        try:
+            key = self.engine.retest_candidate(identity, keys)
+            if key is None:
+                return None
+            self.retests += 1
+            status = self.engine.retest_status(identity)
+            nxt = status.get("next_in_s")
+            _emit(call, "retest", identity=identity, key=fingerprint(key), seconds=nxt,
+                  reason=f"every key of {model_label(identity)} rests on a label, not a time the provider gave - "
+                         f"asking one again now (try {status.get('n')}"
+                         + (f", next in {format_duration(nxt)}" if nxt else "") + ")")
+            return key
+        except Exception:
+            logger.debug("kame: could not pick a key to re-test", exc_info=True)
+            return None
+
+    def open_windows(self) -> int:
+        """1.9.0.5 (E3): how many busy / slow windows are open right now (counted, never listed)."""
+        now = time.time()
+        try:
+            return sum(1 for until in list(self._busy_until.values()) if until > now)
+        except Exception:  # pragma: no cover - a readout
+            return 0
 
     def forget_busy(self, entry: str) -> int:
         """The panel's *Try this model now*: drop one model's busy / slow window and its probe

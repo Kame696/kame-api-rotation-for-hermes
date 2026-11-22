@@ -168,6 +168,10 @@ SHARE_POOL_HEALTH = "share_pool_health"
 # and selects against by ``dispatch_binding.install()``, not left decorative.
 UNSIZED_THROTTLE_BACKOFF = "unsized_throttle_backoff"
 
+# 1.9.0.5 (C1). A live line in the conversation, through ``ctx.post_message``, while API Rotation is acting on a reply
+# (a refused key replaced, every key resting, another model answering). On by default; off = nothing is posted.
+LIVE_CHAT_LINE = "live_chat_line"
+
 # 1.8.1.0. Where the doubling ladder above stops growing. The owner asked for
 # ``1 -> 2 -> 4 -> 8 -> etc``; run uncapped over his own corpus it produced
 # 138 holds over 300s against 43 for the flat rest, and contradicted-hold
@@ -299,6 +303,7 @@ _ENV_FOR = {
     NO_MODEL_FALLBACK: "KAME_NO_MODEL_FALLBACK",
     SHARE_POOL_HEALTH: "KAME_SHARE_POOL_HEALTH",
     UNSIZED_THROTTLE_BACKOFF: "KAME_UNSIZED_BACKOFF",
+    LIVE_CHAT_LINE: "KAME_LIVE_CHAT_LINE",
     HEDGING_DISABLED: "KAME_HEDGING_DISABLED",
 }
 
@@ -962,7 +967,7 @@ def number(key: str, default: float) -> float:
 #: traffic from the moment he installs it, not as a knob he has to remember
 #: to flip first. See that constant's own comment for the measurement this
 #: default runs ahead of.
-DEFAULTS_ON = frozenset({SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF})
+DEFAULTS_ON = frozenset({SHARE_POOL_HEALTH, UNSIZED_THROTTLE_BACKOFF, LIVE_CHAT_LINE})
 
 
 #: 1.8.2.1, asked for by the catalog review: the bound a cron run gets when
@@ -1078,6 +1083,7 @@ ALL_FLAGS = (
     CALL_TIMINGS_DISABLED,
     SHARE_POOL_HEALTH,
     UNSIZED_THROTTLE_BACKOFF,
+    LIVE_CHAT_LINE,
     HEDGING_DISABLED,
 )
 
@@ -1192,6 +1198,13 @@ META = {
         "Log every failure during an outage",
         "Repeated identical failures are written in full instead of being "
         "collapsed into a periodic count. Louder logs, same rotation.",
+    ),
+    LIVE_CHAT_LINE: (
+        "Live line in the chat",
+        "While API Rotation replaces a refused key, waits for keys to come back or lets another model "
+        "answer, one line in the conversation says so and is updated in place; a clean reply posts "
+        "nothing. Never part of what the model reads. Off: nothing is posted.",
+        "Leave on.",
     ),
     LIVE_STATUS_DISABLED: (
         "Hide the status line",
@@ -1618,7 +1631,7 @@ _ADVANCED = frozenset({
     PROBE_BURST,
     HEDGE_MAX_LEGS, HEDGE_BUDGET_PCT, HEDGE_BURST, HEDGE_QUANTILE, HEDGE_COLD_S,
     HEDGE_COLD_REASONING_S, THOUGHT_QUIET_S, ANSWER_QUIET_S, HEDGE_MAX_PROMPT_TOKENS, PACING_INTERVAL,
-    SHARE_POOL_HEALTH,
+    SHARE_POOL_HEALTH, LIVE_CHAT_LINE,
     PACING_RPM_OVERRIDES, KEY_REGION_OVERRIDES, DAILY_COOLDOWN, MAX_HOLD,
     UNSIZED_THROTTLE_BACKOFF, UNSIZED_THROTTLE_REST, UNSIZED_BACKOFF_MAX, STREAM_RESUME_LIMIT,
 })
@@ -1823,6 +1836,7 @@ IMPACT: Dict[str, str] = {
     MODEL_SWITCH: "high",
     FIRST_TOKEN_WAIT: "medium",
     REPLY_NOTICE: "medium",
+    LIVE_CHAT_LINE: "medium",
     NO_MODEL_FALLBACK: "low",
     MAX_TOTAL_WAIT: "high",
     FAILOVER_AFTER: "medium",
@@ -1863,6 +1877,7 @@ _WHEN: Dict[str, str] = {
     FAILOVER_AFTER: "Only with 'Set time'. Lower to fall back sooner, raise to stay on your best model longer.",
     ROTATION_DISABLED: "Only to check whether API Rotation is behind a problem. Everything goes back to plain Hermes.",
     SHARE_POOL_HEALTH: "Keep on when several Hermes profiles use the same keys.",
+    LIVE_CHAT_LINE: "Leave on. Turn off only if a line in the conversation while API Rotation works gets in your way.",
     STREAM_SILENCE_TIMEOUT: "Only with 'Set time'. 60 is a safe number for most providers.",
     UNSIZED_THROTTLE_BACKOFF: "Keep on. It retries a bare 'rate limit' after 1, 2, 4… seconds instead of a fixed wait.",
     HEDGE_BUDGET_PCT: "Lower it to spend fewer extra requests on backups; raise it for faster worst cases.",
@@ -1942,7 +1957,7 @@ GROUPS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
         "If your model cannot answer",
         "When your provider is busy, every key of your model is resting, or a reply "
         "takes too long.",
-        (MODEL_SWITCH, FAILOVER_AFTER, REPLY_NOTICE, MAX_TOTAL_WAIT, NO_MODEL_FALLBACK),
+        (MODEL_SWITCH, FAILOVER_AFTER, REPLY_NOTICE, LIVE_CHAT_LINE, MAX_TOTAL_WAIT, NO_MODEL_FALLBACK),
     ),
     (
         "speed",

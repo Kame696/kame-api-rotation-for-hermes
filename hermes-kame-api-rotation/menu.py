@@ -316,6 +316,32 @@ class MenuCommand:
             lines.append("  API Rotation sets none of them.")
         return lines
 
+    @staticmethod
+    def _notice_lines() -> List[str]:
+        """Sentences the provider-profile part of the package owes the user (1.9.0.5, A2 and A4)."""
+        try:
+            from . import provider_profiles
+
+            found = provider_profiles.problems()
+            extra = [text for text in provider_profiles.notices() if text not in found]
+        except Exception:
+            logger.debug("kame: could not read the notices", exc_info=True)
+            return []
+        lines: List[str] = []
+        if found:
+            # A notice that says something does not work is a problem, in the same "!" style as other failures.
+            lines.extend(["Problems:", ""])
+            for text in found:
+                wrapped = _wrap(text, 74)
+                lines.extend(f"  ! {part}" if index == 0 else f"    {part}" for index, part in enumerate(wrapped))
+        if extra:
+            if lines:
+                lines.append("")
+            lines.extend(["Notices:", ""])
+            for text in extra:
+                lines.extend(f"  {part}" for part in _wrap(text, 76))
+        return lines
+
     def _desktop_lines(self) -> List[str]:
         """Where the real panel is, and whether it can be fed."""
         try:
@@ -391,6 +417,10 @@ class MenuCommand:
         # an upgrade available only to whoever opens the sidebar.
         out.append(f"  build {self._fingerprint()}")
         out.append("")
+        notices = self._notice_lines()
+        if notices:
+            out.extend(notices)
+            out.append("")
         out.extend(self._desktop_lines())
         out.append("")
         out.extend(self._rotation_lines())

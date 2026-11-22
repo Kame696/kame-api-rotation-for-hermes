@@ -38,7 +38,8 @@ def test_four_settings_are_visible_to_every_user_and_the_rest_are_advanced():
     # before it shipped (settings.HIDDEN, owner 2026-11-08), so the count is back to 19.
     # 1.8.4.3 added 'Quiet limit while thinking' (thought_quiet_s): 20.
     # 1.9.0.1 added 'Quiet limit while answering' (answer_quiet_s): 21.
-    assert len(advanced) == 21
+    # 1.9.0.5 added 'Live line in the chat' (live_chat_line, on by default): 22.
+    assert len(advanced) == 22
     visible_main = [key for key, row in rows().items()
                     if not row["advanced"] and row["group"] != "off"]
     # switch-after, stop-waiting, speed boost, silent-key skip (owner, 2026-10-16/17:

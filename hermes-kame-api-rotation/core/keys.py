@@ -173,7 +173,7 @@ class ImportPlan:
     it, and so this can be tested without a credential store existing.
     """
 
-    __slots__ = ("new", "duplicates", "rejected")
+    __slots__ = ("new", "duplicates", "rejected", "misshapen", "refused", "unchecked")
 
     def __init__(
         self,
@@ -184,10 +184,20 @@ class ImportPlan:
         self.new: List[str] = list(new)
         self.duplicates: List[str] = list(duplicates)
         self.rejected: List[str] = list(rejected)
+        #: 1.9.0.5 (D2). Keys the provider's own shape rule refused; never added.
+        self.misshapen: List[str] = []
+        #: 1.9.0.5 (D2). ``(key, HTTP status)`` the provider refused when asked; never added.
+        self.refused: List[Tuple[str, int]] = []
+        #: 1.9.0.5 (D2). Keys added without a verdict (no network, a 429, a 5xx).
+        self.unchecked: List[str] = []
 
     @property
     def is_empty(self) -> bool:
         return not self.new
+
+    def drop(self, key: str) -> None:
+        """Take ``key`` out of what would be added."""
+        self.new = [k for k in self.new if k != key]
 
     def summary(self) -> str:
         parts = [f"{len(self.new)} new"]
@@ -195,7 +205,39 @@ class ImportPlan:
             parts.append(f"{len(self.duplicates)} already in pool")
         if self.rejected:
             parts.append(f"{len(self.rejected)} rejected")
+        if self.misshapen:
+            parts.append(f"{len(self.misshapen)} not shaped like a key of this provider")
+        if self.refused:
+            parts.append(f"{len(self.refused)} refused by the provider")
         return ", ".join(parts)
+
+
+#: 1.9.0.5 (D2). The shape a provider's keys have, by canonical provider id: ``(prefix, length)``. Only
+#: providers whose keys are known to have one are listed; every other provider's check is "not empty".
+#: ``length`` is exact for the classic ``AIza`` key (39) and a minimum for ``AQ.`` keys (Google's newer Gemini
+#: keys, Hermes ``agent/gemini_native_adapter.py``): a provider may list several shapes.
+KEY_SHAPES: Dict[str, Tuple[Tuple[str, int, bool], ...]] = {
+    "gemini": (("AIza", 39, True), ("AQ.", 40, False)),
+}
+
+
+def shape_problem(provider: str, key: str) -> Optional[str]:
+    """``"does not look like a <provider> key"`` when ``key`` breaks the provider's shape, else ``None``.
+
+    Pure and offline. A provider with no listed shape accepts any non-empty key (and an empty one is
+    refused for every provider), so adding a provider here is the only way a key is ever judged by shape.
+    """
+    name = str(provider or "").strip().lower()
+    text = str(key or "").strip()
+    if not text:
+        return f"does not look like a {name or 'provider'} key"
+    shape = KEY_SHAPES.get(name)
+    if shape is None:
+        return None
+    for prefix, length, exact in shape:
+        if text.startswith(prefix) and (len(text) == length if exact else len(text) >= length):
+            return None
+    return f"does not look like a {name} key"
 
 
 def plan_import(raw: str, existing: Iterable[str]) -> ImportPlan:
@@ -249,6 +291,18 @@ def format_plan_lines(plan: ImportPlan) -> List[str]:
         # Rejected tokens are shown redacted too. A rejected token is usually
         # junk, but "usually" is not a property worth betting a key on.
         lines.append(f"  ! {redact(token)} (does not look like an API key)")
+    return lines
+
+
+def format_check_lines(plan: ImportPlan, provider: str) -> List[str]:
+    """1.9.0.5 (D2): the keys the shape rule or the provider turned away, and the ones nobody could check."""
+    lines: List[str] = []
+    for key in plan.misshapen:
+        lines.append(f"  ! {redact(key)} (does not look like a {provider} key; added anyway unless the provider refuses it)")
+    for key, status in plan.refused:
+        lines.append(f"  ! {redact(key)} (rejected by the provider, HTTP {status}; not added)")
+    for key in plan.unchecked:
+        lines.append(f"  ? {redact(key)} (added, but the provider could not be asked just now)")
     return lines
 
 

@@ -51,6 +51,7 @@ from typing import Dict, List, Tuple
 #: gap here is a gap that would have surfaced as a traceback nobody saw.
 REQUIRED_MODULES: Tuple[str, ...] = (
     "transport.py",
+    "chat_line.py",  # 1.9.0.5: transport imports it at module level
     "facade.py",
     "journal_keeper.py",
     "settings.py",
@@ -87,6 +88,9 @@ OPTIONAL_MODULES: Tuple[str, ...] = (
     # lost the diagnostic still rotates, and the report a missing diagnostic
     # would produce is exactly the one nobody could read.
     "core/doctor.py",
+    # 1.9.0.5: the provider profiles; imported inside try/except by register(), so without it the plugin
+    # loads but Hermes keeps its own single-key clients.
+    "provider_profiles.py",
     # 1.8.2.7: read lazily and inside try/except; without it the hand-over to
     # Hermes' fallback chain simply never happens (KAME waits, as before).
     "core/fallback_chain.py",
@@ -284,14 +288,9 @@ def check_host_seams() -> Dict[str, object]:
         except Exception:
             target_dict[label] = False
 
-    # Check whether hermes-kame-provider is importable (the companion that
-    # actually calls facade.make_client).
-    try:
-        import importlib
-        importlib.import_module("hermes_kame_provider")
-        optional["hermes-kame-provider package"] = True
-    except Exception:
-        optional["hermes-kame-provider package"] = False
+    # 1.9.0.5: the provider profiles ship inside this package (provider_profiles.py); the old
+    # hermes-kame-provider companion is no longer checked here, so its absence is never reported as a
+    # missing seam. Its PRESENCE is a problem, reported by provider_profiles.problems().
 
     req_present = [k for k, v in required.items() if v]
     req_missing = [k for k, v in required.items() if not v]

@@ -1,5 +1,5 @@
 name: hermes-kame-api-rotation
-version: "1.9.0.4"
+version: "1.9.0.5"
 # Declared v2 in 1.0.9 for the marketplace metadata, and put back to 1 in
 # 1.1.2 because older Hermes installers refused anything above 1. Current
 # Hermes now shares one v2-capable constant between loader and installer:
@@ -33,7 +33,7 @@ tags:
 # One paragraph, because this is the text a person reads in a plugin list.
 # The full account of what each release claims and how it was checked lives in
 # README.md and CHANGELOG.md, which is where a reader can choose to go looking.
-description: "Smart API key rotation for Hermes. Put several keys in one provider field, comma separated, and KAME picks the healthiest key for every call - not only after one fails. When a key is refused it reads the provider's own evidence (retry delay, quota window, rate-limit headers, error body) and rests that key exactly as long as the evidence justifies, then moves on without the error reaching your chat. A per-minute throttle, a daily quota, an outage and a dead key each get their own wait; no key is held longer than one hour by default; Gemini's bare 429 RESOURCE_EXHAUSTED is retried on a short 1, 2, 4, 8s ladder. When every key is resting it waits for the first one back and tells you how long. Works with any provider: it acts on evidence, never on a provider list. Adds /kame, /kame-keys and /kame-quota."
+description: "Rotates many API keys per provider so rate limits and quota errors never stop your agent: the healthiest key for every call, the next model when one is busy, and a live line in the chat showing what it did."
 author: "Kame696"
 # Every switch is also an environment variable, and the environment wins. The
 # config entry exists because that is where Hermes keeps plugin switches and a
@@ -79,6 +79,10 @@ config_schema:
     type: bool
     default: true
     description: "Applies to one error only: HTTP 429 with status RESOURCE_EXHAUSTED and no retry delay and no quotaId - Gemini's bare refusal. That key rests 1s, then 2, 4, 8, 16, 32 and up to unsized_backoff_max_seconds on each repeat, instead of the flat unsized_throttle_rest_seconds. It resets the moment the key answers, and a number the provider states is always obeyed, never multiplied. In real use it made fewer calls per minute than the flat rest (24 against 29) without answering less. Off restores the flat rest exactly. Same as KAME_UNSIZED_BACKOFF."
+  live_chat_line:
+    type: bool
+    default: true
+    description: "While API Rotation acts on a reply (a refused key replaced, every key resting, another model answering) one line in the conversation says so and is updated in place; a clean reply posts nothing. Off posts nothing. Same as KAME_LIVE_CHAT_LINE."
   unsized_backoff_max_seconds:
     type: int
     default: 64

@@ -34,12 +34,18 @@ def _load_commands():
 
 cmd = _load_commands()
 
-# Fabricated but realistically shaped: 39 chars, `AIza` prefix, mixed case
+
+@pytest.fixture(autouse=True)
+def _no_network_in_key_checks(monkeypatch):
+    """1.9.0.5 (D2): ``add`` / ``import`` ask Google about a new Gemini key; no test here may reach the network."""
+    monkeypatch.setattr(cmd, "_http_status", lambda url, timeout=8.0, headers=None: 200)
+
+# Fabricated but realistically shaped (1.9.0.5: really 39 chars now; they were 40, which the shape check refuses): `AIza` prefix, mixed case
 # and digits like a real Google key. The digits matter — a fixture without
 # them would not exercise the same code paths as a live key.
-K1 = "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7"
-K2 = "AIzaSyB2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
-K3 = "AIzaSyC3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9"
+K1 = "AIzaSy1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7"
+K2 = "AIzaSy2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+K3 = "AIzaSy3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9"
 
 
 _UNSET = object()

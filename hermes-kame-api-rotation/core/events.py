@@ -95,16 +95,22 @@ GAVE_UP = "gave_up"
 #: answer with the next model. A planned switch, not a failure.
 HANDOVER = "handover"
 
+#: 1.9.0.5 (E1, decisions/0036). Every key was resting on a label with no time of its own, so the pending
+#: request was sent to one of them again instead of waiting in silence.
+RETEST = "retest"
+#: 1.9.0.5 (E3). *Clear pool* ran; the row carries what it cleared, as counts.
+RESET = "reset"
+
 _KINDS = frozenset(
     {ROTATION, SWITCH, QUARANTINE, INVALID_KEY, DENIED_MODEL, STORM,
-     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING, SENT, ANSWERED, GAVE_UP, HANDOVER}
+     STREAM_DROP, STITCH, WAIT, RECOVERY, SURFACED, SETTING, SENT, ANSWERED, GAVE_UP, HANDOVER, RETEST, RESET}
 )
 
 #: The kinds that are KAME working rather than a provider failing. The panel
 #: colours and filters on this split, and the distinction is the point of the
 #: 1.6.0.1 Events tab: a screen that shows only refusals reads like a fault
 #: report, and a rotation engine that is doing its job is not a fault.
-GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING, SENT, ANSWERED, HANDOVER})
+GOOD_KINDS = frozenset({SWITCH, RECOVERY, STITCH, WAIT, SETTING, SENT, ANSWERED, HANDOVER, RETEST, RESET})
 #: ``SETTING`` sits on this side of the split for the same reason: it is
 #: not a provider refusing, and a row painted as a fault would be read as
 #: one. It is the owner acting, which is neither, and of the two colours

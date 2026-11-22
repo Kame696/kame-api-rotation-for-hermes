@@ -91,6 +91,7 @@ class TestTheShelves:
             settings.MODEL_SWITCH,
             settings.FAILOVER_AFTER,
             settings.REPLY_NOTICE,
+            settings.LIVE_CHAT_LINE,   # 1.9.0.5 (C1): the line in the chat, next to the notice after a reply
             settings.MAX_TOTAL_WAIT,   # 1.8.2.8 (owner): advanced, with the other rarely-wanted one
             settings.NO_MODEL_FALLBACK,
         ]

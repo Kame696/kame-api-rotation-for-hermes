@@ -493,6 +493,14 @@ def register(ctx) -> None:
     except Exception:  # pragma: no cover — ``load`` swallows its own failures
         logger.debug("%s: could not read the plugin settings", PLUGIN_NAME, exc_info=True)
 
+    # 1.9.0.5 (C1): the live line in the conversation needs the context (``post_message``, ``session_surface``).
+    try:
+        from . import chat_line
+
+        chat_line.attach(ctx)
+    except Exception:  # pragma: no cover - a courtesy line
+        logger.debug("%s: could not attach the chat line", PLUGIN_NAME, exc_info=True)
+
     ctx.register_hook("transform_api_error_classification", _on_api_error_classification)
 
     # Separately guarded: a readout must never cost the verdict above.
@@ -548,9 +556,9 @@ def register(ctx) -> None:
     except Exception:
         logger.debug("%s: could not read the remembered trouble early", PLUGIN_NAME, exc_info=True)
 
-    # The carousel itself. ``hermes-kame-provider`` finds this package through
-    # the registry and asks ``facade.make_client`` for every API-key provider's
-    # client; without that companion installed nothing here is ever asked, and
+    # The carousel itself. The provider profiles (``provider_profiles``) ask
+    # ``facade.make_client`` for every API-key provider's client through the
+    # registry; if they are not installed nothing here is ever asked, and
     # the hook above still sizes and scopes every refusal Hermes sees.
     try:
         import sys as _sys
@@ -562,6 +570,15 @@ def register(ctx) -> None:
         configure(facade.TRANSPORT)
         facade.publish(_sys.modules[__name__])
         globals()["_dispatch_binding"] = facade.TRANSPORT
+        # 1.9.0.5 (A1, A4): the provider profiles are part of this package. Registered after the publish
+        # (a profile asks the registry for the facade) and skipped under ``plugins.isolation: host``.
+        try:
+            from . import provider_profiles
+
+            provider_profiles.register_profiles()
+        except Exception:
+            logger.warning("%s: could not register the provider profiles; Hermes keeps its own clients",
+                           PLUGIN_NAME, exc_info=True)
     except Exception:
         logger.warning("%s: the rotating client is unavailable; refusals are still classified",
                        PLUGIN_NAME, exc_info=True)
@@ -791,6 +808,12 @@ def _cleanup_runtime() -> None:
         facade.retract(_sys.modules[__name__])
     except Exception:  # pragma: no cover - a registry pop
         logger.debug("%s: could not retract the rotating client", PLUGIN_NAME, exc_info=True)
+    try:
+        from . import chat_line
+
+        chat_line.detach()
+    except Exception:  # pragma: no cover
+        logger.debug("%s: could not detach the chat line", PLUGIN_NAME, exc_info=True)
     runtime.set_rotation_recorder(None)
     runtime.set_answer_recorder(None)
     globals()["_binding"] = None

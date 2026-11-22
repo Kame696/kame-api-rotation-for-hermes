@@ -30,11 +30,13 @@ from .core.keys import (
     ImportPlan,
     build_labels,
     decode_text,
+    format_check_lines,
     format_plan_lines,
     count_usable,
     group_status,
     plan_import,
     redact,
+    shape_problem,
 )
 from .core.multikey import split_value
 
@@ -42,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 COMMAND_NAME = "kame-keys"
 COMMAND_DESCRIPTION = "Bulk-add and inspect pooled API keys"
-COMMAND_ARGS_HINT = "add <k1,k2,k3> | import <file> | split | status | reset"
+COMMAND_ARGS_HINT = "add <k1,k2,k3> | import <file> | split | remove-all | status | reset"
 
 DEFAULT_PROVIDER = "gemini"
 
@@ -63,6 +65,10 @@ _HELP = """/kame-keys — bulk API key management
   /kame-keys split [provider]     one pool entry per key for a value like
                                   GOOGLE_API_KEY=k1,k2,k3 (Hermes sends such a
                                   value whole, as one key)
+  /kame-keys remove-all [provider] take back what API Rotation put in your pool
+                                  (its key rows, the suppressed source, a key
+                                  list in .env cut to its first key, backed up);
+                                  afterwards the plugin can be uninstalled
   /kame-keys reset [provider]     clear exhaustion status, re-enable all keys
   /kame-keys help                 this text
 
@@ -220,6 +226,86 @@ def _prune_backups(path: Path) -> None:
         logger.debug("kame: backup prune failed", exc_info=True)
 
 
+# ── key check (1.9.0.5, D2) ────────────────────────────────────────────────
+
+#: Where a provider's key can be asked "is this key alive?" with one cheap read, by canonical id:
+#: ``(default base URL, path, header that carries the key)``; the key never goes in the URL. Only Gemini has one; every other provider is judged
+#: by its shape alone (``core.keys.shape_problem``) and is never probed.
+_PROBES = {"gemini": ("https://generativelanguage.googleapis.com/v1beta", "/models?pageSize=1", "x-goog-api-key")}
+
+#: HTTP answers that say the provider does not accept this key.
+_REFUSING_STATUSES = frozenset({400, 401, 403})
+
+
+def _http_status(url: str, timeout: float = 8.0, headers: Optional[Dict[str, str]] = None) -> Optional[int]:
+    """One GET, its status code; ``None`` when nothing answered. Tests replace this function.
+
+    Same client style as the rest of the plugin (httpx, Hermes' own TLS settings). The key travels in a header
+    (never the URL), so neither is logged and an exception is reduced to its type.
+    """
+    try:
+        import httpx
+
+        verify: Any = True
+        try:
+            from .facade import _verify_for
+
+            verify = _verify_for(url)
+        except Exception:
+            verify = True
+        with httpx.Client(timeout=timeout, verify=verify) as client:
+            return int(client.get(url, headers=headers or {}).status_code)
+    except Exception as exc:
+        logger.debug("kame: key check could not reach the provider (%s)", type(exc).__name__)
+        return None
+
+
+def _probe_base(provider: str) -> Optional[str]:
+    probe = _PROBES.get(provider)
+    if probe is None:
+        return None
+    base = probe[0]
+    try:
+        from . import envsync
+
+        for name, _var, url in envsync._variables():
+            if name == provider and url:
+                base = url
+                break
+    except Exception:
+        logger.debug("kame: provider base URL unavailable for the key check", exc_info=True)
+    base = base.rstrip("/")
+    if base.endswith("/openai"):
+        base = base[: -len("/openai")]
+    return base
+
+
+def _check_plan(provider: str, plan: ImportPlan, *, probe: bool) -> None:
+    """Judge ``plan.new`` before anything is written; what fails is moved out of ``plan.new``.
+
+    Shape first (offline), then, only when ``probe`` (explicit ``add`` / ``import``, never at boot), one read
+    per key through the provider's own base URL. A 400/401/403 is the provider refusing the key. Anything
+    else that is not a 2xx (no network, 429, 5xx) is no verdict: the key is added and said to be unchecked.
+    """
+    for key in list(plan.new):
+        if shape_problem(provider, key):
+            # a warning only: the key stays in ``plan.new``; the probe (explicit add / import) decides.
+            plan.misshapen.append(key)
+    if not probe or provider not in _PROBES:
+        return
+    base = _probe_base(provider)
+    if not base:
+        return
+    path, header = _PROBES[provider][1], _PROBES[provider][2]
+    for key in list(plan.new):
+        status = _http_status(base + path, headers={header: key})
+        if status in _REFUSING_STATUSES:
+            plan.refused.append((key, int(status)))
+            plan.drop(key)
+        elif status is None or not 200 <= int(status) < 300:
+            plan.unchecked.append(key)
+
+
 # ── argument parsing ──────────────────────────────────────────────────────
 
 
@@ -288,6 +374,10 @@ def _is_api_key_entry(entry) -> bool:
     return str(getattr(entry, "auth_type", "") or "") == AUTH_TYPE_API_KEY
 
 
+def _provider_hint(entry) -> str:
+    return str(getattr(entry, "provider", "") or "").strip().lower()
+
+
 def _entry_summaries(pool) -> List[Dict[str, Any]]:
     summaries: List[Dict[str, Any]] = []
     for entry in pool.entries():
@@ -316,6 +406,9 @@ def _entry_summaries(pool) -> List[Dict[str, Any]]:
             "request_count": getattr(entry, "request_count", 0),
             "usable": usable,
             "holds": holds,
+            # 1.9.0.5 (D2): a stored key that breaks its provider's shape, named in the list.
+            "shape": (shape_problem(_provider_hint(entry), token)
+                      if token and not holds > 1 and _is_api_key_entry(entry) else None) or "",
         })
     return summaries
 
@@ -351,6 +444,9 @@ def _cmd_status(rest: str) -> str:
                 f"{provider} — {usable} of {countable} key(s) usable"
             )
         lines.extend(group_status(summaries))
+        for entry in summaries:
+            if entry.get("shape"):
+                lines.append(f"  ! {entry['label']}: {entry['shape']}")
         if any(int(s.get("holds") or 0) > 1 for s in summaries):
             lines.append(
                 f"  ! one value holds several keys; Hermes would send it as one. "
@@ -374,7 +470,7 @@ def _existing_labels(pool) -> List[str]:
 def _apply_plan(provider: str, plan: ImportPlan, pool) -> str:
     if plan.is_empty:
         head = f"Nothing to add to {provider} ({plan.summary()})."
-        detail = format_plan_lines(plan)
+        detail = format_plan_lines(plan) + format_check_lines(plan, provider)
         return "\n".join([head, *detail]) if detail else head
 
     backup = _backup_auth_store()
@@ -400,6 +496,7 @@ def _apply_plan(provider: str, plan: ImportPlan, pool) -> str:
     if backup:
         lines.append(f"Backup: {backup}")
     lines.extend(format_plan_lines(plan))
+    lines.extend(format_check_lines(plan, provider))
     lines.extend(failures)
     lines.append(f"Pool now holds {len(pool.entries())} key(s).")
     return "\n".join(lines)
@@ -416,6 +513,7 @@ def _cmd_add(rest: str) -> str:
         return f"Could not load the {provider} pool: {exc}"
 
     plan = plan_import(payload, _existing_tokens(pool))
+    _check_plan(provider, plan, probe=True)
     return _apply_plan(provider, plan, pool)
 
 
@@ -442,6 +540,7 @@ def _cmd_import(rest: str) -> str:
         return f"Could not load the {provider} pool: {exc}"
 
     plan = plan_import(text, _existing_tokens(pool))
+    _check_plan(provider, plan, probe=True)
     return _apply_plan(provider, plan, pool)
 
 
@@ -550,6 +649,14 @@ def _cmd_reset(rest: str) -> str:
     return "\n".join(lines)
 
 
+def _cmd_remove_all(rest: str) -> str:
+    """1.9.0.5 (D1): undo what API Rotation set up in the pool and in ``.env``, so it can be uninstalled."""
+    from . import envsync
+
+    provider = rest.strip().lower() or None
+    return envsync.describe_removal(envsync.remove_all(provider))
+
+
 _SUBCOMMANDS = {
     "add": _cmd_add,
     "import": _cmd_import,
@@ -557,6 +664,8 @@ _SUBCOMMANDS = {
     "list": _cmd_status,
     "reset": _cmd_reset,
     "split": _cmd_split,
+    "remove-all": _cmd_remove_all,
+    "remove_all": _cmd_remove_all,
 }
 
 

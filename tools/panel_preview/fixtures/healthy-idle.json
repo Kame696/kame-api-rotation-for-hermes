@@ -3,10 +3,10 @@
  "build": {
   "complete": true,
   "fingerprint": "",
-  "guidance": "fallback",
+  "guidance": "host:2",
   "missing": []
  },
- "build_line": "1.9.0.1",
+ "build_line": "1.9.0.5",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -93,7 +93,7 @@
   "switch_limit": 3,
   "threshold_s": 0.0,
   "warning": "",
-  "why": "Switching: automatic - when your provider is busy, Hermes answers with the next model below at once; when your keys are resting, after a few seconds (KAME learns how long your model usually takes). Your model comes back as soon as it can answer, and the first model in the list is always tried first."
+  "why": "Switching: automatic - when your provider is busy, Hermes answers with the next model below at once; when your keys are resting, after a few seconds (API Rotation learns how long your model usually takes). Your model comes back as soon as it can answer, and the first model in the list is always tried first."
  },
  "first_run": false,
  "gemini_tool_call_fix": {
@@ -109,10 +109,10 @@
   "model_switches": 0,
   "replies": 1240,
   "saved": 96,
-  "since": 1792410336.2028065
+  "since": 1793135475.350608
  },
  "pacing_state": {},
- "pid": 14452,
+ "pid": 19840,
  "pools": [
   {
    "daily_limit": null,
@@ -120,7 +120,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.5-flash",
-   "idle_for_s": 0.03048229217529297,
+   "idle_for_s": 0.03343820571899414,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -229,7 +229,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.6-flash",
-   "idle_for_s": 0.030751705169677734,
+   "idle_for_s": 0.03365588188171387,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -338,7 +338,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.7-flash",
-   "idle_for_s": 0.03107762336730957,
+   "idle_for_s": 0.03392219543457031,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -447,7 +447,7 @@
    "failures": 0,
    "healthy": 14,
    "identity": "gemini:gemini-3.8-flash",
-   "idle_for_s": 0.03345918655395508,
+   "idle_for_s": 0.03522992134094238,
    "in_flight": 0,
    "invalid": 0,
    "invalid_keys": [],
@@ -554,14 +554,14 @@
  "profile": "",
  "quota_use": {
   "models": {},
-  "since": 1794656736.1951222,
+  "since": 1795381875.3446674,
   "stopped": {},
   "suggestion": null
  },
  "reason": "not installed",
  "replies": [
   {
-   "at": 1794656716.2028065,
+   "at": 1795381855.350608,
    "first_s": 1.9,
    "for": "",
    "model": "gemini-3.8-flash",
@@ -579,6 +579,7 @@
     "model_switch",
     "failover_after_seconds",
     "reply_notice",
+    "live_chat_line",
     "max_total_wait_seconds",
     "never_fall_back_to_another_model"
    ],
@@ -605,7 +606,7 @@
     "answer_quiet_s",
     "hedge_max_prompt_tokens"
    ],
-   "note": "How KAME keeps answers fast. Already tuned; the first two are the ones worth knowing.",
+   "note": "How API Rotation keeps answers fast. Already tuned; the first two are the ones worth knowing.",
    "shows_fallback": false,
    "shows_keys": false,
    "title": "Speed"
@@ -618,7 +619,7 @@
     "pacing_rpm_overrides",
     "key_region_overrides"
    ],
-   "note": "One key per account (for Gemini, one per Google project): every key brings its own quota, and KAME rotates between them.",
+   "note": "One key per account (for Gemini, one per Google project): every key brings its own quota, and API Rotation rotates between them.",
    "shows_fallback": false,
    "shows_keys": true,
    "title": "Your API keys"
@@ -655,10 +656,10 @@
     "call_timings_disabled",
     "hedging_disabled"
    ],
-   "note": "Each switch turns one part of KAME off and gives that job back to Hermes. For finding out whether KAME is behind a problem. Leave them alone unless something is wrong.",
+   "note": "Each switch turns one part of API Rotation off and gives that job back to Hermes. For finding out whether API Rotation is behind a problem. Leave them alone unless something is wrong.",
    "shows_fallback": false,
    "shows_keys": false,
-   "title": "Troubleshooting: turn parts of KAME off"
+   "title": "Troubleshooting: turn parts of API Rotation off"
   }
  ],
  "settings": [
@@ -684,10 +685,10 @@
    "consequential": false,
    "default": "auto",
    "depends_on": null,
-   "detail": "Uses the fallback models you set in Hermes (hermes fallback add), as one big pool where your best model always comes first. Every reply starts on your best model and uses all of its keys. The reply goes to the next model of your list only when that model cannot answer: the provider says it is busy (two keys answer 'overloaded' or time out: at once, whatever the setting), every key is resting, or nothing has come back in time. Automatic: in time is about three times the model's usual first word, 6 to 20 s, learned on this computer. Set time: the seconds below. Never: always wait for this model's keys. The next reply starts on your best model again; one KAME knows is still busy or resting is passed down without spending a request. Nothing switches after part of an answer is on screen.",
+   "detail": "Uses the fallback models you set in Hermes (hermes fallback add), as one big pool where your best model always comes first. Every reply starts on your best model and uses all of its keys. The reply goes to the next model of your list only when that model cannot answer: the provider says it is busy (two keys answer 'overloaded' or time out: at once, whatever the setting), every key is resting, or nothing has come back in time. Automatic: in time is about three times the model's usual first word, 6 to 20 s, learned on this computer. Set time: the seconds below. Never: always wait for this model's keys. The next reply starts on your best model again; one API Rotation knows is still busy or resting is passed down without spending a request. Nothing switches after part of an answer is on screen.",
    "env": "KAME_MODEL_SWITCH",
    "group": "extra",
-   "help": "Uses the fallback models you set in Hermes (hermes fallback add), as one big pool where your best model always comes first. Every reply starts on your best model and uses all of its keys. The reply goes to the next model of your list only when that model cannot answer: the provider says it is busy (two keys answer 'overloaded' or time out: at once, whatever the setting), every key is resting, or nothing has come back in time. Automatic: in time is about three times the model's usual first word, 6 to 20 s, learned on this computer. Set time: the seconds below. Never: always wait for this model's keys. The next reply starts on your best model again; one KAME knows is still busy or resting is passed down without spending a request. Nothing switches after part of an answer is on screen.",
+   "help": "Uses the fallback models you set in Hermes (hermes fallback add), as one big pool where your best model always comes first. Every reply starts on your best model and uses all of its keys. The reply goes to the next model of your list only when that model cannot answer: the provider says it is busy (two keys answer 'overloaded' or time out: at once, whatever the setting), every key is resting, or nothing has come back in time. Automatic: in time is about three times the model's usual first word, 6 to 20 s, learned on this computer. Set time: the seconds below. Never: always wait for this model's keys. The next reply starts on your best model again; one API Rotation knows is still busy or resting is passed down without spending a request. Nothing switches after part of an answer is on screen.",
    "impact": "high",
    "key": "model_switch",
    "kind": "string",
@@ -717,7 +718,7 @@
     "now": "auto",
     "value": "timed"
    },
-   "detail": "Works only when you have set fallback models in Hermes (hermes fallback add); with no list nothing ever switches. When every key of the model you picked is resting and the soonest one is more than this many seconds away, KAME stops waiting and lets Hermes answer with the next model in your list. Hermes brings you back to the model you picked on the next message once its keys return. Short rests (a minute of rate limit) are waited out on the model you picked. 0 means never hand over. KAME itself never chooses a model.",
+   "detail": "Works only when you have set fallback models in Hermes (hermes fallback add); with no list nothing ever switches. When every key of the model you picked is resting and the soonest one is more than this many seconds away, API Rotation stops waiting and lets Hermes answer with the next model in your list. Hermes brings you back to the model you picked on the next message once its keys return. Short rests (a minute of rate limit) are waited out on the model you picked. 0 means never hand over. API Rotation itself never chooses a model.",
    "env": "KAME_FAILOVER_AFTER",
    "group": "extra",
    "help": "Only with Fallback set to 'Set time': when a reply has waited this long with nothing on screen (keys resting, failing or slow), it goes to the next model of your list. A busy provider goes at once, whatever this number.",
@@ -785,6 +786,35 @@
    "choice_order": null,
    "choices": null,
    "consequential": false,
+   "default": true,
+   "depends_on": null,
+   "detail": "While API Rotation replaces a refused key, waits for keys to come back or lets another model answer, one line in the conversation says so and is updated in place; a clean reply posts nothing. Never part of what the model reads. Off: nothing is posted.",
+   "env": "KAME_LIVE_CHAT_LINE",
+   "group": "extra",
+   "help": "While API Rotation replaces a refused key, waits for keys to come back or lets another model answer, one line in the conversation says so and is updated in place; a clean reply posts nothing. Never part of what the model reads. Off: nothing is posted.",
+   "impact": "medium",
+   "key": "live_chat_line",
+   "kind": "flag",
+   "line": "",
+   "max": null,
+   "min": null,
+   "off_or_at_least": null,
+   "recommendation": "Leave on.",
+   "source": "default",
+   "step": null,
+   "title": "Live line in the chat",
+   "units": "",
+   "value": true,
+   "when": "Leave on. Turn off only if a line in the conversation while API Rotation works gets in your way."
+  },
+  {
+   "advanced": true,
+   "choice_footnote": "",
+   "choice_help": {},
+   "choice_labels": {},
+   "choice_order": null,
+   "choices": null,
+   "consequential": false,
    "default": 0.0,
    "depends_on": null,
    "detail": "Unset, a chat waits for as long as every key is resting: each key's own rest is already capped by the ceiling above, and the call retries the moment one returns, so a spent quota ends with an answer on the same model. A cron job, unset, stops after 300 s \u2014 below Hermes' own cron timeout \u2014 and hands Hermes the provider's original refusal. Any value you set wins everywhere: 0 means never stop waiting, chats and cron alike; a number bounds both.",
@@ -816,7 +846,7 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME itself never chooses a model. Off (the default): if you have set fallback models in Hermes (hermes fallback add), they are used automatically when every key of your model is resting for long, and Hermes comes back to your model once its keys return. With no list nothing ever switches. On: your list is ignored and KAME waits for your keys however long that takes, and tells Hermes not to fall back on the errors it classifies (Hermes can still move on its own for some errors it sees itself, such as repeated timeouts). Summarisation and titling are routed by Hermes on a lane this cannot reach.",
+   "detail": "API Rotation itself never chooses a model. Off (the default): if you have set fallback models in Hermes (hermes fallback add), they are used automatically when every key of your model is resting for long, and Hermes comes back to your model once its keys return. With no list nothing ever switches. On: your list is ignored and API Rotation waits for your keys however long that takes, and tells Hermes not to fall back on the errors it classifies (Hermes can still move on its own for some errors it sees itself, such as repeated timeouts). Summarisation and titling are routed by Hermes on a lane this cannot reach.",
    "env": "KAME_NO_MODEL_FALLBACK",
    "group": "extra",
    "help": "Off (default): the fallback models you set in Hermes take over when your keys are out; on: always wait for your keys.",
@@ -833,7 +863,7 @@
    "title": "Ignore my fallback list",
    "units": "",
    "value": false,
-   "when": "Only if you keep a fallback list in Hermes but want KAME to wait for your keys anyway."
+   "when": "Only if you keep a fallback list in Hermes but want API Rotation to wait for your keys anyway."
   },
   {
    "advanced": false,
@@ -864,11 +894,11 @@
    "detail": "When a reply is slower than usual, send a backup request on another key and use whichever answers first. Balanced learns each model's usual wait and only races the slow calls; Faster does the same a notch sooner and more often, within a larger budget, and steps back to Balanced for 10 minutes when a key hits a rate limit.",
    "env": "KAME_HEDGE_MODE",
    "group": "speed",
-   "help": "How soon KAME races a second key when a reply is late. The line under the buttons says what the chosen mode costs in extra requests.",
+   "help": "How soon API Rotation races a second key when a reply is late. The line under the buttons says what the chosen mode costs in extra requests.",
    "impact": "high",
    "key": "hedge_mode",
    "kind": "string",
-   "line": "How hard KAME works to answer sooner.",
+   "line": "How hard API Rotation works to answer sooner.",
    "max": null,
    "min": null,
    "off_or_at_least": null,
@@ -902,10 +932,10 @@
    "consequential": false,
    "default": "auto",
    "depends_on": null,
-   "detail": "How long a key may stay silent before KAME drops it and asks the next one. Automatic learns each model's usual first-word time and drops a key only when it is far past it (20 s at least, 60 s for thinking models); never for a model on this computer. Backup keys still race a slow reply much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
+   "detail": "How long a key may stay silent before API Rotation drops it and asks the next one. Automatic learns each model's usual first-word time and drops a key only when it is far past it (30 s at least, 120 s for thinking models, one more second for every 2,000 tokens of the prompt, never more than Hermes' own 120 s); never for a model on this computer. Backup keys still race a slow reply much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
    "env": "KAME_FIRST_TOKEN_WAIT",
    "group": "speed",
-   "help": "How long a key may stay silent before KAME drops it and asks the next one. Automatic learns each model's usual first-word time and drops a key only when it is far past it (20 s at least, 60 s for thinking models); never for a model on this computer. Backup keys still race a slow reply much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
+   "help": "How long a key may stay silent before API Rotation drops it and asks the next one. Automatic learns each model's usual first-word time and drops a key only when it is far past it (30 s at least, 120 s for thinking models, one more second for every 2,000 tokens of the prompt, never more than Hermes' own 120 s); never for a model on this computer. Backup keys still race a slow reply much sooner. Set time: the seconds below. Off: Hermes' own 120 s.",
    "impact": "medium",
    "key": "first_token_wait",
    "kind": "string",
@@ -935,10 +965,10 @@
     "now": "auto",
     "value": "timed"
    },
-   "detail": "For a provider that accepts a request and then sends nothing. KAME waits this long for the first character \u2014 and for every character after it \u2014 before dropping that key and asking the next one. Zero, the default, means only Hermes' own 120s applies. Leave it at zero unless you have a provider that accepts a request and then hangs: a reasoning model can spend well over twenty seconds before its first token, and a number that short would abandon it mid-thought and rotate through the whole pool doing the same. Anything above zero is raised to at least 5s for the same reason. If you do have such a provider, 60 is the number to try: it is well clear of the slowest honest first token anyone has measured here, and half of what Hermes would otherwise spend before giving up \u2014 so a hung key costs a minute instead of two, and a slow one is still allowed to think.",
+   "detail": "For a provider that accepts a request and then sends nothing. API Rotation waits this long for the first character \u2014 and for every character after it \u2014 before dropping that key and asking the next one. Zero, the default, means only Hermes' own 120s applies. Leave it at zero unless you have a provider that accepts a request and then hangs: a reasoning model can spend well over twenty seconds before its first token, and a number that short would abandon it mid-thought and rotate through the whole pool doing the same. Anything above zero is raised to at least 5s for the same reason. If you do have such a provider, 60 is the number to try: it is well clear of the slowest honest first token anyone has measured here, and half of what Hermes would otherwise spend before giving up \u2014 so a hung key costs a minute instead of two, and a slow one is still allowed to think.",
    "env": "KAME_STREAM_SILENCE_TIMEOUT",
    "group": "speed",
-   "help": "Only with 'Wait for the first token' set to 'Set time': how many seconds a key may stay silent before KAME asks the next one; 60 suits most providers. 0 (default) leaves the wait to Hermes' own 120 s.",
+   "help": "Only with 'Wait for the first token' set to 'Set time': how many seconds a key may stay silent before API Rotation asks the next one; 60 suits most providers. 0 (default) leaves the wait to Hermes' own 120 s.",
    "impact": "low",
    "key": "stream_silence_timeout_seconds",
    "kind": "number",
@@ -993,10 +1023,10 @@
    "consequential": false,
    "default": 16.0,
    "depends_on": null,
-   "detail": "When two keys in a row are refused because their quota is spent, asking the rest one at a time costs almost a second each. KAME then asks 4 keys at once, then 8, then 16, and the first that answers wins; in a chat the others are cut (a call that does not stream asks at most 4 at once, and those finish on their own). Keys the provider itself said are still spent are asked all at once, and only they. A key that still had quota and lost the race may have spent one request. 0 or 1 asks one key at a time. Off when backup requests are off; never for background jobs.",
+   "detail": "When two keys in a row are refused because their quota is spent, asking the rest one at a time costs almost a second each. API Rotation then asks 4 keys at once, then 8, then 16, and the first that answers wins; in a chat the others are cut (a call that does not stream asks at most 4 at once, and those finish on their own). Keys the provider itself said are still spent are asked all at once, and only they. A key that still had quota and lost the race may have spent one request. 0 or 1 asks one key at a time. Off when backup requests are off; never for background jobs.",
    "env": "KAME_PROBE_BURST",
    "group": "speed",
-   "help": "When two keys in a row are refused because their quota is spent, asking the rest one at a time costs almost a second each. KAME then asks 4 keys at once, then 8, then 16, and the first that answers wins; in a chat the others are cut (a call that does not stream asks at most 4 at once, and those finish on their own). Keys the provider itself said are still spent are asked all at once, and only they. A key that still had quota and lost the race may have spent one request. 0 or 1 asks one key at a time. Off when backup requests are off; never for background jobs.",
+   "help": "When two keys in a row are refused because their quota is spent, asking the rest one at a time costs almost a second each. API Rotation then asks 4 keys at once, then 8, then 16, and the first that answers wins; in a chat the others are cut (a call that does not stream asks at most 4 at once, and those finish on their own). Keys the provider itself said are still spent are asked all at once, and only they. A key that still had quota and lost the race may have spent one request. 0 or 1 asks one key at a time. Off when backup requests are off; never for background jobs.",
    "impact": "low",
    "key": "probe_burst_max_legs",
    "kind": "number",
@@ -1109,10 +1139,10 @@
    "consequential": false,
    "default": 6.0,
    "depends_on": null,
-   "detail": "Before KAME has learned how fast this model usually answers, a call slower than this still gets a backup. Keep it well above the slowest honest first token so a merely normal call is never doubled.",
+   "detail": "Before API Rotation has learned how fast this model usually answers, a call slower than this still gets a backup. Keep it well above the slowest honest first token so a merely normal call is never doubled.",
    "env": "KAME_HEDGE_COLD_S",
    "group": "speed",
-   "help": "Before KAME has learned how fast this model usually answers, a call slower than this still gets a backup. Keep it well above the slowest honest first token so a merely normal call is never doubled.",
+   "help": "Before API Rotation has learned how fast this model usually answers, a call slower than this still gets a backup. Keep it well above the slowest honest first token so a merely normal call is never doubled.",
    "impact": "low",
    "key": "hedge_cold_s",
    "kind": "number",
@@ -1126,7 +1156,7 @@
    "title": "First backup while still learning",
    "units": "seconds",
    "value": 6.0,
-   "when": "Rarely. Used only until KAME has learned a model's normal speed."
+   "when": "Rarely. Used only until API Rotation has learned a model's normal speed."
   },
   {
    "advanced": true,
@@ -1167,10 +1197,10 @@
    "consequential": false,
    "default": 20.0,
    "depends_on": null,
-   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "detail": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before API Rotation asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, API Rotation learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
    "env": "KAME_THOUGHT_QUIET_S",
    "group": "speed",
-   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before KAME asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, KAME learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
+   "help": "How long a reply may stay quiet after it started thinking, with nothing shown yet, before API Rotation asks it again on another key (and later on the next model of your list). Its thoughts keep showing live meanwhile. Left alone, API Rotation learns it for each model: 8 to 20 seconds, longer for a model that is quiet by nature, never above 90. A number replaces that; 0 turns the watch off.",
    "impact": "low",
    "key": "thought_quiet_s",
    "kind": "number",
@@ -1196,10 +1226,10 @@
    "consequential": false,
    "default": 45.0,
    "depends_on": null,
-   "detail": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "detail": "How long a reply that has already started to show its answer may stay completely silent (the provider sends nothing at all) before API Rotation cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
    "env": "KAME_ANSWER_QUIET_S",
    "group": "speed",
-   "help": "How long a reply that has already started to show its answer may stay completely silent (no words, no tool call, no thinking) before KAME cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
+   "help": "How long a reply that has already started to show its answer may stay completely silent (the provider sends nothing at all) before API Rotation cuts it and asks again to continue it, on another key or on the same key when it is the only one. What you already read stays; nothing is repeated. 45 seconds by default; 0 turns the watch off. A model running on your own machine is never cut.",
    "impact": "low",
    "key": "answer_quiet_s",
    "kind": "number",
@@ -1207,7 +1237,7 @@
    "max": 600.0,
    "min": 0.0,
    "off_or_at_least": null,
-   "recommendation": "Leave at 45. Some providers keep the connection open with empty keep-alive messages while the answer has stopped, and Hermes alone would wait for minutes.",
+   "recommendation": "Leave at 45. A tool the provider runs on its side (a web search, code execution) is never cut while it runs.",
    "source": "default",
    "step": null,
    "title": "Quiet limit while answering",
@@ -1283,10 +1313,10 @@
    "consequential": false,
    "default": "",
    "depends_on": null,
-   "detail": "Tell the pacer what a provider really allows, e.g. 'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most KAME will assume; a real per-minute refusal can still lower it, and nothing learned can raise it above this. Leave empty to let it learn from real answers and refusals.",
+   "detail": "Tell the pacer what a provider really allows, e.g. 'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most API Rotation will assume; a real per-minute refusal can still lower it, and nothing learned can raise it above this. Leave empty to let it learn from real answers and refusals.",
    "env": "KAME_PACING_RPM_OVERRIDES",
    "group": "keyring",
-   "help": "Tell the pacer what a provider really allows, e.g. 'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most KAME will assume; a real per-minute refusal can still lower it, and nothing learned can raise it above this. Leave empty to let it learn from real answers and refusals.",
+   "help": "Tell the pacer what a provider really allows, e.g. 'gemini:gemini-2.5-flash=10, groq:*=30'. It is the most API Rotation will assume; a real per-minute refusal can still lower it, and nothing learned can raise it above this. Leave empty to let it learn from real answers and refusals.",
    "impact": "low",
    "key": "pacing_rpm_overrides",
    "kind": "string",
@@ -1300,7 +1330,7 @@
    "title": "Per-model requests-per-minute limits",
    "units": "",
    "value": "",
-   "when": "Only if you know a model's per-minute limit and KAME keeps hitting it."
+   "when": "Only if you know a model's per-minute limit and API Rotation keeps hitting it."
   },
   {
    "advanced": true,
@@ -1358,7 +1388,7 @@
    "title": "Daily quota cooldown",
    "units": "seconds",
    "value": 3600.0,
-   "when": "Only if your provider's daily quota resets at a known time KAME cannot read."
+   "when": "Only if your provider's daily quota resets at a known time API Rotation cannot read."
   },
   {
    "advanced": true,
@@ -1529,10 +1559,10 @@
    "recommendation": "",
    "source": "default",
    "step": null,
-   "title": "Turn KAME off",
+   "title": "Turn API Rotation off",
    "units": "",
    "value": false,
-   "when": "Only to check whether KAME is behind a problem. Everything goes back to plain Hermes."
+   "when": "Only to check whether API Rotation is behind a problem. Everything goes back to plain Hermes."
   },
   {
    "advanced": false,
@@ -1561,7 +1591,7 @@
    "title": "Give back key selection",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1573,10 +1603,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME stops keeping a comma-separated key variable as one pool row per key, and Hermes reads it as one long key again, which no provider accepts. `/kame-keys split` still does it once by hand.",
+   "detail": "API Rotation stops keeping a comma-separated key variable as one pool row per key, and Hermes reads it as one long key again, which no provider accepts. `/kame-keys split` still does it once by hand.",
    "env": "KAME_RESOLVER_DISABLED",
    "group": "off",
-   "help": "KAME stops keeping a comma-separated key variable as one pool row per key, and Hermes reads it as one long key again, which no provider accepts. `/kame-keys split` still does it once by hand.",
+   "help": "API Rotation stops keeping a comma-separated key variable as one pool row per key, and Hermes reads it as one long key again, which no provider accepts. `/kame-keys split` still does it once by hand.",
    "impact": "escape",
    "key": "resolver_disabled",
    "kind": "flag",
@@ -1590,7 +1620,7 @@
    "title": "Send multi-key values whole",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1619,7 +1649,7 @@
    "title": "Stop rotating per call",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1648,7 +1678,7 @@
    "title": "Log every failure during an outage",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1677,7 +1707,7 @@
    "title": "Hide the status line",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1689,10 +1719,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "An answer cut off mid-stream is handed back to Hermes, which restarts it behind a '[System: The previous response was cut off...]' note, instead of KAME continuing it on another key.",
+   "detail": "An answer cut off mid-stream is handed back to Hermes, which restarts it behind a '[System: The previous response was cut off...]' note, instead of API Rotation continuing it on another key.",
    "env": "KAME_STREAM_STITCH_DISABLED",
    "group": "off",
-   "help": "An answer cut off mid-stream is handed back to Hermes, which restarts it behind a '[System: The previous response was cut off...]' note, instead of KAME continuing it on another key.",
+   "help": "An answer cut off mid-stream is handed back to Hermes, which restarts it behind a '[System: The previous response was cut off...]' note, instead of API Rotation continuing it on another key.",
    "impact": "escape",
    "key": "stream_stitch_disabled",
    "kind": "flag",
@@ -1706,7 +1736,7 @@
    "title": "Stop continuing cut answers",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1718,10 +1748,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
+   "detail": "API Rotation writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
    "env": "KAME_RECORDER_DISABLED",
    "group": "off",
-   "help": "KAME writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
+   "help": "API Rotation writes each refusal a provider sends to refusals.jsonl beside its own state \u2014 status, message and body, with API keys removed first \u2014 and decides nothing from it. It is there because the field that tells a per-minute quota from a per-day one could not be read before 1.7.0.0, so it appears in no older log and no rule about it can be checked against real traffic. Writes only, never interrupts a call, and keeps the last ~8 MB (the file rotates). Turn this on to stop the writing.",
    "impact": "escape",
    "key": "refusal_recorder_disabled",
    "kind": "flag",
@@ -1735,7 +1765,7 @@
    "title": "Stop recording refusals",
    "units": "",
    "value": true,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1747,10 +1777,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "Google's per-minute and per-day free-tier quotas report the identical metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before KAME sees the error. KAME reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it.",
+   "detail": "Google's per-minute and per-day free-tier quotas report the identical metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before API Rotation sees the error. API Rotation reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it.",
    "env": "KAME_QUOTA_ID_DISABLED",
    "group": "off",
-   "help": "Google's per-minute and per-day free-tier quotas report the identical metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before KAME sees the error. KAME reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it.",
+   "help": "Google's per-minute and per-day free-tier quotas report the identical metric name and differ only in one field, quotaId, which Hermes' Gemini adapter drops before API Rotation sees the error. API Rotation reads the refusal body on its own connection so that field survives; nothing else about the error changes. Turn this on to leave the refusal exactly as Hermes reads it.",
    "impact": "escape",
    "key": "quota_id_disabled",
    "kind": "flag",
@@ -1764,7 +1794,7 @@
    "title": "Stop reading the quota window",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1776,10 +1806,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
+   "detail": "API Rotation writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
    "env": "KAME_CALL_TIMINGS_DISABLED",
    "group": "off",
-   "help": "KAME writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
+   "help": "API Rotation writes one line per attempt to calls.jsonl beside its own state: how long until anything came back, how long until the answer started, how long the attempt took in total, and how much of the turn had already been spent waiting for a key. It exists so \u201cis it slow, and whose fault is it\u201d can be answered with numbers rather than from memory \u2014 a turn that took two minutes is a quota problem or a slow model, and those look identical from outside. No key, no prompt and no answer text is written; only durations, a model name and the same key fingerprint the panel already shows. Writes only, never interrupts a call, and keeps the last ~4 MB (the file rotates). Turn this on to stop the writing.",
    "impact": "escape",
    "key": "call_timings_disabled",
    "kind": "flag",
@@ -1793,7 +1823,7 @@
    "title": "Stop timing calls",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   },
   {
    "advanced": false,
@@ -1805,10 +1835,10 @@
    "consequential": false,
    "default": false,
    "depends_on": null,
-   "detail": "When hedging is active and a reply is slower than usual, KAME asks a second key (and, if that is slow too, a third) and uses whichever answers first. In the chat the race is decided by the first word: the moment one key starts answering, the others are cut. Each backup is one extra request on a key of another project, held to a budget (about 10% of calls) and stopped by itself when rate limits appear. Turn this on to stop hedging everywhere.",
+   "detail": "When hedging is active and a reply is slower than usual, API Rotation asks a second key (and, if that is slow too, a third) and uses whichever answers first. In the chat the race is decided by the first word: the moment one key starts answering, the others are cut. Each backup is one extra request on a key of another project, held to a budget (about 10% of calls) and stopped by itself when rate limits appear. Turn this on to stop hedging everywhere.",
    "env": "KAME_HEDGING_DISABLED",
    "group": "off",
-   "help": "When hedging is active and a reply is slower than usual, KAME asks a second key (and, if that is slow too, a third) and uses whichever answers first. In the chat the race is decided by the first word: the moment one key starts answering, the others are cut. Each backup is one extra request on a key of another project, held to a budget (about 10% of calls) and stopped by itself when rate limits appear. Turn this on to stop hedging everywhere.",
+   "help": "When hedging is active and a reply is slower than usual, API Rotation asks a second key (and, if that is slow too, a third) and uses whichever answers first. In the chat the race is decided by the first word: the moment one key starts answering, the others are cut. Each backup is one extra request on a key of another project, held to a budget (about 10% of calls) and stopped by itself when rate limits appear. Turn this on to stop hedging everywhere.",
    "impact": "escape",
    "key": "hedging_disabled",
    "kind": "flag",
@@ -1822,7 +1852,7 @@
    "title": "Stop adaptive hedging",
    "units": "",
    "value": false,
-   "when": "Only to check whether this part of KAME is behind a problem."
+   "when": "Only to check whether this part of API Rotation is behind a problem."
   }
  ],
  "settings_pending_restart": [],
@@ -1833,6 +1863,8 @@
    "burst": 0,
    "circle": 0,
    "extra_pct": 6.0,
+   "limited": 3,
+   "limited_pct": 6.0,
    "race": 0,
    "replies": 50,
    "rescue": 0,
@@ -1845,6 +1877,8 @@
    "burst": 0,
    "circle": 0,
    "extra_pct": 6.0,
+   "limited": 3,
+   "limited_pct": 6.0,
    "race": 0,
    "replies": 50,
    "rescue": 0,
@@ -1863,6 +1897,6 @@
   "retired": 0,
   "soonest_s": null
  },
- "updated_at": 1794656736.339489,
- "version": "1.9.0.4"
+ "updated_at": 1795381876.1354656,
+ "version": "1.9.0.5"
 }

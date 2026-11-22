@@ -155,6 +155,32 @@ HARD_DELAY_CAP_S = 86400.0
 #: anything.
 MAX_HOLD_S = 3600.0
 
+#: 1.9.0.5 (E2, decisions/0036). A refusal judged account-wide holds the key for ITS model at once; it spans
+#: every model of the provider only when a DIFFERENT model reports the same account-scope refusal on the same
+#: key within this long. Money refusals (:data:`MONEY_KINDS`) are account-wide at once.
+ACCOUNT_CONFIRM_WINDOW_S = 600.0
+
+#: Kinds that are about money, not a window: no second model is needed to believe them.
+MONEY_KINDS = frozenset({"insufficient_quota", "billing"})
+
+#: Kinds that are about the CREDENTIAL, not a quota label: a refused or revoked key is refused everywhere. They
+#: span the provider at once like money does, and are never re-tested as if a label might be wrong.
+ACCOUNT_AT_ONCE_KINDS = MONEY_KINDS | frozenset({"auth", "revoked"})
+
+#: 1.9.0.5 (review fix 6, 7). Short refusals that say nothing about a standing label: an outage or a per-minute
+#: counter that arrives while a label hold rests (a re-test is exactly such a moment) leaves that hold alone.
+TRANSIENT_KINDS = frozenset({"per_minute", "rate_limit", "server"})
+
+#: Why an account-wide hold was set, weakest to strongest. Only a ``label`` hold is worth asking again.
+_WHY_RANK = {"label": 0, "stated": 1, "money": 2, "auth": 2}
+
+#: 1.9.0.5 (E1, decisions/0036). While every key of an identity rests and the soonest return is further away
+#: than the first value, the pending request itself is sent to ONE label-held key after each interval in turn:
+#: 20, 40, 80, 160 s, then every 300 s. Reset by any answer on that identity.
+RETEST_SCHEDULE_S = (20.0, 40.0, 80.0, 160.0, 300.0)
+#: A re-test that never reported back (the request hangs, the process dies) stops counting as in flight after this.
+RETEST_INFLIGHT_S = 120.0
+
 #: How long a key may stay in the pool after a call stopped offering it.
 #:
 #: The pool mirrors the credential list, but "this call did not offer it" and
@@ -1451,6 +1477,17 @@ class Carousel:
         #: why "the later of local and shared" has to mean "the fresher
         #: event", not a numeric ``max()``.
         self._account_hold_at: Dict[Tuple[str, str], float] = {}
+        #: 1.9.0.5 (review fix 7). Parallel to ``_account_hold``: WHY it was set - ``label`` (a quota word of
+        #: ours, no time stated), ``stated`` (a deadline the provider gave), ``money`` or ``auth``.
+        self._account_hold_why: Dict[Tuple[str, str], str] = {}
+        #: 1.9.0.5 (E2). The first account-scope refusal of a key, ``(provider, key) -> (when, identity)``:
+        #: waiting for a second model to say the same before ``_account_hold`` is set.
+        #: The third item is that refusal's own deadline, so the hold the second model confirms lasts as long
+        #: as the longest of the two (the old rule's never-shorten, kept).
+        self._account_pending: Dict[Tuple[str, str], Tuple[float, str, float]] = {}
+        #: 1.9.0.5 (E1). Per identity: ``{"due": when the next re-test may go, "n": re-tests sent,
+        #: "inflight_until": ...}``. Created when a fully resting pool is first looked at, dropped on any answer.
+        self._retest: Dict[str, Dict[str, Any]] = {}
         #: 1.8.1.5. The cap each shared deadline got the first time this
         #: process read it, by ``(scope, subject, fingerprint)`` and the
         #: event's ``at`` -- see :meth:`_bounded_shared`.
@@ -1750,6 +1787,8 @@ class Carousel:
                 return self._combined_until(pool, identity, provider, k, now, shared_active)
 
             healthy = [k for k in usable if _until(k) <= now]
+            if healthy:
+                self._retest.pop(identity, None)    # 1.9.0.5 (E1): somebody is ready; the episode is over
 
             # 1.6.0.1. A key the provider refused as a credential is not
             # merely unlucky, and the demotion below — offering it last —
@@ -1956,7 +1995,12 @@ class Carousel:
                 # no refusal to classify), so this has to run regardless of
                 # what this call's ``scope`` happens to default to.
                 self._account_hold.pop((provider, key), None)
+                self._account_hold_why.pop((provider, key), None)
+                state["label_held"] = False
                 self._account_hold_at[(provider, key)] = now
+                # 1.9.0.5: an answer ends a pending account suspicion and the re-test schedule (E1, E2).
+                self._account_pending.pop((provider, key), None)
+                self._retest.pop(identity, None)
                 # 1.8.0.0: a success writes ``until: 0`` to the shared file
                 # too, unconditionally — decisions/0006's whole mechanism. A
                 # sibling profile may be holding this same credential on the
@@ -1970,6 +2014,10 @@ class Carousel:
 
             state["failures"] += 1
             state["last_sick_at"] = now
+            # 1.9.0.5 (E1): a re-test reported back, refused; the next one follows the schedule.
+            _rt = self._retest.get(identity)
+            if _rt is not None:
+                _rt["inflight_until"] = 0.0
             # 1.8.0.0. This failure is itself the freshest thing this process
             # knows about this key on this identity — see ``_fresh``.
             state["health_at"] = now
@@ -2050,6 +2098,19 @@ class Carousel:
             # ``openai-codex`` refusals, each obeying a stated deadline near
             # 12,000s, held a key for 3h+ before this clamp existed.
             applied = max(0.0, min(applied, HARD_DELAY_CAP_S, self.max_hold_s))
+            # 1.9.0.5 (E1): was this hold sized by a time the PROVIDER stated (a deadline) or by a label of ours
+            # (a daily/account word with no time)? Only the second is worth asking again while it rests.
+            state["stated_hold"] = bool(
+                delay > 0 and (calendar_reset or (stated and (kind != "daily" or delay >= self.daily_cooldown_s))))
+            # 1.9.0.5 (review fix 6): "this key rests on a label of ours" is its own flag, not read back off the
+            # last error kind. Set by a label refusal; cleared only by an answer (above), money/auth, or a
+            # deadline the provider stated for a quota. A 503 or a stated per-minute refusal leaves it alone.
+            if kind in ACCOUNT_AT_ONCE_KINDS:
+                state["label_held"] = False
+            elif kind == "daily" and not state["stated_hold"]:
+                state["label_held"] = True
+            elif state["stated_hold"] and kind not in TRANSIENT_KINDS:
+                state["label_held"] = False
             # The pool has one key and it is this one: a long rest here does
             # not send the next request elsewhere, it sends it nowhere. See
             # :data:`SOLE_KEY_TRANSIENT_CAP_S` for why this copies the host and
@@ -2085,7 +2146,27 @@ class Carousel:
                 state["non_server_until"] = max(state.get("non_server_until", 0.0), sick_until)
             elif stated and delay > 0:
                 state["stated_server_until"] = max(state.get("stated_server_until", 0.0), sick_until)
+            account_hold = False
+            pending_until = 0.0
             if scope == QuotaScope.ACCOUNT:
+                # 1.9.0.5 (E2, decisions/0036): one account-scope refusal holds THIS model's key (done above, in
+                # ``sick_until``). It spans the provider's other models only when money says so, or when a
+                # DIFFERENT model reports the same on the same key within ACCOUNT_CONFIRM_WINDOW_S.
+                if (kind in ACCOUNT_AT_ONCE_KINDS or state.get("stated_hold")
+                        or self._account_hold.get((provider, key), 0.0) > now):
+                    # money, a credential refusal, a deadline the PROVIDER stated (proof, not a label), or a hold
+                    # already confirmed and still standing: account-wide at once / extended
+                    account_hold = True
+                else:
+                    pending = self._account_pending.get((provider, key))
+                    if (pending is not None and pending[1] != identity
+                            and 0.0 <= now - pending[0] <= ACCOUNT_CONFIRM_WINDOW_S):
+                        account_hold = True
+                        pending_until = pending[2]
+                        self._account_pending.pop((provider, key), None)
+                    else:
+                        self._account_pending[(provider, key)] = (now, identity, sick_until)
+            if account_hold:
                 # RED_TEAM.md F9 (2026-09-19): the comment this replaces
                 # claimed "the account hold inherits the same ceiling for
                 # free" because ``sick_until`` is already clamped — true of
@@ -2106,8 +2187,24 @@ class Carousel:
                 # the never-shorten rule (a softer refusal on a second model
                 # must not cut short a longer account-wide deadline) while
                 # still trimming to whatever the dial says right now.
+                # 1.9.0.5 (review fix 7): remember why. The strongest reason of a hold still standing and this
+                # one wins; a short refusal (503, per-minute) never turns a label hold into a stated one.
+                if kind in MONEY_KINDS:
+                    new_why = "money"
+                elif kind in ACCOUNT_AT_ONCE_KINDS:
+                    new_why = "auth"
+                elif state["stated_hold"] and kind not in TRANSIENT_KINDS:
+                    new_why = "stated"
+                elif state["stated_hold"]:
+                    new_why = ""
+                else:
+                    new_why = "label"
+                standing = (self._account_hold_why.get((provider, key), "")
+                            if self._account_hold.get((provider, key), 0.0) > now else "")
+                best = max((standing, new_why), key=lambda w: _WHY_RANK.get(w, -1))
+                self._account_hold_why[(provider, key)] = best or "stated"
                 self._account_hold[(provider, key)] = min(
-                    max(self._account_hold.get((provider, key), 0.0), sick_until),
+                    max(self._account_hold.get((provider, key), 0.0), sick_until, pending_until),
                     now + self.max_hold_s,
                 )
                 self._account_hold_at[(provider, key)] = now
@@ -2122,7 +2219,7 @@ class Carousel:
                 scope="model", subject=identity, fingerprint_key=fp,
                 until=sick_until, kind=kind, at=now,
             )
-            if scope == QuotaScope.ACCOUNT:
+            if account_hold:
                 self._shared.record(
                     scope="account", subject=provider, fingerprint_key=fp,
                     until=self._account_hold[(provider, key)], kind=kind, at=now,
@@ -2730,10 +2827,14 @@ class Carousel:
                 self._stated_rl_ceiling.clear()
                 self._account_hold.clear()
                 self._account_hold_at.clear()
+                self._account_hold_why.clear()
+                self._account_pending.clear()
+                self._retest.clear()
                 self._shared_cap.clear()
             else:
                 self._pools.pop(identity, None)
                 self._no_answer_since.pop(identity, None)
+                self._retest.pop(identity, None)
                 for memory in (self._named_window, self._stated_rl_ceiling):
                     for subject in list(memory):
                         if subject[0] == identity:
@@ -2747,6 +2848,112 @@ class Carousel:
                 # recovered, so a scoped ``forget`` leaves it standing; only
                 # the global reset above (or this credential's own next
                 # success, on any model) clears it.
+
+    # -- 1.9.0.5 (E1) live re-test while every key rests ------------------
+
+    def _label_held(self, identity: str, keys: Sequence[str], now: float) -> List[Tuple[float, str]]:
+        """``(deadline, key)`` of the keys resting on a LABEL: a daily/account word the provider attached,
+        with no time of its own. Not retired keys, not money, not a hold sized by a stated deadline."""
+        pool = self._pools.get(identity) or {}
+        provider = self._provider_of(identity)
+        shared_active = self._shared.active()
+        out: List[Tuple[float, str]] = []
+        for key in keys:
+            state = pool.get(key)
+            if not key or state is None or state.get("retired"):
+                continue
+            until = self._combined_until(pool, identity, provider, key, now, shared_active)
+            if until <= now:
+                continue
+            # an account-wide hold set by money, a credential refusal or a stated deadline is no label
+            account_until = self._account_hold.get((provider, key), 0.0)
+            why = self._account_hold_why.get((provider, key), "")
+            if account_until > now and why != "label":
+                continue
+            if state.get("label_held") or (account_until > now and why == "label"):
+                out.append((until, key))
+        return sorted(out)
+
+    def _retest_state(self, identity: str, now: float) -> Dict[str, Any]:
+        state = self._retest.get(identity)
+        if state is None:
+            state = self._retest[identity] = {"due": now + RETEST_SCHEDULE_S[0], "n": 0, "inflight_until": 0.0}
+        return state
+
+    def retest_due_in(self, identity: str, keys: Sequence[str], now: Optional[float] = None) -> Optional[float]:
+        """Seconds until a re-test is due, or ``None`` when there is nothing to re-test.
+
+        ``None``: some key is usable now, the soonest key is back within the first interval anyway, or no key
+        rests on a label. Otherwise ``0.0`` is "due now". Starting to ask this starts the first interval.
+        """
+        now = time.time() if now is None else now
+        usable = [k for k in keys if k]
+        if not usable:
+            return None
+        with self._lock:
+            eta = self.next_recovery_seconds(identity, usable, now)
+            if eta is None or eta <= RETEST_SCHEDULE_S[0] or not self._label_held(identity, usable, now):
+                return None
+            state = self._retest_state(identity, now)
+            return max(state["due"] - now, state["inflight_until"] - now, 0.0)
+
+    def retest_candidate(self, identity: str, keys: Sequence[str], now: Optional[float] = None) -> Optional[str]:
+        """The key to send the pending request to while every key rests, or ``None`` (not due yet).
+
+        Soonest-to-return first among the label-held keys. Taking it marks one re-test in flight for this
+        identity and moves the next one out along :data:`RETEST_SCHEDULE_S`; the outcome comes back through
+        :meth:`mark` as for any request: a success ends the episode, a refusal re-holds the key.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            wait = self.retest_due_in(identity, keys, now)
+            if wait is None or wait > 0.0:
+                return None
+            held = self._label_held(identity, [k for k in keys if k], now)
+            if not held:
+                return None
+            state = self._retest[identity]
+            state["n"] += 1
+            state["inflight_until"] = now + RETEST_INFLIGHT_S
+            state["due"] = now + RETEST_SCHEDULE_S[min(state["n"], len(RETEST_SCHEDULE_S) - 1)]
+            return held[0][1]
+
+    def retest_status(self, identity: str) -> Dict[str, Any]:
+        """``{"n": re-tests sent, "next_in_s": seconds to the next}`` for the event's words."""
+        with self._lock:
+            state = self._retest.get(identity)
+            if state is None:
+                return {"n": 0, "next_in_s": None}
+            return {"n": int(state["n"]), "next_in_s": max(state["due"] - time.time(), 0.0)}
+
+    # -- 1.9.0.5 (E3) what a reset is about to clear -----------------------
+
+    def reset_summary(self, now: Optional[float] = None) -> Dict[str, Any]:
+        """Counts of what *Clear pool* is about to forget. Never a key, never a fingerprint."""
+        now = time.time() if now is None else now
+        by_kind = {"daily": 0, "account": 0, "stated": 0, "unsized": 0}
+        distinct = set()
+        longest = 0.0
+        with self._lock:
+            for identity, pool in self._pools.items():
+                provider = self._provider_of(identity)
+                for key, state in pool.items():
+                    until = max(float(state.get("sick_until", 0.0)), self._account_hold.get((provider, key), 0.0))
+                    if until <= now:
+                        continue
+                    distinct.add((provider, key))
+                    longest = max(longest, until - now)
+                    if self._account_hold.get((provider, key), 0.0) > now:
+                        by_kind["account"] += 1
+                    elif state.get("stated_hold"):
+                        by_kind["stated"] += 1
+                    elif state.get("kind") == "daily":
+                        by_kind["daily"] += 1
+                    else:
+                        by_kind["unsized"] += 1
+            account_holds = sum(1 for until in self._account_hold.values() if until > now)
+        return {"keys_held": len(distinct), "longest_hold_s": round(longest, 1), "by_kind": by_kind,
+                "account_holds": account_holds}
 
     def known(self, identity: str) -> bool:
         """Does the bench hold a pool for this model (any pool suffix)?"""

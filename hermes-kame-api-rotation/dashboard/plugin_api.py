@@ -54,9 +54,33 @@ _READ_TRIES = 6
 _READ_PAUSE_S = 0.025
 
 
+#: 1.9.0.5 (C3): when the panel last asked for the snapshot, as a wall-clock stamp in a file beside it. The
+#: Python half reads it to tell "the Desktop half is not turned on" from "the panel is open". A file, not a
+#: variable: this door can run in another process than the one that talks to the model. At most one write
+#: per ``_READ_STAMP_EVERY_S``.
+READ_STAMP_FILE = "desktop_read.txt"
+_READ_STAMP_EVERY_S = 30.0
+_last_stamp = 0.0
+
+
+def _stamp_read() -> None:
+    global _last_stamp
+    now = time.monotonic()
+    if _last_stamp and now - _last_stamp < _READ_STAMP_EVERY_S:
+        return
+    _last_stamp = now
+    try:
+        directory = _data_dir()
+        if directory.is_dir():  # the Python half creates it; no directory = KAME has not started here
+            (directory / READ_STAMP_FILE).write_text(repr(time.time()), encoding="utf-8")
+    except Exception:  # a readout of a readout must never cost the panel its snapshot
+        pass
+
+
 @router.get("/state")
 def state() -> Response:
     """The snapshot, byte for byte, as the Python half last published it."""
+    _stamp_read()
     path = _data_dir() / "state.json"
     for attempt in range(_READ_TRIES):
         try:

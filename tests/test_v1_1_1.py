@@ -640,6 +640,7 @@ class TestWhatThePanelIsAllowedToAskFor:
         # the .env again and republishes, and reaches no key either.
         assert control.ACTIONS == (
             "set", "reset", "reset_all", "clear_pool", "clear_events", "refresh", "forget_busy",
+            "undo_setup",   # 1.9.0.5 (D1): takes back the pool rows API Rotation made; reads and shows no key
         )
 
     def test_no_action_can_reach_a_key(self):

@@ -81,8 +81,10 @@ class TestEveryCallIsOnTheEventsTab:
             assert f"\n  {kind}: [" in source and f"\n  {kind}: '" in source
         good = {k for k in events_mod.GOOD_KINDS}
         assert "const GOOD_KINDS = new Set([" + ", ".join(
-            f"'{k}'" for k in ["switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover"]) + "])" in source
-        assert good == {"switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover"}
+            f"'{k}'" for k in ["switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover",
+                                  "retest", "reset"]) + "])" in source     # 1.9.0.5: retest (E1) and reset (E3)
+        assert good == {"switch", "recovery", "stitch", "wait", "setting", "sent", "answered", "handover",
+                        "retest", "reset"}
 
 
 class TestRefusalRecords:

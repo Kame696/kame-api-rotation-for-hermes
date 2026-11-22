@@ -6,7 +6,7 @@
 
 ### All your API keys and models as one pool. A `429`, a spent quota or a slow model never stops your agent again.
 
-[![Version](https://img.shields.io/badge/version-1.9.0.4-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.5-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -69,9 +69,9 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 ### 1️⃣ Install
 
-Download **`KAME-for-Hermes-1.9.0.4-all-in-one.zip`** from the [latest release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest) and unzip it into your Hermes `plugins` folder.
+In the Hermes app open **Capabilities -> Plugins** and press **Install** on **API Rotation** (that also turns on its status bar and panel). One plugin, nothing else to add.
 
-Everything is in it: plugin, model provider and the bridge (status line, "which model answered").
+On the command line: `hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation`. The optional bridge (`hermes-kame-bridge`: spinner line, "which model answered") is a separate download.
 
 </td>
 <td width="33%" valign="top">
@@ -80,10 +80,9 @@ Everything is in it: plugin, model provider and the bridge (status line, "which 
 
 ```bash
 hermes plugins enable hermes-kame-api-rotation
-hermes plugins enable hermes-kame-bridge
 ```
 
-Then restart Hermes once.
+Then restart Hermes once. (The Install button in the app enables it for you.)
 
 </td>
 <td width="33%" valign="top">
@@ -595,6 +594,38 @@ evidence above still describes what runs.
 
 <a id="new"></a>
 <details>
+<summary><b>📣 What's new in 1.9.0.5</b></summary>
+
+**1.9.0.5 — one package, Gemini rotated again, and the chat shows what API Rotation does.** From the owner's test.
+
+- **One package.** `hermes-kame-provider` is no longer needed: API Rotation does its work alone. If you still
+  have it, it keeps working, and `/kame` says once that it can be removed (`hermes plugins remove hermes-kame-provider`).
+- **Gemini's own client is rotated again**, key by key (Hermes' own Gemini client for each key; nothing re-written).
+- **A live sentence where you look.** The status bar chip says what API Rotation is doing right now (a key
+  replaced, every key resting with the countdown, another model answering); in the TUI and in messaging apps one
+  line in the conversation says the same and is updated in place. A clean reply posts nothing. Turn it off with
+  `live_chat_line`.
+- **Desktop notice.** If the app's status bar and panel are off, one line tells you where to turn API Rotation on
+  (Capabilities -> Plugins).
+- **Keys.** Pasted keys are checked (empty items dropped, a key that does not look like the provider's is named, a
+  Gemini key the provider rejects is named). `/kame-keys remove-all` (panel button "Remove API Rotation's keys") takes
+  API Rotation's keys out of Hermes so the plugin can be uninstalled cleanly.
+- **"Everything failing until Reset" is gone.** While every key rests, API Rotation sends the waiting request to
+  one resting key after 20 s (then 40, 80, 160, at most every 300 s), so a provider that is already healthy
+  answers at once. A refusal that holds the whole account needs a second refusal from another model before it
+  holds every model, unless the provider stated a deadline or the account is out of credit.
+- **Reset says what it cleared** (keys held, longest hold left, kinds of holds).
+
+**Add your keys, in three lines**
+
+1. Paste all your keys, separated by commas, into the key field of that provider in Hermes settings.
+2. Or in any Hermes chat type `/kame-keys add <provider> KEY1,KEY2`.
+3. API Rotation checks them. Type `/kame-keys` to see every key and how it is doing.
+
+</details>
+
+<a id="new-1904"></a>
+<details>
 <summary><b>📣 What's new in 1.9.0.4</b></summary>
 
 **1.9.0.4 — the race asks the model that answers, when it usually answers.** From the owner's test with a thinking
@@ -864,6 +895,7 @@ In development since early 2026, and every release came from a real log, not fro
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.5** | One package, Gemini rotated again, the chat shows what happens | `hermes-kame-provider` is no longer needed; Gemini's own client rotated key by key; a live sentence in the status bar chip and one line in the TUI/messaging chat; a Desktop notice when the status bar is off; keys checked on import and `/kame-keys remove-all`; live re-test while every key rests; an account-wide hold needs a second model unless the provider stated a deadline; Reset says what it cleared |
 | **1.9.0.4** | The race asks the model that answers, when it usually answers | The race leaves out a model that keeps failing and asks the fastest model of your list first, when it usually answers (not at three times the first model's time); first-word times kept on disk and seeded from the call log; a raced model that fails is replaced by another of its keys at once |
 | **1.9.0.3** | The screen says what happened, voice is not lost | Every failure row opens with the provider's own text, and a refused request says it is the request, not a key; the status row speaks every 5 s while the model is silent; the Speed line counts only backup requests; "API Rotation" on screen; transcription moves to the next Gemini model of the list when the voice model's keys rest; "Never switch" keeps Hermes' background title fallback on your model; clearer slow, overloaded and stopped words |
 | **1.9.0.2** | Stop stops, Reset works again, the wait is said | Stop ends the key rotation; Reset pool clears Hermes' own marks again and names what failed; chat titles are made again (only on a model KAME may start on, each try bounded by the model's usual time to first word); a reply starts on the first model that is not failing while a model due a second look is asked beside it; voice and transcription share the chat's key memory; the waiting line gives the provider's own return time; one closing row per unanswered call |

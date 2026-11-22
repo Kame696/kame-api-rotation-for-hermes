@@ -7,6 +7,23 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.5] - 2026-11-22 - one package, Gemini rotated again, the chat shows what happens (in development, not released)
+
+- **One package.** `hermes-kame-provider` is no longer needed; API Rotation does its work alone. A copy still
+  installed keeps working and `/kame` says once that it can be removed.
+- **Gemini's own client is rotated again**, key by key.
+- **A live sentence where you look.** The status bar chip says what API Rotation is doing (a key replaced, every
+  key resting with the countdown, another model answering); the TUI and messaging chats get one line in the
+  conversation, updated in place. A clean reply posts nothing (`live_chat_line`).
+- **Desktop-off notice.** When the app's status bar and panel are off, one line says where to turn them on.
+- **Keys are checked** when you add or import them, and **"Remove API Rotation's keys"** (`/kame-keys remove-all`) takes
+  them out of Hermes so the plugin can be uninstalled cleanly.
+- **Live re-test while every key rests.** After 20 s (then 40, 80, 160, at most every 300 s) the waiting request
+  goes to one resting key, so a provider that is healthy again answers at once.
+- **An account-wide hold needs a second model** to confirm it, unless the provider stated a deadline or the
+  account is out of credit.
+- **Reset says what it cleared** (keys held, longest hold left, kinds of holds).
+
 ## [1.9.0.4] - 2026-11-19 - the race asks the model that answers, when it usually answers (in development, not released)
 
 Which models race a slow reply, and when, now follow what each model has actually done. Nothing here changes how a

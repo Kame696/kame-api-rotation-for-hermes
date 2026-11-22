@@ -787,6 +787,61 @@ function ChipPool({ pool, snap, now }) {
   )
 }
 
+/** How long the "back after ..." sentence stays on the chip once the answer has come (1.9.0.5, C5). */
+const CHIP_RECOVERED_HOLD_MS = 6000
+
+/** What the chip last said about a recovery, so it can stay a few seconds after the activity is gone. */
+const chipMemory = { text: '', until: 0 }
+
+/**
+ * The sentence the chip shows after "API Rotation" while KAME is acting on a reply (1.9.0.5, C5), or `''` when
+ * it has nothing to add and the pool counts show as before.
+ *
+ * Acting = the live line is one of retrying (a key was refused, or some keys rest), racing, standin, waiting,
+ * stitching, recovered; NOT plain `calling` on the first attempt with every key ready. The words are
+ * `liveLineText`'s (the composer line's, `tests/fixtures/live_words_1831.json`); the waiting countdown is the
+ * page's own. A `recovered` sentence stays `CHIP_RECOVERED_HOLD_MS` from the first moment it is seen (kept in
+ * `memory`, a plain `{ text, until }` object; the chip's own by default), then the counts come back. Pure
+ * apart from that memory; `now` in milliseconds, like `$now`.
+ */
+function chipText(snap, now, memory = chipMemory) {
+  const activity = snap?.installed && ageSeconds(snap, now) <= STALE_AFTER_S ? snap.activity : null
+  const kind = String(activity?.phase || activity?.kind || '')
+  let text = ''
+
+  if (activity && kind) {
+    const ready = activity.ready ?? activity.healthy
+    const keys = activity.keys
+
+    const acting =
+      kind !== 'calling' ||
+      (activity.attempt ?? 1) > 1 ||
+      (ready != null && keys != null && Number(ready) < Number(keys))
+
+    if (acting) {
+      text = liveLineText(activity, kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null)
+    }
+  }
+
+  if (text && kind === 'recovered') {
+    if (memory.text !== text) {
+      memory.text = text
+      memory.until = now + CHIP_RECOVERED_HOLD_MS
+    }
+
+    return now < memory.until ? text : ''
+  }
+
+  if (text) {
+    memory.text = ''
+    memory.until = 0
+
+    return text
+  }
+
+  return memory.text && now < memory.until ? memory.text : ''
+}
+
 /**
  * Always on screen: which pools are in use, how healthy each one is, and the
  * countdown when one is resting.
@@ -817,6 +872,7 @@ function KameChip() {
   const pools = snap?.installed ? chipPools(snap) : []
   const shown = pools.slice(0, CHIP_POOLS)
   const hidden = pools.length - shown.length
+  const saying = chipText(snap, now)
 
   const lines = []
 
@@ -867,7 +923,7 @@ function KameChip() {
   }
 
   // 1.8.3.1 (D3): hovering says one line; the click opens the popover (models, last replies, the button).
-  const tip = `${lines[0]}\nClick for details`
+  const tip = `${saying || lines[0]}\nClick for details`
   const open = useValue($chipOpen)
 
   return h(
@@ -891,14 +947,16 @@ function KameChip() {
         },
         h(StatusDot, { tone }),
         h('span', { className: 'shrink-0' }, 'API Rotation'),
-        shown.length
+        saying
+          ? h('span', { className: 'min-w-0 truncate', key: 'saying' }, saying)
+          : shown.length
           ? shown.map(pool => h(ChipPool, { key: pool.identity, now, pool, snap }))
           : h(
               'span',
               { className: 'shrink-0 text-(--ui-text-quaternary)' },
               snap?.installed ? (one.total ? `${one.ready}/${one.total}` : 'ready') : '—'
             ),
-        hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
+        !saying && hidden > 0 ? h('span', { className: 'shrink-0 text-(--ui-text-quaternary)' }, `+${hidden}`) : null
       )
     ),
     open ? h(KameChipPopover, { key: 'popover', snap }) : null
@@ -2993,13 +3051,16 @@ function KeysHowTo() {
   return h(
     'div',
     { className: 'mb-2 flex flex-col gap-1 rounded-md border border-(--ui-stroke-tertiary) p-3', key: 'keys-how' },
-    h('p', { className: 'text-sm text-(--ui-text-primary)', key: 'title' }, 'Add your keys in any Hermes chat:'),
+    h('p', { className: 'text-sm text-(--ui-text-primary)', key: 'title' }, 'Add your keys:'),
     h(
       'ol',
       { className: 'mt-1 flex list-decimal flex-col gap-0.5 pl-5', key: 'steps' },
-      line(['Type ', code('/kame-keys add gemini KEY1,KEY2,KEY3'), ' (any provider name instead of gemini).'], 'add'),
-      line(['Type ', code('/kame-keys'), ' to see every key and how it is doing.'], 'list'),
-      line(['Keys pasted into .env as one comma list? Type ', code('/kame-keys split gemini'), ' once.'], 'split')
+      line(
+        ['Paste all your keys, separated by commas, into the key field of that provider in Hermes settings.'],
+        'paste'
+      ),
+      line(['Or in any Hermes chat type ', code('/kame-keys add <provider> KEY1,KEY2'), '.'], 'add'),
+      line(['API Rotation checks them. Type ', code('/kame-keys'), ' to see every key and how it is doing.'], 'list')
     ),
     h(
       'p',
@@ -3172,6 +3233,16 @@ function SettingsPage({ snap }) {
         ),
         h(
           Tip,
+          {
+            key: 'remove-keys',
+            label:
+              "Takes back what API Rotation put in your key pool (its key rows) and, if a key variable holds a list, " +
+              'keeps only its first key (.env is backed up first). Keys you added yourself stay. Use it before uninstalling.'
+          },
+          h(Button, { disabled: busy || !writable, onClick: () => setConfirming('undo_setup'), size: 'sm', variant: 'outline' }, "Remove API Rotation's keys")
+        ),
+        h(
+          Tip,
           { key: 'clear-events', label: 'Empties the event list on the Events page. Nothing else changes.' },
           h(Button, { disabled: busy || !writable, onClick: () => void request('clear_events'), size: 'sm', variant: 'ghost' }, 'Clear events')
         ),
@@ -3216,6 +3287,20 @@ function SettingsPage({ snap }) {
       onConfirm: () => void request('clear_pool'),
       open: confirming === 'clear_pool',
       title: 'Clear the pool?'
+    }),
+
+    h(ConfirmDialog, {
+      confirmLabel: "Remove API Rotation's keys",
+      description:
+        "API Rotation's own key rows are removed from the pool and a key variable that holds several keys is cut to " +
+        'its first key (.env is backed up first). Keys you added yourself, in Hermes or with /kame-keys add, stay. ' +
+        'Afterwards the plugin can be uninstalled and Hermes keeps working with one key per provider.',
+      destructive: true,
+      key: 'confirm-remove-keys',
+      onClose: () => setConfirming(''),
+      onConfirm: () => void request('undo_setup'),
+      open: confirming === 'undo_setup',
+      title: "Remove API Rotation's keys?"
     })
   )
 }
@@ -3230,6 +3315,8 @@ const EVENT_LABELS = {
   invalid_key: ['Bad key', 'bad'],
   quarantine: ['Key benched', 'bad'],
   recovery: ['Answered on retry', 'good'],
+  reset: ['Pool cleared', 'good'],
+  retest: ['Asked again', 'good'],
   rotation: ['Key rests', 'plain'],
   sent: ['Asked', 'plain'],
   setting: ['Setting changed', 'good'],
@@ -3257,6 +3344,8 @@ const EVENT_MEANING = {
   invalid_key: 'The provider said this is not a valid credential. Replace it — waiting will not repair one.',
   quarantine: 'This key was rested for a minute or more before it will be offered again.',
   recovery: 'A key answered after API Rotation had already rotated at least once. The rotation worked.',
+  reset: 'Clear pool ran. The row says how many keys were resting and for what, so a pool that came back after a reset can be told from one that was never broken.',
+  retest: 'Every key was resting on a label (a daily or account word) with no time from the provider, so API Rotation sent the pending request to one of them again instead of waiting in silence. A refused request costs nothing.',
   rotation: 'This key was rested briefly and the next call went somewhere else.',
   setting: 'You changed one of API Rotation’s settings. Recorded here so a later question — “did that setting help?” — can be answered against what the pool did before and after it.',
   stitch: 'An answer that was cut short was continued on another key and joined back up.',
@@ -3307,6 +3396,8 @@ const EVENT_NEXT = {
   invalid_key: 'out of rotation until you replace it (/kame-keys)',
   quarantine: 'the key sits out, the others carry on',
   recovery: '',
+  reset: '',
+  retest: 'if it answers, that is the reply; if not, the wait goes on',
   rotation: 'the next request uses another key',
   sent: 'waiting for the first word',
   setting: '',
@@ -3334,7 +3425,7 @@ function eventSentence(event) {
  * only ever recorded failures, so a rotation engine doing its job produced a
  * screen that read like a fault report.
  */
-const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait', 'setting', 'sent', 'answered', 'handover'])
+const GOOD_KINDS = new Set(['switch', 'recovery', 'stitch', 'wait', 'setting', 'sent', 'answered', 'handover', 'retest', 'reset'])
 
 /** The three views. `id` is what the filter chip stores. */
 const EVENT_VIEWS = [
@@ -5310,7 +5401,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, canInspectEvent, chipPopoverModel, chipRowStatus, duration, keyCounts, liveLineText, modelState, modelStateTitle, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, inspectorText, pillRestorePlan, quotaShare, reasonText, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, speedCostParts, toneFor, watchPillRestore }
+export const panelHelpers = { KEY_STATE, PANEL_READS, canInspectEvent, chipPopoverModel, chipRowStatus, chipText, duration, keyCounts, liveLineText, modelState, modelStateTitle, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, inspectorText, pillRestorePlan, quotaShare, reasonText, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, speedCostParts, toneFor, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {
