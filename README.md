@@ -566,7 +566,7 @@ providers, except the real-key row. Details in [VALIDATION.md](VALIDATION.md).
 |---|---|
 | `hermes plugins validate` (the two catalog packages) | **pass**, `no core override` and `desktop surface` included |
 | Real Hermes turns vs 1.8.1.8, six scenarios × four wires | **every turn answered** on native Gemini, OpenAI chat and Responses, with faster steady turns. On the Anthropic Messages wire this needs `create_messages_client` (#133461 or the optional bridge); with it, every turn is answered |
-| Status line on the spinner | present with #133474 or the optional bridge. Otherwise it appears above the Desktop composer |
+| Live status | in the Desktop status bar and in the chat (1.9.0.5) |
 | Real keys (NVIDIA, 2 keys) | 3 of 3 turns answered. One empty answer was rotated to the next key, and the live line showed on the spinner |
 | Plugin suite | **2,851 passing** on Hermes `56f7986`, and on Hermes with each upstream seam applied |
 | Host gates (classifier corpus, prose) | **pass**, with the corpus keeping its five documented intentional differences |
@@ -866,16 +866,9 @@ The Events tab now shows every call and every answer, not only failures.
 Multi-key variables sync on the newest Hermes, whose profile-scoped secrets
 broke the sync in 1.8.1.9.
 
-**Two Hermes seams that are not merged yet.** KAME uses each one as soon as
-your Hermes has it:
-
-| Seam | Hermes PR | Without it |
-|---|---|---|
-| `notify_turn_status` | [#133474](https://github.com/NousResearch/hermes-agent/pull/133474) | The live status line (`⏳ waiting on … — KAME 13/15 keys healthy`) appears only above the Desktop composer, not on the spinner. |
-| `create_messages_client` | [#133461](https://github.com/NousResearch/hermes-agent/pull/133461) | On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding), KAME sizes each refusal but does not pick the key per call. |
-
-KAME 1.9.0.5 shows its live line in the status bar and the chat instead of the spinner, so only the
-Anthropic Messages wire waits for #133461.
+**No Hermes change needed.** KAME 1.9.0.5 shows its live line in the status bar and the chat, so it needs nothing
+from Hermes beyond its public plugin API. On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding) Hermes
+picks the key of each call; KAME still reads every refusal there and sizes each key's rest.
 
 See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
