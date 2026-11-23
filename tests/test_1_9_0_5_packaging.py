@@ -20,11 +20,12 @@ def _packager():
     return module
 
 
-def test_the_build_ships_only_the_rotation_plugin_and_the_optional_bridge():
+def test_the_build_ships_only_the_rotation_plugin():
     pk = _packager()
     assert [p.name for p in pk.SOURCES] == ["hermes-kame-api-rotation"]
-    assert [p.name for p in pk.OPTIONAL] == ["hermes-kame-bridge"]
+    assert list(pk.OPTIONAL) == []
     assert (ROOT / "hermes-kame-provider" / "plugin.yaml").exists()      # kept in the repo, not shipped
+    assert (ROOT / "hermes-kame-bridge" / "plugin.yaml").exists()        # kept in the repo, not shipped
 
 
 def test_no_all_in_one_archive_is_built():
@@ -36,7 +37,6 @@ def test_the_version_is_the_same_everywhere():
     assert re.search(rf'^version: "{re.escape(VERSION)}"$', manifest, re.M)
     core = (PLUGIN_DIR / "core" / "__init__.py").read_text(encoding="utf-8")
     assert f'__version__ = "{VERSION}"' in core
-    assert f'version: "{VERSION}"' in (ROOT / "hermes-kame-bridge" / "plugin.yaml").read_text(encoding="utf-8")
     assert f"badge/version-{VERSION}-blue" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"## [{VERSION}]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 

@@ -45,8 +45,6 @@ Free, open source, no telemetry. Gemini, OpenAI, OpenRouter, Anthropic, NVIDIA, 
 - **Waiting:** when every key rests and no model of your list can take over, chats keep waiting (each key at most
   an hour) and cron gives up after 300 s; `max_total_wait_seconds` bounds it.
 - **Voice:** an optional speech provider `kame-gemini` speaks with your rotated Gemini keys (`tts.provider: kame-gemini`).
-- **Optional bridge:** `hermes-kame-bridge` (separate, not in the catalog) adds the spinner line early. It patches
-  Hermes at runtime and is not supported by Hermes.
 
 Full documentation, screenshots and FAQ: <https://github.com/Kame696/kame-api-rotation-for-hermes> · MIT licence ·
 Issues: <https://github.com/Kame696/kame-api-rotation-for-hermes/issues>

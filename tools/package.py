@@ -32,9 +32,10 @@ ROOT = Path(__file__).resolve().parents[1]
 #: 1.9.0.5: ONE package. The provider profiles moved into the rotation plugin (``provider_profiles.py``);
 #: ``hermes-kame-provider/`` stays in the repository, untouched, but is no longer built or shipped.
 SOURCES = (ROOT / "hermes-kame-api-rotation",)
-#: 1.8.2.7: the optional bridge ships beside them in every release (not in the
-#: catalog entry); built here so its ZIP always carries the same version.
-OPTIONAL = (ROOT / "hermes-kame-bridge",)
+#: 1.9.0.5 (owner, 2026-11-23): the optional bridge is no longer shipped either. API Rotation shows its live
+#: line in the status bar and the chat, so only the Anthropic Messages wire waits for Hermes PR #133461.
+#: ``hermes-kame-bridge/`` stays in the repository, frozen, like ``hermes-kame-provider/``.
+OPTIONAL = ()
 SOURCE = SOURCES[0]  # the name earlier releases (and their tests) read
 DIST = ROOT / "dist"
 

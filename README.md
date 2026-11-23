@@ -71,7 +71,7 @@ Most key rotators cycle keys in order and retry on a timer. KAME decides from th
 
 In the Hermes app open **Capabilities -> Plugins** and press **Install** on **API Rotation** (that also turns on its status bar and panel). One plugin, nothing else to add.
 
-On the command line: `hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation`. The optional bridge (`hermes-kame-bridge`: spinner line, "which model answered") is a separate download.
+On the command line: `hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation`.
 
 </td>
 <td width="33%" valign="top">
@@ -118,7 +118,7 @@ No command needed (details below the table). Everything else is **automatic**.
 >
 > <img src="assets/panel-enable.png" alt="Hermes Desktop, Capabilities → Plugins: KAME API Rotation with the Desktop switch on" width="90%" />
 
-<sub>Prefer the command line? <code>hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation</code>, then the same for <code>hermes-kame-provider</code> and <code>hermes-kame-bridge</code>. Every step in detail just below.</sub>
+<sub>Prefer the command line? <code>hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation</code>. Every step in detail just below.</sub>
 
 <details>
 <summary><b>Step by step — command line, keys, the Desktop panel</b></summary>
@@ -128,13 +128,10 @@ No command needed (details below the table). Everything else is **automatic**.
 
 ```bash
 hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation
-hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-provider
-hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-bridge
 hermes plugins enable hermes-kame-api-rotation
-hermes plugins enable hermes-kame-bridge
 ```
 
-`hermes-kame-api-rotation` is the carousel, the commands and the panel; `hermes-kame-provider` (a `model-provider` plugin, loaded by Hermes on its own) is how Hermes asks it for a client — both are needed, either one alone changes nothing. **`hermes-kame-bridge` gives you everything today**: the live status line on the spinner, the "which model answered" notice, no "⚠️ Model fallback" line for KAME's planned switches, and key rotation on the Anthropic Messages wire — without waiting for Hermes to merge its two seams. It installs each piece only where your Hermes lacks it, so it stays harmless after Hermes catches up. The same three ZIPs are on every [release](https://github.com/Kame696/kame-api-rotation-for-hermes/releases/latest).
+One plugin does everything: the rotation, the commands, the panel and the status-bar chip. A `hermes-kame-provider` left from 1.9.0.4 or older can be removed.
 
 Then **restart Hermes** once. For the Desktop panel and the status-bar chip, turn on **KAME API Rotation** in Desktop **Settings → Plugins** (the panel ships inside the package at `desktop/plugin.js`; Desktop keeps it off until you say so — [step by step, with a screenshot](#panel)).
 
@@ -814,9 +811,7 @@ bad hours: fewer wasted requests, shorter waits behind silent models, a quieter 
 - **Your fallback list is one big pool, best model first.** Every reply starts on your best
   model and uses all of its keys; it goes down the list only when that model is busy, every
   key is resting, or nothing comes back in time — and the next reply starts at the top again.
-  A model KAME knows is still busy or resting is passed down without spending a request, and
-  Hermes' "⚠️ Model fallback … recovery is not guaranteed" line stays out of the chat for
-  these planned switches (with `hermes-kame-bridge`).
+  A model KAME knows is still busy or resting is passed down without spending a request.
 - **Speed first: the next model races a late reply.** Silent past ~3 × its usual first word
   (8 s at least), a reply also asks the next model of your list; the first to answer is
   shown. Your best model sits out only 30 s after losing, so it leads again almost at once.
@@ -879,8 +874,8 @@ your Hermes has it:
 | `notify_turn_status` | [#133474](https://github.com/NousResearch/hermes-agent/pull/133474) | The live status line (`⏳ waiting on … — KAME 13/15 keys healthy`) appears only above the Desktop composer, not on the spinner. |
 | `create_messages_client` | [#133461](https://github.com/NousResearch/hermes-agent/pull/133461) | On the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding), KAME sizes each refusal but does not pick the key per call. |
 
-Until both are merged, `hermes-kame-bridge` adds them (install it — see below). It is
-not part of the Hermes catalog entry, because it patches Hermes.
+KAME 1.9.0.5 shows its live line in the status bar and the chat instead of the spinner, so only the
+Anthropic Messages wire waits for #133461.
 
 See [validation and limitations](VALIDATION.md) and [release notes](CHANGELOG.md).
 
