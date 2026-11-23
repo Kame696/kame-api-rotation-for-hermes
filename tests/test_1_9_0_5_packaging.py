@@ -27,13 +27,8 @@ def test_the_build_ships_only_the_rotation_plugin_and_the_optional_bridge():
     assert (ROOT / "hermes-kame-provider" / "plugin.yaml").exists()      # kept in the repo, not shipped
 
 
-def test_the_all_in_one_has_no_provider_package(tmp_path, monkeypatch):
-    pk = _packager()
-    monkeypatch.setattr(pk, "DIST", tmp_path)
-    assert pk.build_all_in_one(pk.SOURCES + pk.OPTIONAL) == 0
-    archive = tmp_path / f"KAME-for-Hermes-{VERSION}-all-in-one.zip"
-    roots = {n.split("/", 1)[0] for n in zipfile.ZipFile(archive).namelist()}
-    assert roots == {"hermes-kame-api-rotation", "hermes-kame-bridge"}
+def test_no_all_in_one_archive_is_built():
+    assert not hasattr(_packager(), "build_all_in_one")
 
 
 def test_the_version_is_the_same_everywhere():
@@ -60,7 +55,7 @@ def test_the_catalog_entry_is_one_entry_with_the_same_words():
     assert len(re.findall(r"^name:", text, re.M)) == 1 and "hermes-kame-provider" not in text
     assert f'description: "{DESCRIPTION}"' in text
     assert f'version: "{VERSION}"' in text
-    assert re.search(r"^sha: TBD-at-release$", text, re.M)
+    assert re.search(r"^sha: (TBD-at-release|[0-9a-f]{40})$", text, re.M)   # filled at release time
 
 
 def test_the_readme_has_the_keys_tutorial_in_the_panels_words():

@@ -106,38 +106,18 @@ def build(source: Path) -> int:
     return 0
 
 
-def build_all_in_one(sources: tuple) -> int:
-    """``KAME-for-Hermes-<version>-all-in-one.zip``: every shipped plugin directory in one archive (1.9.0.5:
-    the rotation plugin and, when present, the optional bridge; never ``hermes-kame-provider``)."""
-    version = manifest_version(SOURCE / "plugin.yaml")
-    DIST.mkdir(exist_ok=True)
-    target = DIST / f"KAME-for-Hermes-{version}-all-in-one.zip"
-    count = 0
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-        for source in sources:
-            for path in shipped_files(source):
-                archive.write(path, path.relative_to(source.parent).as_posix())
-                count += 1
-    with zipfile.ZipFile(target) as archive:
-        roots = sorted({name.split("/", 1)[0] for name in archive.namelist()})
-    if "hermes-kame-provider" in roots:
-        print("FAIL: hermes-kame-provider must not be in the all-in-one")
-        return 1
-    print(f"wrote   : {target}  ({count} file(s), {target.stat().st_size:,} bytes; roots: {', '.join(roots)})")
-    return 0
-
-
 def main() -> int:
     everything = SOURCES + tuple(o for o in OPTIONAL if (o / "plugin.yaml").exists())
     versions = {manifest_version(source / "plugin.yaml") for source in everything}
     if len(versions) != 1:
         print(f"FAIL: the plugins carry different versions: {sorted(versions)}")
         return 1
+    # 1.9.0.5: no all-in-one archive any more; the rotation plugin is the one thing to install (owner, 2026-11-23)
     for source in everything:
         code = build(source)
         if code:
             return code
-    return build_all_in_one(everything)
+    return 0
 
 
 if __name__ == "__main__":
