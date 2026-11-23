@@ -6,7 +6,7 @@
 
 ### All your API keys and models as one pool. A `429`, a spent quota or a slow model never stops your agent again.
 
-[![Version](https://img.shields.io/badge/version-1.9.0.5-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0.6-blue.svg)](CHANGELOG.md)
 [![Hermes](https://img.shields.io/badge/Hermes-0.21.4+-purple.svg)](#verified)
 [![Tests](https://img.shields.io/badge/local_tests-4000%2B_passing-brightgreen.svg)](#verified)
 [![Hermes catalog](https://img.shields.io/badge/Hermes_catalog-listed-brightgreen.svg)](https://github.com/NousResearch/hermes-agent/pull/146460)
@@ -591,6 +591,29 @@ evidence above still describes what runs.
 
 <a id="new"></a>
 <details>
+<summary><b>📣 What's new in 1.9.0.6</b></summary>
+
+**1.9.0.6 — a reply is never ended on you.** From the owner's test: Hermes ended a reply after three model
+switches and said to try again. Now a reply always comes back, however long it takes, with no setting of yours.
+
+- **No "try again", no give-up.** Hermes ends a reply after a few model switches without an answer; API Rotation
+  never spends the last one and answers with your other models itself, or waits for a key - minutes or hours.
+- **Calls without streaming wait too.** Hermes' timer on them is off for calls API Rotation carries; a hung
+  connection is still cut quickly, the key rests and the reply keeps waiting.
+- **Many chats and sub-agents at once**, each with its own count and its own live line.
+- **A refused request tries your other models** before the error reaches Hermes; a model your provider does not
+  know (a typo in your list) is named once in `/kame doctor` and the panel.
+- **The live line looks alive:** the reply's running time, a pulsing dot, and `✕ no answer - <reason>` for ten
+  seconds when a reply ends without an answer. No "Model fallback" warning in the chat when API Rotation
+  moves a reply to another model (the status bar says it).
+- **ⓘ How to install or configure:** the round "i" at the end of the panel's tabs opens a five-step guide.
+- Chat titles are made by a free model while the best one is busy; Telegram and Discord post one short line only
+  after a minute of waiting.
+
+</details>
+
+<a id="new-1905"></a>
+<details>
 <summary><b>📣 What's new in 1.9.0.5</b></summary>
 
 **1.9.0.5 — one package, Gemini rotated again, and the chat shows what API Rotation does.** From the owner's test.
@@ -883,6 +906,7 @@ In development since early 2026, and every release came from a real log, not fro
 
 | Version | Focus | What changed |
 |---|---|---|
+| **1.9.0.6** | A reply is never ended on you | No "try again": API Rotation never spends Hermes' last model switch and answers with your other models or waits for a key, as long as it takes; calls without streaming wait too; many chats and sub-agents each with their own count and line; a refused request tries your other models; a mistyped model is named once; the live line shows the running time and a pulsing dot; ⓘ How to install or configure in the panel |
 | **1.9.0.5** | One package, Gemini rotated again, the chat shows what happens | `hermes-kame-provider` is no longer needed; Gemini's own client rotated key by key; a live sentence in the status bar chip and one line in the TUI/messaging chat; a Desktop notice when the status bar is off; keys checked on import and `/kame-keys remove-all`; live re-test while every key rests; an account-wide hold needs a second model unless the provider stated a deadline; Reset says what it cleared |
 | **1.9.0.4** | The race asks the model that answers, when it usually answers | The race leaves out a model that keeps failing and asks the fastest model of your list first, when it usually answers (not at three times the first model's time); first-word times kept on disk and seeded from the call log; a raced model that fails is replaced by another of its keys at once |
 | **1.9.0.3** | The screen says what happened, voice is not lost | Every failure row opens with the provider's own text, and a refused request says it is the request, not a key; the status row speaks every 5 s while the model is silent; the Speed line counts only backup requests; "API Rotation" on screen; transcription moves to the next Gemini model of the list when the voice model's keys rest; "Never switch" keeps Hermes' background title fallback on your model; clearer slow, overloaded and stopped words |

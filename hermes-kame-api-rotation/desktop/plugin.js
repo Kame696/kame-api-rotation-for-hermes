@@ -790,6 +790,59 @@ function ChipPool({ pool, snap, now }) {
 /** How long the "back after ..." sentence stays on the chip once the answer has come (1.9.0.5, C5). */
 const CHIP_RECOVERED_HOLD_MS = 6000
 
+/**
+ * The id of the chat on screen, as the transport names it: Hermes' STORED session id (`focusedStoredSessionId`; the
+ * runtime `activeSessionId` is a different id space and never matches what KAME reads, 1.9.0.6 C11), else the
+ * selected stored one. `null` when the host exposes neither.
+ */
+function openSessionId() {
+  try {
+    const state = host?.state
+
+    return state?.focusedStoredSessionId?.get?.() ?? state?.selectedStoredSessionId?.get?.() ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The activity of the open chat (1.9.0.6, C11). A snapshot with `activities` is read per conversation: the open chat's
+ * entry, nothing when it has none - never another chat's. A snapshot without them (an older plugin) or a host that
+ * does not tell which chat is open falls back to the latest activity of all, as before.
+ */
+function activityOf(snap, sessionId = openSessionId(), nowMs = Date.now()) {
+  const all = snap?.activities
+  let found
+
+  if (all && typeof all === 'object' && sessionId != null && sessionId !== '') {
+    found = all[String(sessionId)] ?? null
+  } else {
+    found = snap?.activity ?? null
+  }
+
+  // 1.9.0.6 (C21): a reply that ended without an answer shows its end line for ENDED_HOLD_S, then the line clears.
+  if (found && found.kind === 'ended' && nowMs / 1000 - Number(found.ended_at ?? 0) > ENDED_HOLD_S) {
+    return null
+  }
+
+  return found
+}
+
+/** How long `✕ no answer - <reason>` stays on screen (1.9.0.6, C21). */
+const ENDED_HOLD_S = 10
+
+/**
+ * Seconds the reply has been running, counted by the page's own tick from the activity's `started_at` (epoch
+ * seconds, 1.9.0.6 C21); a row of the shared table carries `elapsed_s` instead. `null` = unknown, no suffix.
+ */
+function elapsedOf(activity, nowMs) {
+  if (!activity || typeof activity !== 'object') return null
+
+  if (activity.started_at != null) return Math.max(0, nowMs / 1000 - Number(activity.started_at))
+
+  return activity.elapsed_s ?? null
+}
+
 /** What the chip last said about a recovery, so it can stay a few seconds after the activity is gone. */
 const chipMemory = { text: '', until: 0 }
 
@@ -804,8 +857,8 @@ const chipMemory = { text: '', until: 0 }
  * `memory`, a plain `{ text, until }` object; the chip's own by default), then the counts come back. Pure
  * apart from that memory; `now` in milliseconds, like `$now`.
  */
-function chipText(snap, now, memory = chipMemory) {
-  const activity = snap?.installed && ageSeconds(snap, now) <= STALE_AFTER_S ? snap.activity : null
+function chipText(snap, now, memory = chipMemory, sessionId = openSessionId()) {
+  const activity = snap?.installed && ageSeconds(snap, now) <= STALE_AFTER_S ? activityOf(snap, sessionId, now) : null
   const kind = String(activity?.phase || activity?.kind || '')
   let text = ''
 
@@ -819,7 +872,7 @@ function chipText(snap, now, memory = chipMemory) {
       (ready != null && keys != null && Number(ready) < Number(keys))
 
     if (acting) {
-      text = liveLineText(activity, kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null)
+      text = liveLineText(activity, kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null, elapsedOf(activity, now))
     }
   }
 
@@ -983,13 +1036,27 @@ function KameChip() {
  * key asks beside the first), standin (a ladder model answers for the reply's model), waiting, stitching,
  * recovered. `phase` (`racing` / `standin`) rides beside `kind: 'calling'`, so every reader of the old kinds
  * keeps working. `etaSeconds` is the time left as the page counts it (`countdown`); `null` = no estimate.
+ * 1.9.0.6 (C21): every in-flight state ends with the reply's running time (` · 23s`, `elapsedSeconds`, counted by
+ * the page; `null` = unknown, no suffix) and `ended` is `✕ no answer - <reason>`.
  * `''` when there is nothing to say. Pure: the node check runs the shared table through it.
  */
-function liveLineText(activity, etaSeconds) {
+function liveLineText(activity, etaSeconds, elapsedSeconds = null) {
   if (!activity || typeof activity !== 'object') return ''
 
   const kind = String(activity.phase || activity.kind || '')
-  const model = activity.model ?? ''
+
+  if (kind === 'ended') {
+    const why = String(activity.reason ?? '').trim()
+
+    return why ? `✕ no answer - ${why}` : '✕ no answer'
+  }
+
+  const words = liveWords(activity, kind, etaSeconds)
+
+  return words && elapsedSeconds != null ? `${words} · ${duration(elapsedSeconds)}` : words
+}
+
+function liveWords(activity, kind, etaSeconds) {  const model = activity.model ?? ''
   const ready = activity.ready ?? activity.healthy
   const keys = activity.keys
   const count = `${ready ?? '?'} of ${keys ?? '?'} keys ready`
@@ -1025,7 +1092,7 @@ function liveLineText(activity, etaSeconds) {
 function KameComposerLine() {
   const snap = useValue($snapshot)
   const now = useValue($now)
-  const activity = snap?.activity
+  const activity = activityOf(snap, undefined, now)
 
   // Hermes draws the same line on its own spinner when it offers
   // notify_turn_status (1.8.1.9); one line on screen, as in 1.8.1.8.
@@ -1034,7 +1101,11 @@ function KameComposerLine() {
   }
 
   // 1.8.3.1: the words are the shared table's (see `liveLineText`).
-  const text = liveLineText(activity, activity.kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null)
+  const text = liveLineText(
+    activity,
+    activity.kind === 'waiting' ? countdown(activity.eta_s, snap, now) : null,
+    elapsedOf(activity, now)
+  )
 
   if (!text) {
     return null
@@ -1046,6 +1117,15 @@ function KameComposerLine() {
       className: 'truncate px-3 pb-1 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)',
       title: text
     },
+    // 1.9.0.6 (C21): a small pulsing dot while a call is in flight (off under prefers-reduced-motion, none when the
+    // reply ended or nothing is in flight)
+    activity.kind === 'ended'
+      ? null
+      : h('span', {
+          'aria-hidden': 'true',
+          className: 'mr-1.5 inline-block size-1.5 rounded-full bg-current align-middle motion-safe:animate-pulse',
+          key: 'dot'
+        }),
     text
   )
 }
@@ -1292,6 +1372,7 @@ const PANEL_READS = [
   'fallback.entries[].busy_until',
   'fallback.entries[].identity',
   'fallback.entries[].probe_at',
+  'fallback.missing',
   'fallback.state',
   'fallback.warning',
   'fallback.why',
@@ -3087,6 +3168,9 @@ function FallbackList({ fallback }) {
     fallback.warning
       ? h('p', { className: 'text-sm text-amber-500', key: 'warning' }, fallback.warning)
       : null,
+    ...(Array.isArray(fallback.missing) ? fallback.missing : []).map((line, index) =>
+      h('p', { className: 'text-sm text-amber-500', key: `missing-${index}` }, line)
+    ),
     entries.length
       ? h(
           'ol',
@@ -4228,6 +4312,126 @@ function EventsPage({ snap }) {
 
 // -- the page ---------------------------------------------------------------
 
+/** 1.9.0.6: the "ⓘ How to install or configure" page, opened from the round i at the end of the tab bar.
+ *  Static text: the five things a new user asks, in the order they ask them. No key, no snapshot value. */
+const GUIDE_STEPS = [
+  {
+    title: '1 · Install',
+    lines: [
+      'In Hermes Desktop open Capabilities → Plugins and press Install on API Rotation. Restart Hermes once.',
+      'Command line instead:'
+    ],
+    code: 'hermes plugins install Kame696/kame-api-rotation-for-hermes/hermes-kame-api-rotation\nhermes plugins enable hermes-kame-api-rotation'
+  },
+  {
+    title: '2 · Add your keys',
+    lines: [
+      'Where your provider key already is (the Hermes dashboard, or ~/.hermes/.env), put ALL your keys for that provider in that one field, separated by commas. Save and restart Hermes once.',
+      'From any chat (also the Android app): /kame-keys add gemini KEY1,KEY2,KEY3'
+    ],
+    code: 'GOOGLE_API_KEY=AIza...key1,AIza...key2,AIza...key3\nOPENROUTER_API_KEY=sk-or-...key1,sk-or-...key2'
+  },
+  {
+    title: '3 · Add more models (optional)',
+    lines: [
+      'Your Hermes fallback list is API Rotation’s list of models, best first. Every reply starts on the model you picked; when it is busy, out of quota or slow, the next one answers - as many models as you like.',
+      'The reply is never ended for it: when every key of every model rests, it waits until one is back and answers.'
+    ],
+    code: 'hermes fallback add'
+  },
+  {
+    title: '4 · Turn on this page and the status chip (optional)',
+    lines: [
+      'Capabilities → Plugins → API Rotation → switch on Desktop. The page appears in the left menu and the live line in the status bar. Rotation works without it.'
+    ]
+  },
+  {
+    title: '5 · Choose how it behaves (optional)',
+    lines: [
+      'Overview → Quick controls: Speed (Saver · Balanced · Faster) and Fallback. Everything else is already tuned; it lives in Settings.',
+      'Check it any time with /kame (what it is doing) and /kame doctor (is anything only you can fix?).',
+      'Turn it off without uninstalling: the first switch in Settings, or KAME_ROTATION_DISABLED=1.'
+    ]
+  }
+]
+
+function GuidePage() {
+  return h(
+    'div',
+    { className: 'flex flex-col gap-4' },
+    Card(
+      {
+        key: 'guide',
+        note: 'Five steps; only the first two are needed. Keys are never shown, logged or sent anywhere but your provider.',
+        title: 'How to install or configure'
+      },
+      h(
+        'ol',
+        { className: 'flex flex-col gap-4', key: 'steps' },
+        ...GUIDE_STEPS.map(step =>
+          h(
+            'li',
+            { className: 'flex flex-col gap-1', key: step.title },
+            h('p', { className: 'text-sm font-medium text-(--ui-text-primary)', key: 'title' }, step.title),
+            ...step.lines.map((line, i) =>
+              h('p', { className: 'text-xs text-(--ui-text-secondary)', key: `l${i}` }, line)
+            ),
+            step.code
+              ? h(
+                  'pre',
+                  {
+                    className:
+                      'mt-1 overflow-x-auto rounded bg-(--ui-bg-quinary) p-2 font-mono text-[11px] text-(--ui-text-primary) whitespace-pre',
+                    key: 'code'
+                  },
+                  step.code
+                )
+              : null
+          )
+        )
+      ),
+      h(
+        'p',
+        { className: 'mt-4 text-xs text-(--ui-text-quaternary)', key: 'more' },
+        'Every step in detail, with screenshots: ',
+        h(
+          'button',
+          {
+            className: 'text-(--ui-text-secondary) underline decoration-dotted underline-offset-2 hover:text-(--ui-text-primary)',
+            key: 'link',
+            onClick: () => openLink(REPO_URL + '#install'),
+            title: REPO_URL + '#install',
+            type: 'button'
+          },
+          REPO_URL.replace('https://', '')
+        )
+      )
+    )
+  )
+}
+
+function InfoTab({ active }) {
+  return h(
+    'button',
+    {
+      'aria-label': 'How to install or configure',
+      className: cn(
+        'ml-auto flex h-6 w-6 items-center justify-center rounded-full border text-xs font-semibold italic transition-colors',
+        active
+          ? 'border-(--ui-text-primary) bg-(--ui-bg-quinary) text-(--ui-text-primary)'
+          : 'border-(--ui-stroke-tertiary) text-(--ui-text-tertiary) hover:text-(--ui-text-primary)'
+      ),
+      onClick: () => {
+        $inspect.set(null)
+        $tab.set('guide')
+      },
+      title: 'How to install or configure',
+      type: 'button'
+    },
+    'i'
+  )
+}
+
 function FirstRun() {
   return Card(
     { title: 'Getting started' },
@@ -4677,7 +4881,8 @@ function KamePage() {
       }),
       tab === 'secondary'
         ? h('span', { className: 'muted', key: 'buildline' }, ` · build ${snap.build_line || ''}`)
-        : null
+        : null,
+      h(InfoTab, { active: tab === 'guide', key: 'guide' })
     ),
 
     !snap.installed &&
@@ -4723,6 +4928,8 @@ function KamePage() {
         ? h(EventsPage, { key: 'body', snap })
         : tab === 'secondary'
         ? h(SecondaryPage, { key: 'body', snap })
+        : tab === 'guide'
+        ? h(GuidePage, { key: 'body' })
         : h(
             'div',
             { className: 'flex flex-col gap-4', key: 'body' },
@@ -4764,6 +4971,9 @@ function KamePage() {
               Field('Surfaced', counters.surfaced ?? 0, 'errors API Rotation let through'),
               counters.handed_over
                 ? Field('Fallbacks', counters.handed_over, 'replies your fallback list answered: the model was busy, resting or too slow')
+                : null,
+              counters.budget_held
+                ? Field('Kept in API Rotation', counters.budget_held, "replies API Rotation kept instead of handing them to Hermes: Hermes switches model only a few times per answer")
                 : null,
               counters.probe_bursts
                 ? Field('Keys asked together', counters.probe_bursts, 'quota ran out, so several keys were tried at once')
@@ -5119,7 +5329,7 @@ function chipPopoverModel(snap, nowMs) {
   } else if (said.tone !== 'good') {
     sentence = said.line2
   } else if (activity) {
-    sentence = liveLineText(activity, activity.kind === 'waiting' ? untilEpoch((snap.updated_at ?? 0) + (activity.eta_s ?? 0), nowMs) : null)
+    sentence = liveLineText(activity, activity.kind === 'waiting' ? untilEpoch((snap.updated_at ?? 0) + (activity.eta_s ?? 0), nowMs) : null, elapsedOf(activity, nowMs))
   } else if (usable) {
     sentence = `Ready - next reply: ${modelOnly(usable.identity)}`
   } else {
@@ -5401,7 +5611,7 @@ export default {
 
 /** Pure pieces of the rotation page, exported so the node checks can ask them questions without a
  *  browser (tests/ui_reconcile.mjs). The host reads only the default export. */
-export const panelHelpers = { KEY_STATE, PANEL_READS, canInspectEvent, chipPopoverModel, chipRowStatus, chipText, duration, keyCounts, liveLineText, modelState, modelStateTitle, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, inspectorText, pillRestorePlan, quotaShare, reasonText, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, speedCostParts, toneFor, watchPillRestore }
+export const panelHelpers = { activityOf, elapsedOf, GUIDE_STEPS, GuidePage, InfoTab, KEY_STATE, PANEL_READS, canInspectEvent, chipPopoverModel, chipRowStatus, chipText, duration, keyCounts, liveLineText, modelState, modelStateTitle, lifetimeLine, movesEmptyLine, nowSentences, oneCount, ordinal, sentLine, inspectorText, pillRestorePlan, quotaShare, reasonText, replyFromRow, replyLineText, ringAria, ringModels, ringSegments, SettingShell, sideJobsLine, speedCostParts, toneFor, watchPillRestore }
 
 // A null budget is productive automatic continuation, not a literal denominator.
 function resumeProgress(activity) {

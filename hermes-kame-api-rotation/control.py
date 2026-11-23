@@ -393,6 +393,15 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         storage: list = []
         _report_reset()
         try:
+            from .core import switch_budget
+
+            switch_budget.reset_all()       # 1.9.0.6 (decisions/0037 C2): Hermes' switches start counting again
+            from .core import model_missing
+
+            model_missing.forget()          # 1.9.0.6 (decisions/0037 C13): look at every model of the list again
+        except Exception:  # pragma: no cover - a courtesy count
+            logger.debug("kame: could not reset the switch budget", exc_info=True)
+        try:
             from .core.carousel import ENGINE
 
             ENGINE.reset_all()

@@ -243,6 +243,126 @@ def kame_needs_no_capability_the_host_could_deny(
     return sorted(i for i in ids if about_our_business.search(i)), []
 
 
+# --- 1.9.0.6 (decisions/0037 C6, C8): the host facts "KAME never makes Hermes end a reply" rests on -------------------
+
+
+def _source_has(relative: str, pattern: str, *, flags: int = re.S) -> bool:
+    try:
+        return re.search(pattern, "\n".join(read(relative)), flags) is not None
+    except OSError:
+        return False
+
+
+def hermes_counts_restarts_since_the_last_response(_=None):
+    """A fallback activation is a restart; past api_max_retries the turn ends; a response zeroes the count."""
+    return all([
+        _source_has("agent/turn_iteration_prep.py",
+                    r"if _retry\.restart_with_rebuilt_messages:\s+restart_count \+= 1\s+if restart_count > max_retries"),
+        _source_has("agent/turn_iteration_prep.py", r"^\s+restart_count = 0\s*$", flags=re.M),
+        _source_has("agent/conversation_loop.py",
+                    r"def _arm_fallback_restart\(.*?_retry\.restart_with_rebuilt_messages = True"),
+    ]), True
+
+
+def hermes_api_max_retries_defaults_to_three(_=None):
+    """The default KAME's switch budget is sized for (core/fallback_chain.HOST_SWITCH_LIMIT_DEFAULT)."""
+    return all([
+        _source_has("agent/agent_init.py", r'_agent_section\.get\("api_max_retries", 3\)'),
+        _source_has("hermes_cli/config_defaults.py", r'"api_max_retries": 3'),
+    ]), True
+
+
+def hermes_keeps_the_session_id_in_a_task_local_contextvar(_=None):
+    """conversation_key() reads _bound_session_value / _UNSET and never os.environ."""
+    return all([
+        _source_has("gateway/session_context.py", r"^_UNSET: Any = object\(\)", flags=re.M),
+        _source_has("gateway/session_context.py", r"def _bound_session_value\(name: str\) -> Any:"),
+        _source_has("gateway/session_context.py", r'"HERMES_SESSION_ID"'),
+        _source_has("gateway/session_context.py", r'"HERMES_SESSION_KEY"'),
+    ]), True
+
+
+def a_delegated_child_never_writes_the_process_environment(_=None):
+    """So every subagent has its own task-local id (and its own switch budget)."""
+    return _source_has(
+        "gateway/session_context.py",
+        r"def set_current_session_id\(.*?_SESSION_ID\.set\(session_id\).*?is_delegated_child_context\(\).*?"
+        r"return.*?os\.environ\[\"HERMES_SESSION_ID\"\] = session_id"), True
+
+
+def a_non_streaming_budget_is_one_method_and_infinite_means_no_timer(_=None):
+    """decisions/0037 C19b: KAME moves Hermes' non-stream leash into itself through this one method; inf = no timer."""
+    return all([
+        _source_has("run_agent.py", r"def _compute_non_stream_stale_timeout\(self, api_payload: Any\) -> float:"),
+        _source_has("agent/chat_completion_helpers.py",
+                    r"stale_timeout = agent\._compute_non_stream_stale_timeout\(api_kwargs\)"),
+        _source_has("agent/chat_completion_helpers.py",
+                    r'resolver = getattr\(agent, "_compute_non_stream_stale_timeout", None\)'),
+        _source_has("agent/chat_completion_helpers.py",
+                    r"if math\.isfinite\(self\.stale_timeout\) and self\.stale_timeout > 0:"),
+        _source_has("agent/chat_completion_helpers.py",
+                    r"if not math\.isfinite\(stale_timeout\) or stale_timeout <= 0:\s+return None"),
+        _source_has("agent/chat_completion_nonstream.py", r"if elapsed > wd\.stale_timeout:"),
+        _source_has("agent/chat_completion_helpers.py",
+                    r"def _context_thread_target\(callback\):.*?contextvars\.copy_context\(\)"),
+    ]), True
+
+
+def the_switch_notice_is_looked_up_at_call_time_and_a_held_one_stays_quiet(_=None):
+    """decisions/0037 C4b: KAME's own switches are held like a wake turn's; Hermes imports the notice per call."""
+    return all([
+        _source_has("agent/chat_completion_helpers.py",
+                    r"def try_activate_fallback\(.*?\n    from agent\.fallback_notice import announce_fallback_switch"),
+        _source_has("agent/chat_completion_helpers.py", r"announce_fallback_switch\(agent, notice\)"),
+        _source_has("agent/fallback_notice.py",
+                    r"def announce_primary_restored\(.*?unseen = getattr\(agent, \"_hidden_fallback_notice\", None\)"
+                    r".*?if unseen or fallback_notice_hidden\(agent\):\s+return"),
+        _source_has("agent/fallback_notice.py",
+                    r"def surface_hidden_fallback\(agent\).*?announce_fallback_switch\(agent, held\)"),
+    ]), True
+
+
+def pre_llm_call_is_a_valid_hook_with_a_session_id(_=None):
+    """The turn-start reset: the hook exists and is fired with ``session_id``."""
+    return all([
+        _source_has("hermes_cli/plugins.py", r"VALID_HOOKS.*?\"pre_llm_call\""),
+        _source_has("agent/turn_context.py", r'"pre_llm_call",\s+session_id=agent\.session_id'),
+    ]), True
+
+
+def the_stream_stale_timeout_is_180_seconds_and_kames_keepalive_is_far_inside_it(_=None):
+    """KEEPALIVE_S must stay well under the host's silence watchdog."""
+    found = _source_has("agent/chat_completion_helpers.py", r'env_float\("HERMES_STREAM_STALE_TIMEOUT", 180\.0\)')
+    try:
+        text = (Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation" / "transport.py").read_text(
+            encoding="utf-8")
+        keepalive = float(re.search(r"^\s+KEEPALIVE_S = ([0-9.]+)", text, re.M).group(1))
+    except Exception:
+        return "KEEPALIVE_S unreadable", True
+    return bool(found and keepalive * 4 <= 180.0), True
+
+
+def a_subagent_has_no_time_cap_and_a_live_call_keeps_it_alive(_=None):
+    """decisions/0037 C8: no child timeout by default; the heartbeat stale cycles KAME's keep-alive relies on."""
+    return all([
+        _source_has("tools/delegate_tool_config.py", r"DEFAULT_CHILD_TIMEOUT: Optional\[float\] = None"),
+        _source_has("tools/delegate_tool_child_run.py", r"_HEARTBEAT_STALE_CYCLES_IDLE = 15"),
+        _source_has("tools/delegate_tool_child_run.py", r"_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40"),
+    ]), True
+
+
+def a_cron_job_is_killed_at_600_seconds_by_default(_=None):
+    """KAME's own 300 s cron wait (settings.CRON_TOTAL_WAIT_DEFAULT_S) must stay under it."""
+    ok = _source_has("cron/scheduler.py", r"def _cron_inactivity_seconds\(\).*?return 600\.0")
+    try:
+        text = (Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation" / "settings.py").read_text(
+            encoding="utf-8")
+        bound = float(re.search(r"^CRON_TOTAL_WAIT_DEFAULT_S\s*=\s*([0-9.]+)", text, re.M).group(1))
+    except Exception:
+        return "CRON_TOTAL_WAIT_DEFAULT_S unreadable", True
+    return bool(ok and bound < 600.0), True
+
+
 def the_plugin_registers_the_four_it_should(
     text: Optional[str] = None,
 ) -> Tuple[object, object]:
@@ -258,6 +378,8 @@ def the_plugin_registers_the_four_it_should(
         # resets (``transport._Spinner``, drawn through notify_turn_status).
         "on_session_reset",
         "post_api_request",
+        # 1.9.0.6 (decisions/0037 C2): a turn start resets the count of Hermes' model switches.
+        "pre_llm_call",
         "transform_api_error_classification",
     ]
 
@@ -1166,6 +1288,17 @@ def main() -> int:
         ("the installer still stops at manifest_version 1", the_installer_still_stops_at_manifest_version_one),
         ("Gemini still reads an assistant turn as a model turn", gemini_still_reads_an_assistant_turn_as_a_model_turn),
         ("a refusal still arrives with the provider's words in it", a_refusal_still_arrives_with_the_provider_words_in_it),
+        # 1.9.0.6 (decisions/0037 C6, C8): KAME never makes Hermes end a reply
+        ("Hermes counts restarts since the last response, a fallback is one", hermes_counts_restarts_since_the_last_response),
+        ("api_max_retries still defaults to 3", hermes_api_max_retries_defaults_to_three),
+        ("the session id is still a task-local ContextVar (_bound_session_value, _UNSET)", hermes_keeps_the_session_id_in_a_task_local_contextvar),
+        ("a delegated child still never writes HERMES_SESSION_ID to os.environ", a_delegated_child_never_writes_the_process_environment),
+        ("pre_llm_call is still a valid hook, fired with session_id", pre_llm_call_is_a_valid_hook_with_a_session_id),
+        ("the non-stream leash is still one method, and inf still means no timer", a_non_streaming_budget_is_one_method_and_infinite_means_no_timer),
+        ("the switch notice is looked up per call, and a held one stays quiet", the_switch_notice_is_looked_up_at_call_time_and_a_held_one_stays_quiet),
+        ("the stream stale timeout is still 180 s, far above KAME's keep-alive", the_stream_stale_timeout_is_180_seconds_and_kames_keepalive_is_far_inside_it),
+        ("a subagent has no time cap by default; heartbeat stale cycles unchanged", a_subagent_has_no_time_cap_and_a_live_call_keeps_it_alive),
+        ("a cron job is still killed at 600 s by default", a_cron_job_is_killed_at_600_seconds_by_default),
     ):
         got, want = probe()
         check(label, got, want, meaning=(probe.__doc__ or "").strip().splitlines()[0])

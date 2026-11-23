@@ -24,6 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.h1906 import clock  # noqa: F401,E402  (the fake clock of decisions/0037 C9)
+
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "hermes-kame-api-rotation"
 PACKAGE = "kame_timeouts_1827_under_test"
@@ -145,22 +147,24 @@ def test_the_first_timeout_rotates_at_once_and_the_key_stays_healthy(fresh, stat
     assert fresh.engine.healthy_count(IDENTITY, [KEYS[0]]) == 1
 
 
-def test_the_second_timeout_in_a_row_goes_back_to_hermes(fresh):
-    plan = Plan({KEYS[0]: [timeout(504)], KEYS[1]: [timeout(524)],
-                 KEYS[2]: ["never asked"], KEYS[3]: ["never asked"]})
-    with pytest.raises(Refusal):
-        fresh.complete(FakeCall(plan))
-    assert plan.asked == [KEYS[0], KEYS[1]]
-    assert fresh.surfaced == 1
-    for key in KEYS[:2]:
-        assert fresh.engine.healthy_count(IDENTITY, [key]) == 1
+def test_the_second_timeout_in_a_row_no_longer_goes_back_to_hermes(clock):
+    """1.9.0.6 (decisions/0037 C9): a chat reply rests every key a few seconds and keeps waiting; the raw timeout
+    never reaches Hermes (which would retry it three times and end the turn)."""
+    t, _fake = clock
+    plan = Plan({KEYS[0]: [timeout(504), "ok"], KEYS[1]: [timeout(524), "ok"],
+                 KEYS[2]: ["ok"], KEYS[3]: ["ok"]})
+    result = t.complete(FakeCall(plan))
+    assert result.choices[0].message.content == "ok"
+    assert plan.asked[:2] == [KEYS[0], KEYS[1]]
+    assert t.surfaced == 0
 
 
-def test_one_key_that_times_out_twice_is_handed_back_not_looped(fresh):
-    plan = Plan({KEYS[0]: [timeout(504), timeout(504), "never"]})
-    with pytest.raises(Refusal):
-        fresh.complete(FakeCall(plan, keys=KEYS[:1]))
-    assert plan.asked == [KEYS[0], KEYS[0]]
+def test_one_key_that_times_out_twice_waits_instead_of_being_handed_back(clock):
+    t, _fake = clock
+    plan = Plan({KEYS[0]: [timeout(504), timeout(504), "ok"]})
+    result = t.complete(FakeCall(plan, keys=KEYS[:1]))
+    assert result.choices[0].message.content == "ok"
+    assert plan.asked == [KEYS[0], KEYS[0], KEYS[0]]
 
 
 def test_timeouts_that_are_not_in_a_row_do_not_hand_the_call_back(fresh):

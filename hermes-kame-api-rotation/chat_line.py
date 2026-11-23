@@ -13,8 +13,9 @@ Surface rules (``PLAN_1.9.0.5`` C1, from Hermes v0.23.3 ``gateway/plugin_message
 
 * ``desktop``  - no live posts at all. Only the one-time notices (C3 "turn it on", A2/A4), once per session.
 * ``tui``      - one handle per SESSION: posted on the first acting reply, only edited afterwards.
-* a messaging platform - one message per acting reply, edited in place, and only for a wait of more than
-  ten seconds or another model answering.
+* a messaging platform - one message per acting reply, edited in place, and only for a reply that has waited
+  a minute or another model answering (1.9.0.6, decisions/0037 C20: was ten seconds). Its final edit is one short
+  line, ``✓ KAME: answered after N s``; a failure keeps its text.
 * classic ``cli``, ``acp`` and anything unknown - nothing.
 
 A clean reply posts nothing. ``ok == False`` from the host (no conversation: cron, timers) drops the line
@@ -38,8 +39,10 @@ EDIT_EVERY_S = 1.5
 #: Messaging platforms rate-limit edits hard: at least this long between two edits of one message. The final
 #: edit (the answer, or the failure) is always sent at once.
 MESSAGING_EDIT_EVERY_S = 20.0
-#: A messaging-platform message is posted for a wait at least this long (the event's own countdown).
-MESSAGING_WAIT_S = 10.0
+#: A messaging-platform message is posted when a reply has waited this long (the event's own countdown, or the
+#: time since the reply began) or when KAME moved it to another model. 1.9.0.6 (decisions/0037 C20): was 10 s; the
+#: host's handle can only edit, never delete, so a short wait must leave nothing behind.
+MESSAGING_WAIT_S = 60.0
 #: The Desktop panel reads ``/state`` every couple of seconds; no read for this long = it is not open/installed.
 DESKTOP_READ_FRESH_S = 600.0
 #: A reply's line that has not been touched for this long is a leftover of an unfinished reply.
@@ -200,11 +203,11 @@ def _send(slot: _Slot, text: str) -> None:
 
 class _Line:
     __slots__ = ("owner", "call_id", "touched", "policy", "session", "run_ctx", "acted", "trigger", "done", "text",
-                 "keys", "attempts", "slot")
+                 "keys", "attempts", "slot", "began")
 
     def __init__(self, owner: str, call_id: int, policy: str, session: str, run_ctx: contextvars.Context) -> None:
         self.owner, self.call_id, self.policy, self.session, self.run_ctx = owner, call_id, policy, session, run_ctx
-        self.touched = time.monotonic()
+        self.touched = self.began = time.monotonic()
         self.acted = False
         #: messaging only: has a wait of more than ten seconds / another model happened?
         self.trigger = False
@@ -282,8 +285,15 @@ def _acting_text(kind: str, text: str, fields: Dict[str, Any]) -> str:
 def _final_text(kind: str, text: str, line: _Line, fields: Dict[str, Any]) -> str:
     if kind in _FAILED:
         return f"✕ no answer: {text}" if text else "✕ no answer"
-    tried = len(line.keys) or line.attempts or 1
     seconds = fields.get("seconds")
+    if line.policy == "messaging":
+        # 1.9.0.6 (decisions/0037 C20): one short line, no key count; the reply's own running time.
+        try:
+            spent = max(time.monotonic() - line.began, float(seconds or 0.0))
+        except (TypeError, ValueError):
+            spent = time.monotonic() - line.began
+        return f"✓ KAME: answered after {max(int(round(spent)), 1)} s"
+    tried = len(line.keys) or line.attempts or 1
     took = "" if seconds is None else f" in {float(seconds):.1f} s"
     return f"✓ answered by {_label(fields.get('identity'))}{took} ({tried} key{'s' if tried != 1 else ''} tried)"
 
@@ -355,6 +365,8 @@ def _note(call: Any, kind: str, text: str, fields: Dict[str, Any]) -> None:
             seconds = fields.get("seconds")
             if seconds is None or float(seconds) > MESSAGING_WAIT_S:
                 line.trigger = True
+        if now - line.began >= MESSAGING_WAIT_S:
+            line.trigger = True             # 1.9.0.6 (C20): the reply itself has waited a minute
         _publish(line, final=False)
     elif kind in _ANSWERED or kind in _FAILED:
         if line.acted or line.slot is not None:

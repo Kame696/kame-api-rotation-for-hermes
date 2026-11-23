@@ -7,6 +7,36 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.6] - 2026-11-23 - a reply is never ended on you
+
+- **A reply no longer ends because Hermes ran out of switches.** Hermes ends a turn after `agent.api_max_retries`
+  (default 3) fallback switches without an answer. API Rotation now counts the switches of each conversation, never
+  spends the last one, and answers with the other models of your provider itself; what it cannot reach it keeps
+  waiting for, with a keep-alive, as long as it takes. No setting of yours is needed.
+- **Slow first word and a stalled answer** take a model of the same provider, like a busy one already did.
+- **Many chats and sub-agents at once** keep their own switch count and their own line; one chat's wait never
+  shows in another.
+- **Repeated timeouts** rest the keys a short, growing time and keep the reply waiting instead of handing it back.
+- **A model your provider does not know** (a typo in your list) is said once in `/kame doctor` and the panel, and
+  never asked again for six hours or until `config.yaml` changes.
+- **Chat titles** are made by a free model of the same provider while the best one is busy, resting or slow.
+- **Calls without streaming never give up either.** Hermes' wall-clock timer on a non-streaming call is switched
+  off for calls API Rotation carries, and API Rotation applies the same limit to each request itself (doubling
+  per attempt for a model that is only slow): a hung connection is cut as fast as before, the key rests, and the
+  reply keeps waiting. Nothing ever says "try again".
+- **A refused request tries your other models first.** When a model refuses the request itself (gone, too large,
+  a bad request), each free model of the same provider in your list is asked once; only when every one refuses
+  does Hermes get the first model's own error, so its compression and its own fallback still work.
+- **No "Model fallback" warning in the chat** for a switch API Rotation asked for: the status bar, the reply row
+  and the panel already say it. A switch for a real provider failure is still announced by Hermes.
+- **ⓘ How to install or configure.** A round "i" at the end of the panel's tabs opens a five-step guide: install,
+  keys, more models, the panel and the status chip, and the quick controls.
+- **The live line looks alive.** It ends with the reply's running time, the Desktop line has a pulsing dot, and a
+  reply that ends without an answer shows `✕ no answer - <reason>` for ten seconds instead of staying on its last
+  state. Telegram and Discord post one line only after a minute of waiting and end on `✓ KAME: answered after N s`.
+- Smaller fixes: background jobs never carry a provider's 503 to others, the host's walk permits are per chat,
+  the panel's wording.
+
 ## [1.9.0.5] - 2026-11-22 - one package, Gemini rotated again, the chat shows what happens (in development, not released)
 
 - **One package.** `hermes-kame-provider` is no longer needed; API Rotation does its work alone. A copy still

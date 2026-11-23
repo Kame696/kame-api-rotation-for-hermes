@@ -21,11 +21,18 @@ const fresh = () => ({ text: '', until: 0 })
 // -- every acting state of the shared table says its sentence; plain calling says nothing --------------
 for (const row of readFixture().live) {
   const plainFirstAttempt = row.kind === 'calling'
-  const got = chipText(snapOf(row.activity), NOW_MS, fresh())
+  // 1.9.0.6 (C21): an ended reply is shown for ten seconds after `ended_at`
+  const activity = row.kind === 'ended' ? { ...row.activity, ended_at: NOW_MS / 1000 - 2 } : row.activity
+  const got = chipText(snapOf(activity), NOW_MS, fresh())
 
   assert.equal(got, plainFirstAttempt ? '' : row.line, `${row.kind}: ${JSON.stringify(row.activity)}`)
-  if (!plainFirstAttempt) assert.equal(got, liveLineText(row.activity, row.activity.eta_s ?? null))
+  if (!plainFirstAttempt) {
+    assert.equal(got, liveLineText(activity, activity.eta_s ?? null, activity.elapsed_s ?? null))
+  }
 }
+
+// an ended reply's line is gone after ten seconds
+assert.equal(chipText(snapOf({ kind: 'ended', reason: 'stopped', ended_at: NOW_MS / 1000 - 11 }), NOW_MS, fresh()), '')
 
 // -- idle, not installed, stale: the pool counts stay ----------------------------------------------------
 assert.equal(chipText(snapOf(null), NOW_MS, fresh()), '')

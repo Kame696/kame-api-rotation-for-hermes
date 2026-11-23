@@ -42,7 +42,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
 from . import chat_line, host_text, recorder, runtime, settings, timings, wires
-from .core import aux_budget, evidence, multikey, provider_quirks, stitch, vocabulary
+from .core import aux_budget, evidence, model_missing, multikey, provider_quirks, stitch, switch_budget, vocabulary
 from .core.storm import StormFilter, Verdict as StormVerdict
 from .core.events import EVENTS
 from .core.events import active_events as _active_events  # 1.8.2.3
@@ -150,7 +150,41 @@ class KamePoolResting(Exception):
         }}
 
 
-class KameAuxTimeout(TimeoutError):
+class _NoChain:
+    """A mixin: this error never shows a cause or a context.
+
+    1.9.0.6 (decisions/0037 C10). KAME raises its background-job stops inside ``except`` blocks, so Python chains the
+    provider's own 503 as ``__context__`` and Hermes' classifier (``_from_cause_chain``) reads "overloaded" from it,
+    blocking the whole provider for a minute for every background task. Reads of ``__cause__`` / ``__context__``
+    answer ``None`` whatever the interpreter stored (``raise ... from None`` alone does not survive a raise made
+    while another exception is being handled)."""
+
+    @property
+    def __cause__(self):                      # type: ignore[override]
+        return None
+
+    @__cause__.setter
+    def __cause__(self, value):
+        pass
+
+    @property
+    def __context__(self):                    # type: ignore[override]
+        return None
+
+    @__context__.setter
+    def __context__(self, value):
+        pass
+
+    @property
+    def __suppress_context__(self):           # type: ignore[override]
+        return True
+
+    @__suppress_context__.setter
+    def __suppress_context__(self, value):
+        pass
+
+
+class KameAuxTimeout(_NoChain, TimeoutError):
     """A background job (a title, a summary...) used the budget KAME gives it and stops.
 
     1.8.2.9 (decisions/0032 A5). The shape is chosen for what the host does with it
@@ -163,7 +197,7 @@ class KameAuxTimeout(TimeoutError):
     """
 
 
-class KameAuxStopped(RuntimeError):
+class KameAuxStopped(_NoChain, RuntimeError):
     """A background job KAME stopped moments ago, asked again by a LATER lane of the host's own walk.
 
     1.8.4.2 (A1). :class:`KameAuxTimeout` makes the host move the job down the user's list once. Every
@@ -203,6 +237,18 @@ class _StandIn:
 
     def target(self) -> Tuple[str, str]:
         return self.identity, self.model
+
+
+class _KameCircle(Exception):
+    """Internal control flow: the slow or stalled reply is circled to a sibling inside KAME (never reaches Hermes).
+
+    1.9.0.6 (decisions/0037 C3). Raised from the stream race when ``_maybe_hand_over`` returns a
+    :class:`_StandIn`; ``_drive`` catches it and moves the call to ``stand``. Deliberately NOT in
+    ``_CONTROL_FLOW`` (that tuple is re-raised to Hermes)."""
+
+    def __init__(self, stand: "_StandIn") -> None:
+        super().__init__("kame: circling the reply inside API Rotation")
+        self.stand = stand
 
 
 def _with_retry_hint(exc: BaseException, kind: str = "", quota_window: str = "") -> BaseException:
@@ -532,12 +578,33 @@ def model_label(identity: str) -> str:
     return identity.split(":", 1)[1] if ":" in identity else identity
 
 
+_POOL_SUFFIX = re.compile(r":(global|[a-z]+(?:-[a-z]+)*\d+(?:-[a-z])?)$")
+
+
+def _bare_label(identity: str) -> str:
+    """:func:`model_label` without the pool suffix (``:global``, a region): what a person reads in a notice.
+
+    1.9.0.6 (decisions/0037 C4). Never raises."""
+    try:
+        label = model_label(identity)
+        return _POOL_SUFFIX.sub("", label) or label
+    except Exception:  # pragma: no cover - a label must never cost a reply
+        return str(identity or "the provider")
+
+
 def _inflight_start(call: Any) -> None:
     """1.8.2.6: register a running call for the panel's "still waiting" line."""
     try:
         from .core.events import INFLIGHT as _inflight
         _inflight.start(call)
     except Exception:
+        pass
+    try:
+        if getattr(call, "channel", "main") == "main":
+            from . import state
+
+            state.note_reply_start()         # 1.9.0.6 (decisions/0037 C21): the running time counts from here
+    except Exception:  # pragma: no cover - a readout must never cost a reply
         pass
 
 
@@ -547,6 +614,41 @@ def _inflight_end(call: Any) -> None:
         _inflight.end(call)
     except Exception:
         pass
+    try:
+        if getattr(call, "channel", "main") == "main":
+            from . import state
+
+            # 1.9.0.6 (decisions/0037 C11, C21): this chat's reply is over - cleared at once when it answered, the
+            # end line (for ten seconds) when it ended without an answer
+            state.note_reply_end(str(getattr(call, "_kame_end_reason", "") or ""))
+    except Exception:  # pragma: no cover - a readout must never cost a reply
+        pass
+
+
+def _end_reason(call: Any, error: Optional[BaseException]) -> str:
+    """1.9.0.6 (decisions/0037 C21): a short, key-free reason a reply ended without an answer. Never raises.
+
+    ``""`` for a hand-over: the reply is NOT over - Hermes asks the next model of the list at once and that call's
+    live line takes over; "✕ no answer" there would be false (review, 2026-11-23)."""
+    try:
+        try:
+            stopped = bool(call.cancelled())
+        except Exception:
+            stopped = False
+        if stopped or error is None or isinstance(error, (InterruptedError, GeneratorExit)):
+            return "stopped"
+        if isinstance(error, KamePoolResting):
+            return ""
+        if isinstance(error, KameAuxStopped) or "max_total_wait_seconds" in str(error):
+            return "stopped waiting"
+        if isinstance(error, TimeoutError):
+            return "it timed out"
+        code = getattr(error, "status_code", None)
+        if isinstance(code, int):
+            return "the provider failed" if code >= 500 else "the provider refused it"
+        return "an error"
+    except Exception:  # pragma: no cover
+        return "an error"
 
 
 def _probe_ids(probe: Union[None, str, Iterable[str]]) -> FrozenSet[str]:
@@ -874,16 +976,32 @@ _WALK_PERMIT_S = 90.0
 #: the classification hook let a reply fall back without KAME handing it over (an error KAME passes
 #: through). The call Hermes rebuilds on the next entry is the same reply and keeps the origin, exactly like
 #: the walk after KAME's own hand-over (``KameTransport._walk_permits``).
-_HOST_WALK_PERMITS: Dict[str, Tuple[float, str]] = {}
+_HOST_WALK_PERMITS: Dict[Any, Tuple[float, str]] = {}
 
 
-def _permit_origin(position: str, *tables: Dict[str, Tuple[float, str]]) -> Optional[str]:
-    """The origin of the live walk permit that covers ``position``, or ``None``. The first table wins."""
+def _pkey(entry: str) -> Any:
+    """The key of a walk permit in the tables above (1.9.0.6, decisions/0037 C15).
+
+    Per conversation: ``(conversation, entry)`` for a conversation KAME can name, the plain ``entry`` for key ``""``
+    (the conversations it cannot tell apart share what they always shared). A permit written for one chat never
+    changes another chat's origin."""
+    conv = switch_budget.conversation_key()
+    return (conv, entry) if conv else entry
+
+
+def _permit_origin(position: str, *tables: Dict[Any, Tuple[float, str]]) -> Optional[str]:
+    """The origin of the live walk permit that covers ``position``, or ``None``. The first table wins.
+
+    1.9.0.6 (C15): only this conversation's permits and the shared ones (key ``""``) count."""
     from .core.fallback_chain import _same
 
     now = time.time()
+    mine = switch_budget.conversation_key()
     for table in tables:
-        for entry, (until, origin) in list(table.items()):
+        for key, (until, origin) in list(table.items()):
+            owner, entry = (key if isinstance(key, tuple) else ("", key))
+            if owner and owner != mine:
+                continue
             if until > now and _same(position, entry):
                 return origin
     return None
@@ -928,14 +1046,17 @@ def note_host_fallback(provider: Any, model: Any) -> None:
         except Exception:   # no live transport (an import-time hook, a test): the module table alone
             pass
         origin = ident if _is_main_model(ident) else (_permit_origin(ident, *tables) or ident)
+        # 1.9.0.6 (decisions/0037 C2): a failure that may become Hermes' own walk counts as a switch. It over-counts
+        # (not every failure becomes one) - accepted: over-counting only makes KAME wait, never pass Hermes' limit.
+        switch_budget.note_switch(switch_budget.conversation_key())
         until = time.time() + _WALK_PERMIT_S
         now = time.time()
         for entry in fallback_chain.after(origin, ident):
             if _is_main_model(entry):
                 continue
-            held = _HOST_WALK_PERMITS.get(entry)
+            held = _HOST_WALK_PERMITS.get(_pkey(entry))
             if held is None or held[0] <= now:
-                _HOST_WALK_PERMITS[entry] = (until, origin)
+                _HOST_WALK_PERMITS[_pkey(entry)] = (until, origin)
     except Exception:  # pragma: no cover - bookkeeping must never break the hook
         logger.debug("kame: could not note Hermes' own fallback", exc_info=True)
 
@@ -1391,6 +1512,25 @@ def attempt_read_timeout(base_url: Any, attempt: int, *, identity: str = "", kwa
     ContextVar read by a wrapped host reader; the client applies it directly to
     the request it owns.
     """
+    if not streaming:
+        # 1.9.0.6 (decisions/0037 C19b): Hermes' wall-clock leash on a non-streaming call was moved into KAME
+        # (``core.nonstream_guard``); each provider request gets that same budget, so a hung socket is still cut as
+        # fast as before - by KAME, which rests the key and asks again instead of ending the reply.
+        try:
+            from .core import nonstream_guard
+
+            budget = nonstream_guard.host_budget()
+        except Exception:
+            budget = None
+        if budget is not None:
+            # A model that is simply slow (not hung) must still get its answer through: the leash doubles with each
+            # attempt of the call, up to sixteen times Hermes' own budget, so KAME never cuts the same slow reply
+            # forever and a hung socket is still cut on the first attempt as fast as Hermes would have.
+            try:
+                grow = 2 ** min(max(int(attempt) - 1, 0), 4)
+            except Exception:
+                grow = 1
+            return float(budget) * grow
     mode = settings.first_token_mode()
     if mode == "off" or _looks_local(base_url):
         return None
@@ -1595,6 +1735,9 @@ class KameTransport:
         #: and per identity until when a second ask must wait (see
         #: :meth:`_maybe_hand_over`).
         self.handed_over = 0
+        #: 1.9.0.6 (decisions/0037 C2): hand-overs KAME did not raise because Hermes' switches for this
+        #: conversation were spent (``core/switch_budget``); the reply stayed in KAME instead.
+        self.budget_held = 0
         self._handover_until: Dict[str, float] = {}
         #: 1.8.2.8 (decisions/0028): identity -> until when its provider is
         #: known busy, and the length of that window (30 s, doubling while the
@@ -1635,7 +1778,7 @@ class KameTransport:
         self._handover_later: Dict[str, Tuple[str, ...]] = {}
         #: 1.8.3.0 (decisions/0033 D1): chain entry -> until when a call arriving on it is the walk of a
         #: reply that started on the main model (set where a main reply is handed to Hermes).
-        self._walk_permits: Dict[str, Tuple[float, str]] = {}
+        self._walk_permits: Dict[Any, Tuple[float, str]] = {}
         #: 1.8.3.1 (review R4): origin identity -> the model string Hermes sent for the first call of a reply
         #: that started there, as the user wrote it (the pill goes back to this, never to a lower-cased guess).
         self._origin_written: Dict[str, str] = {}
@@ -1953,6 +2096,22 @@ class KameTransport:
             # 1.8.2.7: a 503 whose code is `maintenance` is a closed door for
             # every key of this model; walking the pool only multiplies the wait.
             return "raise", "model_not_ready", ev.status_code
+
+        _missing = model_missing.detect(ev.status_code, message, ev.body)
+        if _missing is not None:
+            # 1.9.0.6 (decisions/0037 C13): the provider does not know this MODEL - a fact about the list, not the
+            # keys. It is marked missing (6 h, or until config.yaml changes); no picker goes to it again. The log
+            # names the model and says what to do (it used to say "the request itself was refused").
+            model_missing.mark(identity, written=_missing["written"], suggestion=_missing["suggestion"])
+            _row = {"written": _missing["written"] or identity.split(":", 1)[-1],
+                    "provider": identity.split(":", 1)[0], "suggestion": _missing["suggestion"]}
+            logger.warning("kame: %s - %s", label, model_missing.line(_row))
+            if call is not None:
+                try:
+                    setattr(call, "_kame_refused_request", True)
+                except Exception:  # pragma: no cover - a test double without attributes
+                    pass
+            return "raise", "model_missing", ev.status_code
 
         if verdict is None and ev.status_code == 401:
             from .core.provider_rules import api_surface, reading
@@ -2484,7 +2643,15 @@ class KameTransport:
         and ``kind`` names no failure class (``record_type`` is ``close``), so the readers that count
         a model's failures (``model_health``) or a key's (``expected_gate``) never count this row.
         At most one per call; nothing for a call that never reached a key.
+
+        1.9.0.6 (decisions/0037 C21): whatever the outcome, the call also keeps the short reason its chat shows for
+        ten seconds (``✕ no answer - <reason>``); ``_inflight_end`` publishes it, so the live line can never stay on
+        the state the call was in when the turn died.
         """
+        try:
+            setattr(call, "_kame_end_reason", _end_reason(call, error))
+        except Exception:  # pragma: no cover
+            pass
         try:
             call_id = getattr(call, "_kame_call_id", "")
             if not call_id or getattr(call, "_kame_closed", False):
@@ -2621,6 +2788,7 @@ class KameTransport:
         last_kind: str = ""  # 1.8.2.3: for the retry hint
         last_window: str = ""  # 1.8.2.3: quota window, for the hint family
         consecutive_timeouts = 0
+        timeout_streak = 0   # 1.9.0.6 (decisions/0037 C9): timeouts in a row, NOT zeroed by a wait or a circle
         # 1.8.2.7 (decisions/0027): refusals in a row that benched their key for a
         # long rest, and how many probe bursts this call has already sent.
         long_refusals = 0
@@ -2699,6 +2867,9 @@ class KameTransport:
         visited: List[str] = []     # models left in this call (gated like a busy one: review H4)
         excluded: List[str] = []    # models that refused Hermes' request shape (review M3)
         leg_busy: List[str] = []    # 1.8.4.2 (L1): other models whose race leg was refused busy in this reply
+        # 1.9.0.6 (decisions/0037 C22): the first refusal of the request in this call (error, model, kind, status);
+        # it is what Hermes is handed when no sibling will take the request either.
+        first_refusal: Optional[Tuple[BaseException, str, str, Any]] = None
         home_model = (call.kwargs or {}).get("model")
         try:   # the widen step must not ask a model that already refused this request (review, 2026-10-24)
             setattr(call, "_kame_avoid", excluded)
@@ -2731,6 +2902,26 @@ class KameTransport:
             vigil = None                                            # review L3: its label named the old model
             # pool_waited is kept: it is the user's "Give up after" clock (review M4)
 
+        def aux_move(why: str) -> bool:
+            """1.9.0.6 (decisions/0037 C18): a COSMETIC job (a title) whose model is busy, slow, out of quota or
+            resting is answered by a free sibling inside its own budget before it is stopped. Compression and the
+            other non-cosmetic jobs never switch (0025 D6). False: nothing free, the stop stands as before."""
+            try:
+                if aux is None or aux.klass != "cosmetic" or seen:
+                    return False
+                moved = self._aux_sibling(call, identity, keys, aux)
+                if moved is None or moved[0] in visited or moved[0] == identity:
+                    return False
+                old_label = model_label(identity)
+                circle_to(moved, why, announce=False)
+                _emit(call, "switch", identity=identity,
+                      reason=f"background job {str(getattr(call, 'task', '') or 'unnamed')} moved to "
+                             f"{moved[1]}: {old_label} {why}")
+                return True
+            except Exception:  # pragma: no cover - a decision helper never raises
+                logger.debug("kame: could not move a background job", exc_info=True)
+                return False
+
         if aux is not None and self._aux_hop_under_never(call, identity):
             # 1.9.0.3 (C10): "Never" keeps a background job on the model Hermes first sent it to. On `auto` the
             # host's own 30 s timeout made its auxiliary client try its fallback entry (a hop that never passes
@@ -2752,13 +2943,16 @@ class KameTransport:
         if aux is not None:
             # A background job that cannot start well does not start: no request at all.
             refusal = self._aux_refusal(identity, keys, aux)
-            if refusal in ("its model keeps failing", "its model is busy"):
+            if refusal in ("its model keeps failing", "its model is busy", "every key is resting",
+                           "its keys are short of quota"):
                 # 1.8.4.3 (H4): a cosmetic job (a title) on a model that keeps failing or is busy does not wait
                 # for the host's walk down the list: it moves, once and in place, to the first model of the
                 # owner's list on the same provider that is healthy. None: the refusal stands, as in 1.8.4.2.
                 moved = self._aux_sibling(call, identity, keys, aux)
                 if moved is not None:
-                    why_moved = "keeps failing" if refusal == "its model keeps failing" else "is busy"
+                    why_moved = {"its model keeps failing": "keeps failing", "its model is busy": "is busy",
+                                 "every key is resting": "is resting",
+                                 "its keys are short of quota": "is short of quota"}[refusal]
                     old_label = model_label(identity)
                     circle_to(moved, why_moved, announce=False)
                     _emit(call, "switch", identity=identity,
@@ -2882,6 +3076,8 @@ class KameTransport:
                     aux_left = aux.total_s - (time.monotonic() - started)
                     _aux_eta = self.engine.next_recovery_seconds(identity, keys)
                     if not aux.may_wait or aux_left <= 0 or (_aux_eta is not None and _aux_eta > aux_left):
+                        if aux_move("is resting"):
+                            continue                    # 1.9.0.6 (decisions/0037 C18)
                         raise aux_stop("every key is resting")
                 # 1.8.2.0: the total bound. 1.8.2.1: unset, a cron session gets
                 # 300 s; a value the user set (0 included) always wins.
@@ -3301,6 +3497,21 @@ class KameTransport:
                         _close_quietly(raw)
             except _CONTROL_FLOW:
                 raise
+            except _KameCircle as sig:
+                # 1.9.0.6 (decisions/0037 C3): a slow or stalled reply moves to a free sibling inside KAME; Hermes
+                # never hears of it. Only ever raised while nothing is on the screen (``_maybe_hand_over`` returns
+                # ``None`` when ``seen``); if text somehow is, the reply is cut as every other mid-stream stop.
+                if seen or shown:
+                    logger.warning("kame: a circle was asked with text already shown - cutting the reply instead")
+                    self.mid_stream_cuts += 1
+                    raise call.cut(last_error)
+                circle_to(sig.stand.target(), sig.stand.why)
+                try:
+                    keys = call.keys() or keys
+                except Exception:
+                    logger.debug("kame: could not refresh the keys after a circle", exc_info=True)
+                yield _KEEPALIVE        # Hermes hears something at the turn of the circle, never a long gap
+                continue
             except KamePoolResting:
                 raise  # 1.8.2.8: a slow model handed over from inside the race (D11)
             except BaseException as exc:  # noqa: BLE001 — re-raised below unless rotatable
@@ -3328,6 +3539,10 @@ class KameTransport:
                     first_time = key not in tool_cut_keys
                     tool_cut_keys.add(key)
                     unasked = any(k and k not in tool_cut_keys for k in keys)
+                    # 1.9.0.6 (decisions/0037 C17): with exactly one key there is no other to ask - the same key is asked once more
+                    # before the half call goes back to Hermes (a cut stream is usually a dropped connection).
+                    if not unasked and len({k for k in keys if k}) == 1:
+                        unasked = True
                     self.stream_drops += 1
                     if first_time and unasked:
                         replay_tool_request = True
@@ -3435,14 +3650,46 @@ class KameTransport:
                     _refused_shape = int(status) in (400, 404)
                 except (TypeError, ValueError):
                     _refused_shape = False
+                if (verdict == "raise" and kind == "model_missing" and not seen and stitcher is None
+                        and getattr(call, "channel", "main") == "main"):
+                    # 1.9.0.6 (decisions/0037 C13): a usable sibling of the list takes the reply; none -> the refusal
+                    # surfaces as before (the model is already marked: nothing picks it again).
+                    _take = self._stand_in_for(call, identity, self._later(call, identity), visited + excluded + leg_busy,
+                                               "missing", None, None, any_sibling=True)
+                    if _take is not None:
+                        excluded.append(identity)
+                        circle_to(_take.target(), "was not found by the provider")
+                        continue
                 if (verdict == "raise" and _refused_shape and home_model and not seen
-                        and visited and identity != call.identity):
+                        and visited and identity != call.identity and call.identity not in excluded):
                     # 1.8.2.9 (review M3): Hermes built this request for ITS model. A model
                     # circled to that refuses its shape is not the reply's error - leave it
                     # out of this call and go back to the model Hermes asked for.
+                    # 1.9.0.6 (C22): unless that model already refused it in this call.
+                    if first_refusal is None:
+                        first_refusal = (exc, identity, kind, status)
                     excluded.append(identity)
                     circle_to((call.identity, home_model), "refused this request")
                     continue
+                if (verdict == "raise" and not seen and stitcher is None
+                        and bool(getattr(call, "_kame_refused_request", False))
+                        and getattr(call, "channel", "main") == "main"):
+                    # 1.9.0.6 (decisions/0037 C22, parity with Agent Zero 0019 A6): a model that refuses the REQUEST
+                    # (404/410 gone, 413 too large, a 400 the provider calls the request's fault, a blocked prompt)
+                    # is not the end of the reply: each usable sibling of the user's list is asked once, inside
+                    # KAME (no host switch spent). Only when every one refused does Hermes get the FIRST model's
+                    # own error - so its compression on a 413 and its own fallback on a refused request still work.
+                    if first_refusal is None:
+                        first_refusal = (exc, identity, kind, status)
+                    if identity not in excluded:
+                        excluded.append(identity)
+                    _take = self._stand_in_for(call, identity, self._later(call, identity),
+                                               visited + excluded + leg_busy, "refused", None, None, any_sibling=True)
+                    if _take is not None:
+                        circle_to(_take.target(), "refused this request")
+                        continue
+                    exc, identity, kind, status = first_refusal
+                    label = identity
                 if verdict == "raise" and stitcher is not None:
                     said = f"{getattr(exc, 'message', '') or ''} {exc}"
                     if stitch.refuses_prefill(said) and identity not in _NO_PREFILL:
@@ -3550,8 +3797,10 @@ class KameTransport:
                     long_refusals = 0
                 if kind == "timeout":
                     consecutive_timeouts += 1
+                    timeout_streak += 1
                 else:
                     consecutive_timeouts = 0
+                    timeout_streak = 0
                 # 1.8.2.8 (decisions/0028): the switch is weighed after every
                 # failure, on the time the user has actually waited - not only
                 # once every key rests - and a busy provider moves at once.
@@ -3588,9 +3837,15 @@ class KameTransport:
                     # A model that says it is busy, or a key out of quota, is not worth a
                     # second key for a job nobody waits on: Hermes moves it down the user's list.
                     if len(busy_keys) >= self._busy_need(keys):
+                        if aux_move("is busy"):
+                            continue                    # 1.9.0.6 (decisions/0037 C18)
                         raise aux_stop("its model is busy")
                     if aux.klass == "cosmetic" and kind in _HEDGE_QUOTA_KINDS:
+                        if aux_move("is short of quota"):
+                            continue
                         raise aux_stop("a key is out of quota")
+                    if aux.klass == "cosmetic" and kind == "timeout" and consecutive_timeouts >= 2 and aux_move("is slow"):
+                        continue                        # 1.9.0.6 (decisions/0037 C18)
                 if self._is_busy(identity, busy_keys, keys):
                     # 1.8.2.9: busy, and nothing after Hermes' position is free to hand to
                     # Hermes: circle back through the user's list instead of rotating keys
@@ -3615,6 +3870,24 @@ class KameTransport:
                         if self.engine.healthy_count(identity, [k]) > 0:
                             self.engine.mark(identity, k, False, 5.0, "timeout")
                     self.rotations += 1
+                    continue
+                if consecutive_timeouts >= 2 and not _keep_in_kame and getattr(call, "channel", "main") == "main":
+                    # 1.9.0.6 (decisions/0037 C9): a chat reply never goes back to Hermes on repeated timeouts (Hermes
+                    # retries the raw timeout 3 times and ends the turn, or switches past the budget). The hand-over /
+                    # stand-in above already had its say; otherwise every key of this model rests a short, growing time
+                    # (5, 10, 20, 40, 60 s) and the recovery wait - with its keep-alives - carries the reply. At most
+                    # one attempt per key per rest keeps the 2026-10-13 lesson (294 attempts in 57 minutes) bounded.
+                    rest = min(5.0 * (2 ** max(timeout_streak - 2, 0)), 60.0)
+                    for k in keys:
+                        if self.engine.healthy_count(identity, [k]) > 0:
+                            self.engine.mark(identity, k, False, rest, "timeout")
+                    self.rotations += 1
+                    logger.info("kame: %s %d timeouts in a row - every key rests %.0fs, the reply keeps waiting",
+                                label, timeout_streak, rest)
+                    _emit(call, "wait", identity=identity, key=fingerprint(key),
+                          reason=f"{timeout_streak} timeouts in a row - every key rests {rest:.0f}s, then asks again",
+                          seconds=rest)
+                    yield _KEEPALIVE     # a short wait sends none of its own: Hermes hears something at every turn
                     continue
                 if consecutive_timeouts >= 2 and not _keep_in_kame:
                     # 1.8.2.7, owner's policy C (2026-10-16). A timeout says
@@ -4796,11 +5069,13 @@ class KameTransport:
                         slow_after = None
                         handover = None
                     else:
+                        # 1.9.0.6 (decisions/0037 C3): a free sibling of the list answers inside KAME instead
+                        # of a Hermes switch; a model that had a leg in this race (racing, failed or ended empty) is never the stand-in.
                         handover = self._maybe_hand_over(
                             call, identity, keys, 0.0, False, waited=now - race_started, busy=True,
-                            slow=now - race_started,
+                            slow=now - race_started, stand_in_ok=True,
                             avoid=[getattr(leg, "cross") for leg in cross_legs
-                                   if leg.error is not None and getattr(leg, "cross", None)])
+                                   if getattr(leg, "cross", None)])
                         if handover is None:
                             slow_after = None  # nothing could take it: keep waiting, as before
                     if handover is not None:
@@ -4816,6 +5091,8 @@ class KameTransport:
                         for cross_leg in cross_legs:  # the models raced in were silent too
                             self._note_busy(getattr(cross_leg, "cross"), first=_SLOW_FIRST_S,
                                             ceiling=_SLOW_MAX_S, call=call)
+                        if isinstance(handover, _StandIn):
+                            raise _KameCircle(handover)     # 1.9.0.6 (decisions/0037 C3)
                         raise handover
                 # -- 1.8.4.3 (H2): a provisional winner gone quiet is raced again ---------------
                 if watch and provisional is not None and winner is None:
@@ -4940,11 +5217,12 @@ class KameTransport:
                                                 if getattr(leg, "cross", None)]
                         if self._stall_exit_open(call, identity, h_taken):
                             stall_handed = True
+                            # 1.9.0.6 (decisions/0037 C3): a free sibling answers inside KAME, as at the slow bound
                             handover = self._maybe_hand_over(
                                 call, identity, keys, 0.0, False, waited=now - race_started, busy=True,
-                                stalled=quiet,
+                                stalled=quiet, stand_in_ok=True,
                                 avoid=[getattr(leg, "cross") for leg in cross_legs
-                                       if leg.error is not None and getattr(leg, "cross", None)])
+                                       if getattr(leg, "cross", None)])
                             if handover is not None:
                                 t_cut = time.monotonic()
                                 for leg in list(legs):      # every leg is cut and accounted for, as at the slow bound
@@ -4961,6 +5239,8 @@ class KameTransport:
                                     if pool and pool not in noted_slow and cross_leg not in worked:
                                         self._note_busy(pool, first=_SLOW_FIRST_S, ceiling=_SLOW_MAX_S, call=call)
                                         noted_slow.add(pool)
+                                if isinstance(handover, _StandIn):
+                                    raise _KameCircle(handover)     # 1.9.0.6 (decisions/0037 C3)
                                 raise handover
                             if rescue2_leg is None and not key2_tried:
                                 # the exit was refused (a recent hand-over, nothing usable): rescue 2 still
@@ -5602,10 +5882,14 @@ class KameTransport:
     def _entry_usable(self, identity: str) -> bool:
         """Could a call on this chain entry be answered now, as far as KAME knows?
 
+        1.9.0.6 (decisions/0037 C13): never a model the provider said it does not know (``core.model_missing``).
+
         An entry KAME has never seen is assumed usable (it may not be a pool at
         all); one it manages is usable if any of its keys is not resting.
         """
         try:
+            if model_missing.is_missing(identity):
+                return False
             name, pool = self._pool_of(identity)
             if not pool:
                 return True
@@ -6804,6 +7088,8 @@ class KameTransport:
         HEALTH.note(identity, True, call_id=self._call_id_of(call))
         if getattr(call, "channel", "main") != "main":
             return
+        # 1.9.0.6 (decisions/0037 C2): a response arrived - Hermes zeroes its restart count, so does KAME's.
+        switch_budget.note_answer(switch_budget.conversation_key())
         self._tally(_SPEED_REPLIES)
         try:
             from .core import fallback_chain
@@ -6872,8 +7158,13 @@ class KameTransport:
             logger.debug("kame: could not name the reply", exc_info=True)
 
     def _stand_in_for(self, call: "Call", identity: str, later: Sequence[str], avoid: Sequence[str],
-                      why: str, slow: Optional[float], skipped: Optional[float]) -> Optional[_StandIn]:
+                      why: str, slow: Optional[float], skipped: Optional[float],
+                      any_sibling: bool = False) -> Optional[_StandIn]:
         """The sibling that answers instead of a hand-over, or ``None`` (D2 a).
+
+        1.9.0.6 (decisions/0037 C3): with ``any_sibling`` the target is the first usable SIBLING anywhere after
+        Hermes' position, not only when the first usable entry happens to be one (the switch budget is spent and a
+        hand-over is no longer possible).
 
         The target is the first usable model after Hermes' position, as the hand-over would have
         chosen it; it must be on the same provider and endpoint (``_siblings``) and not the model in
@@ -6889,13 +7180,14 @@ class KameTransport:
 
             # 1.8.4.2 (S1d): the first one not remembered as failing, else the first (never excludes).
             # 1.9.0.2 (H11): a healthy one before one that is only due a second look (that one is asked beside).
-            target = (next((e for e in later if _usable(e) and self._entry_healthy(e)), None)
-                      or next((e for e in later if _usable(e) and not self._entry_risky(e)), None)
-                      or next((e for e in later if _usable(e)), None))
-            if target is None:
-                return None
             siblings = {e: (m, s) for e, m, s in
                         (self._siblings(identity, origin=self._origin_of(call, identity)) or [])}
+            pool = [e for e in later if e in siblings] if any_sibling else list(later)
+            target = (next((e for e in pool if _usable(e) and self._entry_healthy(e)), None)
+                      or next((e for e in pool if _usable(e) and not self._entry_risky(e)), None)
+                      or next((e for e in pool if _usable(e)), None))
+            if target is None:
+                return None
             if target not in siblings:
                 return None
             model, suffix = siblings[target]
@@ -6914,6 +7206,25 @@ class KameTransport:
         except Exception:
             logger.debug("kame: could not pick a sibling to stand in", exc_info=True)
             return None
+
+    def _say_budget_held(self, call: "Call", identity: str) -> None:
+        """1.9.0.6 (decisions/0037 C2): one ``switch`` event (and one count) per call when the budget holds a
+        hand-over back. Never raises."""
+        try:
+            if getattr(call, "_kame_budget_said", False):
+                return
+            try:
+                setattr(call, "_kame_budget_said", True)
+            except Exception:  # pragma: no cover - a test double without attributes
+                pass
+            from .core import fallback_chain
+
+            self.budget_held += 1
+            _emit(call, "switch", identity=identity,
+                  reason=f"Hermes switches model at most {fallback_chain.switch_limit()} times per answer - "
+                         f"KAME keeps this reply on {model_label(identity)} and its siblings")
+        except Exception:  # pragma: no cover - a readout must never cost a reply
+            logger.debug("kame: could not say the switch budget is spent", exc_info=True)
 
     def _maybe_hand_over(
         self, call: "Call", identity: str, keys: Sequence[str], pool_waited: float, seen: bool,
@@ -6942,6 +7253,7 @@ class KameTransport:
                 return None
             if getattr(call, "channel", "main") != "main":
                 return None  # background jobs never switch model (0025 D6, review H4)
+            budget_key = switch_budget.conversation_key()     # 1.9.0.6 (decisions/0037 C2): once per decision
             mode = settings.model_switch_mode()
             if mode == "never":
                 return None
@@ -6996,6 +7308,14 @@ class KameTransport:
                 return None
             if not any(self._entry_usable(entry) for entry in hand):
                 return None
+            # 1.9.0.6 (decisions/0037 C2): a hand-over spends one of Hermes' switches (a rebuilt-message restart);
+            # one is always left for what KAME cannot see. With none to spend, KAME keeps the reply: a sibling
+            # anywhere in the list answers inside KAME, else it keeps waiting (decisions/0032 B3).
+            if not switch_budget.may_hand_over(budget_key):
+                self._say_budget_held(call, identity)
+                if stand_in_ok:
+                    return self._stand_in_for(call, identity, later, avoid, why, slow, skipped, any_sibling=True)
+                return None
             if why == "busy":
                 back = self._busy_window.get(identity, _BUSY_FIRST_S)
             else:
@@ -7017,7 +7337,7 @@ class KameTransport:
             # 1.8.3.0 (D1): the reply Hermes rebuilds on one of these entries is this reply's walk.
             # 1.8.3.1 (review R1): never the main model - Hermes does not walk to it.
             for entry in hand:
-                self._walk_permits[entry] = (now + _WALK_PERMIT_S, origin)
+                self._walk_permits[_pkey(entry)] = (now + _WALK_PERMIT_S, origin)
             healthy = self.engine.healthy_count(identity, keys)
             if skipped is not None:
                 said = (f"{model_label(identity)} was slow or busy moments ago - skipped for this "
@@ -7040,9 +7360,25 @@ class KameTransport:
             # 1.9.0.2 (H4): the provider's own return time rides on the message only - the event row
             # keeps 120 characters and must still name the entry that answers.
             _back = self._provider_back_note(identity, keys, eta) if (eta is not None and healthy == 0) else ""
-            message = f"kame: {said}{_back}. Handing the call to Hermes' fallback model."
+            # 1.9.0.6 (decisions/0037 C4): this text lands verbatim inside Hermes' own "Model fallback" notice in the
+            # chat, so it says what happened in a few words (the event row above keeps the longer ``said``).
+            _m = _bare_label(identity)
+            if skipped is not None:
+                short = f"KAME: {_m} was slow a moment ago"
+            elif slow is not None:
+                short = f"KAME: {_m} is slow right now"
+            elif stalled is not None:
+                short = f"KAME: {_m} stopped mid-answer"
+            elif why == "busy":
+                short = f"KAME: {_m} is busy"
+            elif eta is not None and healthy == 0:
+                short = f"KAME: every key of {_m} is resting (back in {format_duration(max(eta, 0.0))}){_back}"
+            else:
+                short = f"KAME: no answer from {_m} after {format_duration(waited_s)}"
+            message = short
             # Not counted as "surfaced" (an error KAME let through): a planned switch.
             self.handed_over += 1
+            switch_budget.note_switch(budget_key)     # 1.9.0.6 (decisions/0037 C2): Hermes will make one switch
             _emit(call,
                 "handover",
                 identity=identity,

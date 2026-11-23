@@ -156,10 +156,11 @@ def test_saver_never_widens(fresh, monkeypatch):
     monkeypatch.setenv("KAME_HEDGE_MODE", "off")
     settings.forget()
     call = ByModel(silent_pool(1.3))
-    # Saver keeps D11's hand-over at the slow bound (Hermes' own switch) but races nothing and widens nothing.
-    with pytest.raises(transport.KamePoolResting):
-        list(fresh.stream(call))
-    assert call.models_asked == ["gemini-race"]
+    # Saver races nothing and widens nothing. 1.9.0.6 (decisions/0037 C3): at the slow bound the next model of
+    # the same provider answers inside KAME (a stand-in), not through a Hermes switch.
+    out = list(fresh.stream(call))
+    assert R.shown(out) == "late" and fresh.handed_over == 0
+    assert call.models_asked[:2] == ["gemini-race", "gemini-race-two"], call.models_asked
 
 
 def test_a_pool_under_quota_pressure_is_not_widened(fresh):
