@@ -606,6 +606,8 @@ switches and said to try again. Now a reply always comes back, however long it t
 - **The live line looks alive:** the reply's running time, a pulsing dot, and `✕ no answer - <reason>` for ten
   seconds when a reply ends without an answer. No "Model fallback" warning in the chat when API Rotation
   moves a reply to another model (the status bar says it).
+- **A local main model** (Ollama, llama.cpp, LM Studio, a local address) is used for a switch only when it is
+  in your list.
 - **ⓘ How to install or configure:** the round "i" at the end of the panel's tabs opens a five-step guide.
 - Chat titles are made by a free model while the best one is busy; Telegram and Discord post one short line only
   after a minute of waiting.

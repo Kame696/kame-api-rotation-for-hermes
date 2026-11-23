@@ -34,6 +34,10 @@ current 1.8.1.x public releases.
 - **The live line looks alive.** It ends with the reply's running time, the Desktop line has a pulsing dot, and a
   reply that ends without an answer shows `✕ no answer - <reason>` for ten seconds instead of staying on its last
   state. Telegram and Discord post one line only after a minute of waiting and end on `✓ KAME: answered after N s`.
+- **A local main model is never a switch target.** A reply on a model of your list no longer moves to a main
+  model that runs on your machine or network (Ollama, llama.cpp, LM Studio, a local address) unless that model is
+  in your list too; such a model has no keys to rotate, and a request it did not expect can make it load another
+  model for minutes (reported on the Agent Zero port, issue #1). A reply that starts on it still walks your list.
 - Smaller fixes: background jobs never carry a provider's 503 to others, the host's walk permits are per chat,
   the panel's wording.
 

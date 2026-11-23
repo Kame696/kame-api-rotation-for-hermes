@@ -6704,8 +6704,7 @@ class KameTransport:
             from .core import fallback_chain
 
             primary, chain = fallback_chain.read()
-            order = (fallback_chain.ladder(origin) if origin else
-                     ([primary] if primary else []) + list(chain))
+            order = fallback_chain.ladder(origin)   # 1.9.0.6: a local main model is never a stand-in
             mine = next((e for e in order if fallback_chain._same(identity, e)), None)
             if mine is None or len(order) < 2:
                 return None
