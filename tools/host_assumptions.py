@@ -564,23 +564,27 @@ def the_desktop_shows_only_a_wait_notice_that_opens_the_right_way(_=None):
     Desktop contribution in ``composer.top``: the SDK must still export the
     area, the composer must still render it, and the panel must still register
     there (read through a namespace import, so an older Desktop still loads).
+
+    1.9.0.6: since 1.9.0.5 (C5) the live line is the status-bar chip, not a composer line (Desktop dropped
+    ``composer.top``). The fact is now: the SDK still exports ``STATUSBAR_AREAS`` with ``right``, the status bar
+    still renders plugin contributions there, and the panel registers its chip in it.
     """
     sdk = HERMES_HOME / "hermes-agent/apps/desktop/src/sdk/index.ts"
-    contrib = HERMES_HOME / "hermes-agent/apps/desktop/src/app/chat/composer/contrib.ts"
-    composer = HERMES_HOME / "hermes-agent/apps/desktop/src/app/chat/composer/index.tsx"
-    for path in (sdk, contrib, composer):
+    areas = HERMES_HOME / "hermes-agent/apps/desktop/src/sdk/areas.ts"
+    panes = HERMES_HOME / "hermes-agent/apps/desktop/src/app/contrib/panes.tsx"
+    for path in (sdk, areas, panes):
         if not path.is_file():
             return f"{path.name} not found", True
-    if "COMPOSER_AREAS" not in sdk.read_text(encoding="utf-8", errors="replace"):
-        return "the SDK no longer exports COMPOSER_AREAS", True
-    if "top: 'composer.top'" not in contrib.read_text(encoding="utf-8", errors="replace"):
-        return "composer.top is no longer an area", True
-    if "area={COMPOSER_AREAS.top}" not in composer.read_text(encoding="utf-8", errors="replace"):
-        return "the composer no longer renders composer.top", True
+    if "from './areas'" not in sdk.read_text(encoding="utf-8", errors="replace"):
+        return "the SDK no longer re-exports its areas", True
+    if "right: 'statusBar.right'" not in areas.read_text(encoding="utf-8", errors="replace"):
+        return "statusBar.right is no longer an area", True
+    if "statusBar.right" not in panes.read_text(encoding="utf-8", errors="replace"):
+        return "the status bar no longer renders plugin contributions", True
     panel = Path(__file__).resolve().parents[1] / "hermes-kame-api-rotation" / "desktop" / "plugin.js"
     text = panel.read_text(encoding="utf-8", errors="replace")
-    if "import * as sdk from '@hermes/plugin-sdk'" not in text or "sdk.COMPOSER_AREAS?.top" not in text:
-        return "the panel no longer registers its composer line", True
+    if "STATUSBAR_AREAS" not in text or "area: STATUSBAR_AREAS.right" not in text:
+        return "the panel no longer registers its status-bar chip", True
     return True, True
 
 def a_cut_answer_still_appends_a_row_the_client_never_sees(_=None):
