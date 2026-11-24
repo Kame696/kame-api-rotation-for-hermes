@@ -178,7 +178,9 @@ def test_an_entry_already_refused_busy_as_a_race_leg_in_this_reply_is_not_the_on
     # 1.9.0.4 (R4): the raced leg that was refused is replaced ONCE on another key of its model (also refused here)
     assert models.count(M_NEXT) == 2, "the model refused busy as a leg was asked at most once more: %s" % models
     assert models.index(M_THIRD) > models.index(M_NEXT)
-    assert any("said it is busy" in r for r in reasons()), reasons()
+    # 1.9.0.6 (owner's live test): the next model refused on its leg AND its replacement, so the third joins the
+    # race of try 1 at once ("failed on two keys"); before, it waited for try 2's "said it is busy".
+    assert any("said it is busy" in r or "failed on two keys" in r for r in reasons()), reasons()
 
 
 # 7 ---------------------------------------------------------------------------------------------------

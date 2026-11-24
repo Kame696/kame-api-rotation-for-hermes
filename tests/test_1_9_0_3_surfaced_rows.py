@@ -92,17 +92,17 @@ def test_the_rail_line_without_a_status_code(fresh, rail):
     assert transport.passes_desktop_status_gate(lines[-1])
 
 
-def test_the_timeout_surfaced_row_also_carries_its_text(fresh, rail):
+def test_repeated_timeouts_on_a_chat_reply_are_not_surfaced_any_more(fresh, rail):
+    # 1.9.0.6 (decisions/0037 C9): a chat reply never goes back to Hermes on repeated timeouts, so there is no
+    # ``surfaced`` timeout row to open: the reply keeps waiting and says why in a ``wait`` row.
     class Slow(TimeoutError):
         pass
 
     pool = Pool({KEYS[0]: [[Slow("read timed out after 30s")]], KEYS[1]: [[Slow("read timed out after 30s")]],
                  KEYS[2]: [[Slow("read timed out after 30s")]]})
-    with pytest.raises(Exception):
-        list(fresh.stream(FakeCall(pool)))
-    rows = [row for row in _surfaced() if row["reason"] == "timeout"]
-    assert rows, events_mod.EVENTS.recent()
-    assert rows[0]["detail"] and rows[0]["error_type"] == "Slow"
+    list(fresh.stream(FakeCall(pool)))
+    assert not [row for row in _surfaced() if row["reason"] == "timeout"]
+    assert [row for row in events_mod.EVENTS.recent() if row["kind"] == "wait" and "timeouts in a row" in row["reason"]]
 
 
 def test_events_add_keeps_error_type_only_when_given_and_cuts_it():

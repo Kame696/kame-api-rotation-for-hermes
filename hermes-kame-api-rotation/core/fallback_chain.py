@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -78,6 +79,27 @@ def _identity(provider: Any, model: Any) -> Optional[str]:
     # KAME lowercases every identity (``Carousel.identity``); the chain must match,
     # or "Qwen/Qwen3-235B" never finds its pool (review H3).
     return f"{provider.lower()}:{model.lower()}"
+
+
+#: 1.9.0.6 (Agent Zero issue #1, a user's llama.cpp): providers that run a model on the user's own machine.
+LOCAL_PROVIDERS = frozenset({"ollama", "llama_cpp", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio", "lm_studio",
+                             "lm-studio", "vllm", "sglang", "localai", "koboldcpp", "tabbyapi", "oobabooga",
+                             "text-generation-webui", "jan", "gpt4all", "mlx", "local"})
+_PRIVATE_HOST = re.compile(r"://(localhost|127\.|0\.0\.0\.0|\[::1\]|host\.docker\.internal|10\.|192\.168\.|"
+                           r"172\.(1[6-9]|2\d|3[01])\.|[^/:]+\.local\b)", re.I)
+
+
+def is_local(provider: Any, base_url: Any = "") -> bool:
+    """A model served on the user's own machine or network (llama.cpp, Ollama, LM Studio, a LAN box).
+
+    Such a model has no key to rotate and no rate limit, and asking it a request it was not expecting can make
+    the server load another model for minutes. KAME never moves a reply to one the user did not put in the list."""
+    try:
+        if str(provider or "").strip().lower() in LOCAL_PROVIDERS:
+            return True
+        return bool(_PRIVATE_HOST.search(str(base_url or "")))
+    except Exception:
+        return False
 
 
 def _from_config(config: Any) -> Tuple[Optional[str], List[str]]:
@@ -289,7 +311,7 @@ def primary_identity(home: Optional[Path] = None) -> Optional[str]:
     return read(home)[0]
 
 
-def ladder(origin: str, home: Optional[Path] = None) -> List[str]:
+def ladder(origin: str, home: Optional[Path] = None, started_on: str = "") -> List[str]:
     """The models KAME may use for a reply that STARTS on ``origin``, in order. (1.8.3.1, decisions/0034 D1)
 
     ``ladder(X) = [X] + ([main] + list, in the user's order, X removed)``. For X = the main model this is
@@ -301,6 +323,11 @@ def ladder(origin: str, home: Optional[Path] = None) -> List[str]:
     """
     home = home if home is not None else _home()
     primary, chain = read(home)
+    # 1.9.0.6 (Agent Zero issue #1): a LOCAL main model joins only a reply that started on it; KAME never moves or
+    # races a reply onto it (it is not in the user's list; a llama.cpp server would reload its model for minutes).
+    if primary and _primary_is_local(home) and not any(_same(str(m or "").strip().lower(), primary)
+                                                        for m in (origin, started_on)):
+        primary = None
     order = ([primary] if primary else []) + list(chain)
     origin = str(origin or "").strip().lower()
     if not chain:
@@ -309,6 +336,24 @@ def ladder(origin: str, home: Optional[Path] = None) -> List[str]:
         return order
     first = next((entry for entry in order if _same(origin, entry)), origin)
     return [first] + [entry for entry in order if entry != first]
+
+
+def _primary_is_local(home: Optional[Path]) -> bool:
+    try:
+        kind, config, memo = _config(home)
+        if kind != _OK:
+            return False
+        cached = memo.get("primary_local")
+        if cached is None:
+            model = config.get("model") if isinstance(config, dict) else None
+            if isinstance(model, dict):
+                cached = is_local(model.get("provider"), model.get("base_url"))
+            else:
+                cached = is_local(config.get("provider") if isinstance(config, dict) else "", "")
+            memo["primary_local"] = cached
+        return bool(cached)
+    except Exception:
+        return False
 
 
 def after(origin: str, position: str, home: Optional[Path] = None) -> List[str]:
@@ -321,7 +366,7 @@ def after(origin: str, position: str, home: Optional[Path] = None) -> List[str]:
     for index, entry in enumerate(steps):
         if position and _same(position, entry):
             return steps[index + 1:]
-    return ladder(position, home)[1:] if position else steps[1:]
+    return ladder(position, home, started_on=origin)[1:] if position else steps[1:]
 
 
 #: Hermes' own default for ``agent.api_max_retries`` (``hermes_cli/config_defaults.py``).

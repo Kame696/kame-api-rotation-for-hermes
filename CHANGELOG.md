@@ -7,6 +7,68 @@ current 1.8.1.x public releases.
 
 ---
 
+## [1.9.0.6] - 2026-11-23 - a reply is never ended on you
+
+- **The provider is never flooded with one request.** Google now refuses a request sent again too soon ("the QPS
+  limit for identical or near-identical request payloads"), on every key and every model at once. API Rotation
+  read it as one key's throttle and asked the next key and the next model straight away: in the owner's test one
+  reply sent the same request 184 times in two minutes, which kept the limit on, and never answered. Now that
+  refusal pauses the reply (2 s, then 4, 8, 16, at most 30 s) and rests no key; and after eight 429s in a row
+  the same request is asked at most once a second (every 2 s after sixteen, 4 s after thirty-two). The first lap
+  over your keys still goes at once, so a throttled key costs no time. The live line says why it waits.
+- **Removing API Rotation's keys never edits your `.env`.** `/kame-keys remove-all` and the panel button take back
+  the plugin's own pool rows; when a key variable in `.env` holds a list, the reply says how to keep one key
+  (edit the line, or `hermes config set <VAR> <one key>`). 1.9.0.5 cut the list to its first key after copying the
+  whole file; the Hermes catalog review asked that a plugin never edit another provider's key line.
+- The live chat line reads the session through Hermes' public `bound_session_key` (catalog review).
+- **A reply whose model is out of keys for the day moves on.** With Hermes' switches for the answer spent, a model
+  whose every key had used its day could hold the reply (waking every half second, asking nobody) while the next
+  model of your list could answer. API Rotation now walks your list itself there.
+- **A busy model is remembered again.** In a storm of 503s, each reply walked your list from the top again,
+  because a model that said busy while racing beside the reply was not remembered. Now it is, and the next
+  replies go straight to the model that answers, as in 1.9.0.5. A 429 is still not "busy".
+- **No key in the panel's state file.** The pacing readout in `state.json` named each key's window by the key
+  itself (since 1.8.2.3); it now shows the key's fingerprint, as everywhere else.
+- **A reply no longer ends because Hermes ran out of switches.** Hermes ends a turn after `agent.api_max_retries`
+  (default 3) fallback switches without an answer. While API Rotation carries a reply, Hermes now has room to
+  switch to every model of your list (one per model, plus one), in memory only, with nothing written to your
+  config; a larger value you set yourself stands. API Rotation still counts the switches of each conversation and
+  never spends the last one; what it cannot reach it keeps waiting for, with a keep-alive. No setting of yours
+  is needed.
+- **The list is always walked, fast.** A model that refuses most of its keys in one reply (429 or 503) hands the
+  reply to the next model at once: its keys came back one by one and the reply could rotate on it for minutes.
+  When a raced model fails on two keys, the next model of the list joins the race while your main model thinks.
+  A model asked beside the reply for another look no longer holds a reply whose own model failed. A model that only
+  throttled (429) is moved off but never written busy, so the next reply starts on it again.
+- **Slow first word and a stalled answer** take a model of the same provider, like a busy one already did.
+- **Many chats and sub-agents at once** keep their own switch count and their own line; one chat's wait never
+  shows in another.
+- **Repeated timeouts** move the reply to the next model, as 1.9.0.5 did; when no model can take it, the keys rest
+  a short, growing time and the reply keeps waiting instead of being handed back.
+- **A model your provider does not know** (a typo in your list) is said once in `/kame doctor` and the panel, and
+  never asked again for six hours or until `config.yaml` changes.
+- **Chat titles** are made by a free model of the same provider while the best one is busy, resting or slow.
+- **Calls without streaming never give up either.** Hermes' wall-clock timer on a non-streaming call is switched
+  off for calls API Rotation carries, and API Rotation applies the same limit to each request itself (doubling
+  per attempt for a model that is only slow): a hung connection is cut as fast as before, the key rests, and the
+  reply keeps waiting. Nothing ever says "try again".
+- **A refused request tries your other models first.** When a model refuses the request itself (gone, too large,
+  a bad request), each free model of the same provider in your list is asked once; only when every one refuses
+  does Hermes get the first model's own error, so its compression and its own fallback still work.
+- **No "Model fallback" warning in the chat** for a switch API Rotation asked for: the status bar, the reply row
+  and the panel already say it. A switch for a real provider failure is still announced by Hermes.
+- **ⓘ How to install or configure.** A round "i" at the end of the panel's tabs opens a five-step guide: install,
+  keys, more models, the panel and the status chip, and the quick controls.
+- **The live line looks alive.** It ends with the reply's running time, the Desktop line has a pulsing dot, and a
+  reply that ends without an answer shows `✕ no answer - <reason>` for ten seconds instead of staying on its last
+  state. Telegram and Discord post one line only after a minute of waiting and end on `✓ KAME: answered after N s`.
+- **A local main model is never a switch target.** A reply on a model of your list no longer moves to a main
+  model that runs on your machine or network (Ollama, llama.cpp, LM Studio, a local address) unless that model is
+  in your list too; such a model has no keys to rotate, and a request it did not expect can make it load another
+  model for minutes (reported on the Agent Zero port, issue #1). A reply that starts on it still walks your list.
+- Smaller fixes: background jobs never carry a provider's 503 to others, the host's walk permits are per chat,
+  the panel's wording.
+
 ## [1.9.0.5] - 2026-11-22 - one package, Gemini rotated again, the chat shows what happens (in development, not released)
 
 - **One package.** `hermes-kame-provider` is no longer needed; API Rotation does its work alone. A copy still

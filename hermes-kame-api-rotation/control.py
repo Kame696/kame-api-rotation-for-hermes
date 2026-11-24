@@ -348,9 +348,10 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         return True, f"{name} will be asked first on the next reply"
 
     if action == "undo_setup":
-        # 1.9.0.5 (D1): "Remove API Rotation's keys". Takes back what the plugin put in the pool and, for a key
-        # variable that holds a list, cuts ``.env`` to its first key (backed up first). No key is read out,
-        # added or shown: the reply carries counts and fingerprints. ``key`` may name one provider.
+        # 1.9.0.5 (D1): "Remove API Rotation's keys". Takes back what the plugin put in the pool; for a key
+        # variable that holds a list the reply names the step that leaves one key (1.9.0.6, catalog review: the
+        # plugin never edits that line itself). No key is read out, added or shown: the reply carries counts and
+        # fingerprints. ``key`` may name one provider.
         from . import envsync
 
         return True, envsync.describe_removal(envsync.remove_all(str(key or "").strip().lower() or None))
@@ -392,6 +393,15 @@ def _apply(action: str, key: str, value: Any) -> "tuple[bool, str]":
         failures = []
         storage: list = []
         _report_reset()
+        try:
+            from .core import switch_budget
+
+            switch_budget.reset_all()       # 1.9.0.6 (decisions/0037 C2): Hermes' switches start counting again
+            from .core import model_missing
+
+            model_missing.forget()          # 1.9.0.6 (decisions/0037 C13): look at every model of the list again
+        except Exception:  # pragma: no cover - a courtesy count
+            logger.debug("kame: could not reset the switch budget", exc_info=True)
         try:
             from .core.carousel import ENGINE
 

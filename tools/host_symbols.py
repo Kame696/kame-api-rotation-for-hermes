@@ -35,7 +35,7 @@ OPTIONAL: Dict[str, str] = {
     "agent.secret_scope.reset_secret_scope": "same seam as agent.secret_scope",
     "agent.secret_scope.set_secret_scope": "same seam as agent.secret_scope",
     "hermes_cli.env_loader.hydrate_profile_secret_sources": "profile secret sources, newer Hermes only; guarded",
-    "hermes_cli.plugin_session.session_key": "session key helper, newer Hermes only; try/except in chat_line.py",
+    "gateway.session_context.bound_session_key": "public route-key reader (1.9.0.6, catalog review); try/except in chat_line.py",
     "hermes_cli.anon_auth.parse_welcome_refusal": "Nous anon-auth parser; optional, KAME reads the refusal itself",
     "agent.tts_provider.TTSProvider": "register_tts_provider seam; speech is optional (older Hermes lacks it)",
     "agent.transcription_provider.TranscriptionProvider": "register_transcription_provider seam; optional",

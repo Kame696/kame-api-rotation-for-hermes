@@ -66,9 +66,10 @@ _HELP = """/kame-keys — bulk API key management
                                   GOOGLE_API_KEY=k1,k2,k3 (Hermes sends such a
                                   value whole, as one key)
   /kame-keys remove-all [provider] take back what API Rotation put in your pool
-                                  (its key rows, the suppressed source, a key
-                                  list in .env cut to its first key, backed up);
-                                  afterwards the plugin can be uninstalled
+                                  (its key rows, the suppressed source) and
+                                  says how to keep one key in a .env list
+                                  (it never edits .env); afterwards the
+                                  plugin can be uninstalled
   /kame-keys reset [provider]     clear exhaustion status, re-enable all keys
   /kame-keys help                 this text
 

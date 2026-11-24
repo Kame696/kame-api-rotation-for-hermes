@@ -46,6 +46,7 @@ chain_mod = importlib.import_module(f"{PACKAGE}.core.fallback_chain")
 hedging_mod = importlib.import_module(f"{PACKAGE}.core.hedging")
 pacing_mod = importlib.import_module(f"{PACKAGE}.core.pacing")
 settings = importlib.import_module(f"{PACKAGE}.settings")
+switch_budget = importlib.import_module(f"{PACKAGE}.core.switch_budget")
 
 # 1.8.3.0 (D2 a): a fallback on the SAME provider is answered inside KAME and never reaches Hermes
 # (tests/test_1_8_3_0_sibling_standin.py). This file drives Hermes' walk of the list, so each entry is
@@ -211,7 +212,10 @@ def fresh(monkeypatch, tmp_path):
     for name in list(os.environ):
         if name.startswith("KAME_"):
             monkeypatch.delenv(name, raising=False)
+    # 1.9.0.6: STOCK Hermes (api_max_retries 3, nothing set by the user). The walk through four hops works because
+    # KAME gives Hermes room to switch while it carries the reply (core/switch_room); the property is "in place".
     (tmp_path / "config.yaml").write_text(CONFIG, encoding="utf-8")
+    monkeypatch.setattr(importlib.import_module(f"{PACKAGE}.core.switch_room"), "active", lambda: True)
     settings.forget()
     chain_mod.forget()
     hedging_mod.HEDGE_TRACKER.clear()
@@ -356,6 +360,7 @@ def test_only_the_last_model_has_quota_and_the_agent_still_answers_fast(fresh, m
         hedging_mod.HEDGE_TRACKER.clear()
         pacing_mod.PACER.clear()
         world = owner_scenario()
+        switch_budget.reset_all()
         host = Host(transport.KameTransport(engine=carousel_mod.Carousel()), world)
         served, took = host.turn(stream=stream)
         assert served == MODELS[-1] and host.handovers == 4
@@ -365,6 +370,7 @@ def test_only_the_last_model_has_quota_and_the_agent_still_answers_fast(fresh, m
         # the next turn: everything is known, the answer comes at once - one request, one round trip
         world.stamps.clear()
         world.asked.clear()
+        switch_budget.reset_all()     # 1.9.0.6: a later turn of the same conversation (an answer came in between)
         served2, _ = host.turn(stream=stream)
         assert served2 == MODELS[-1] and world.rounds() == 1 and len(world.asked) == 1
     # one by one: 4 models x 14 keys = 56 round trips; the burst: ~4 per model in a
@@ -389,6 +395,7 @@ def test_the_hourly_recheck_asks_every_spent_key_at_once(fresh):
     host.cooldown.clear()
     world.stamps.clear()
     world.asked.clear()
+    switch_budget.reset_all()     # 1.9.0.6: the next turn, an answer came in between
     served, _ = host.turn()
     assert served == MODELS[-1]
     assert world.rounds() == 5, world.rounds()  # 4 spent models at once each, then the answer
@@ -480,10 +487,18 @@ def test_background_jobs_never_probe_several_keys(fresh):
     assert len(world.asked) <= 6
 
 
-def test_the_panel_warns_when_hermes_cannot_reach_the_whole_list(fresh):
+def test_the_panel_warns_when_hermes_cannot_reach_the_whole_list(fresh, monkeypatch):
     """Live on the owner's gateway (2026-10-17): Hermes ends a message with "No reply"
     after agent.api_max_retries model switches (default 3); his list has 4."""
     state_mod = importlib.import_module(f"{PACKAGE}.state")
+    room = importlib.import_module(f"{PACKAGE}.core.switch_room")
+    (fresh / "config.yaml").write_text(CONFIG, encoding="utf-8")      # the owner's list, Hermes' default limit
+    chain_mod.forget()
+    # 1.9.0.6: with the switch room in place (every supported Hermes) there is nothing to warn about ...
+    view = state_mod._fallback_view([])
+    assert view["switch_limit"] == len(MODELS) + 1 and view["warning"] == ""
+    # ... the warning is for a Hermes without the seam the room needs
+    monkeypatch.setattr(room, "active", lambda: False)
     view = state_mod._fallback_view([])
     assert view["switch_limit"] == 3 and "api_max_retries: 5" in view["warning"]
     (fresh / "config.yaml").write_text(CONFIG + "agent:\n  api_max_retries: 5\n", encoding="utf-8")

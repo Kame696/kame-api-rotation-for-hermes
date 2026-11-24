@@ -55,6 +55,8 @@ MODELS = [f"{p}:gemini-3.{n}-flash" for p, n in zip(PROVIDERS, (8, 7, 6, 5, 4))]
 KEYS = {m: [f"AIzaSy{m[-9:-6]}{i:02d}" + "0" * 24 for i in range(14)] for m in MODELS}
 CONFIG = (f"model:\n  provider: {PROVIDERS[0]}\n  default: gemini-3.8-flash\nfallback_providers:\n" + "".join(
     f"  - provider: {m.split(':', 1)[0]}\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:]))
+# 1.9.0.6: STOCK Hermes (api_max_retries 3, nothing set by the user). The walk reaches every model because KAME gives
+# Hermes room to switch while it carries the reply (core/switch_room); the fixture puts it "in place".
 
 
 def answer(text):
@@ -97,6 +99,7 @@ def world(monkeypatch, tmp_path):
             monkeypatch.delenv(name, raising=False)
     (tmp_path / "config.yaml").write_text(CONFIG, encoding="utf-8")
     monkeypatch.setenv("KAME_NO_MODEL_FALLBACK", "0")  # the owner's opt-in
+    monkeypatch.setattr(importlib.import_module(f"{PACKAGE}.core.switch_room"), "active", lambda: True)
     settings.forget()
     chain_mod.forget()
     t = transport.KameTransport(engine=carousel_mod.Carousel())

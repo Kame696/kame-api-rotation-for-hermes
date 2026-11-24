@@ -24,14 +24,11 @@ many: they drift, and the half that drifts is the half nobody reads.
 
 from __future__ import annotations
 
-import datetime
 import logging
 import os
 import re
-import shutil
 import stat
 import tempfile
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -240,109 +237,42 @@ def forget(name: str) -> Tuple[bool, str]:
     return True, f"removed from {target}"
 
 
-# --- 1.9.0.5 (D1): taking KAME's key list back out of a key variable ----------------------------------------
-
-#: Copies of ``.env`` kept beside it before a key variable is trimmed. Same count as ``auth.json`` backups.
-MAX_BACKUPS = 5
+# --- 1.9.0.5 (D1), 1.9.0.6 (catalog review of #159044): reading, never editing, a key variable's list ----------
 
 _VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def backup() -> Optional[str]:
-    """Copy ``.env`` aside (owner-only) and return the copy's name, or ``None`` when there is nothing to copy.
+def keys_in_line(name: str) -> Tuple[str, int]:
+    """How many keys the ``.env`` line of a key variable holds - read only.
 
-    Never raises. The copy holds every key the file holds, so it is created 0600 and pruned to the last
-    :data:`MAX_BACKUPS`.
+    Returns ``(outcome, held)``: ``"several"`` (the line holds two keys or more), ``"single"`` (one or none),
+    ``"absent"`` (no ``.env``, or no line for it) or ``"error"``. Nothing is written and nothing is copied: a
+    provider's key line is the user's and Hermes', not this plugin's (1.9.0.5 trimmed it to its first key after a
+    full-file backup; the Hermes catalog review asked for neither, so ``remove-all`` names the step instead).
     """
-    try:
-        source = path()
-        if source is None or not source.is_file():
-            return None
-        # microseconds in the name and exclusive create: a backup is never overwritten (1.9.0.5 review)
-        stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{datetime.datetime.now().microsecond:06d}"
-        counter = 0
-        while True:
-            suffix = f"-{counter}" if counter else ""
-            target = source.with_name(f"{source.name}.kame-{stamp}{suffix}.bak")
-            try:
-                descriptor = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                break
-            except FileExistsError:
-                counter += 1
-        with source.open("rb") as origin, os.fdopen(descriptor, "wb") as destination:
-            shutil.copyfileobj(origin, destination)
-        for stale in sorted(source.parent.glob(f"{source.name}.kame-*.bak"))[:-MAX_BACKUPS]:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        return target.name
-    except Exception:
-        logger.debug("kame: .env backup failed", exc_info=True)
-        return None
-
-
-def keep_first_key(name: str, shared_backup: Optional[List[str]] = None) -> Tuple[str, int, Optional[str], str]:
-    """Make a key variable that holds several keys hold only the first one.
-
-    Returns ``(outcome, held, backup_name, fingerprint)``. ``outcome`` is ``"trimmed"`` (rewritten, after a
-    backup), ``"single"`` (the variable holds one key or none: nothing touched), ``"absent"`` (no ``.env``, or
-    no line for it: a value set in the system environment is not this plugin's to edit) or ``"error"``.
-    ``fingerprint`` is the kept key's :func:`core.carousel.fingerprint`, never the key.
-
-    This is the second thing this module writes outside ``KAME_*``, and it is narrower than it looks: only a
-    value that really holds several keys, only the variable the caller names, the file backed up first, every
-    other line untouched byte for byte.
-
-    ``shared_backup``: a list a caller passes to several calls of one operation. The first call that rewrites
-    takes the one backup and puts its name in the list; the later ones reuse it, so one ``remove-all`` leaves
-    one copy, taken before the first rewrite, holding every original line.
-    """
-    from .core.carousel import fingerprint
     from .core.multikey import split_value
 
     if not _VARIABLE.fullmatch(name or ""):
-        return "error", 0, None, ""
+        return "error", 0
     target = path()
     if target is None or not target.is_file():
-        return "absent", 0, None, ""
+        return "absent", 0
     try:
-        lines, newline = _read_lines(target)
+        lines, _newline = _read_lines(target)
     except Exception:
-        return "error", 0, None, ""
+        return "error", 0
     pattern = re.compile(rf"^(\s*(?:export\s+)?){re.escape(name)}\s*=(.*)$")
-    out: List[str] = []
     seen = False
     held = 0
-    first = ""
     for line in lines:
         match = None if line.lstrip().startswith("#") else pattern.match(line)
         if match is None:
-            out.append(line)
             continue
         seen = True
         value = match.group(2).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        keys = split_value(value)[0]
-        if len(keys) < 2:
-            out.append(line)
-            continue
-        held = max(held, len(keys))
-        first = keys[0]
-        out.append(f"{match.group(1)}{name}={first}")
+        held = max(held, len(split_value(value)[0]))
     if not seen:
-        return "absent", 0, None, ""
-    if not held:
-        return "single", 0, None, ""
-    saved = shared_backup[0] if shared_backup else backup()
-    if saved is not None and shared_backup is not None and not shared_backup:
-        shared_backup.append(saved)
-    if saved is None:
-        # A rewrite of the file that holds every key is not done without a copy of it.
-        return "error", held, None, ""
-    try:
-        _replace_contents(target, newline.join(out) + newline)
-    except Exception:
-        return "error", held, saved, ""
-    return "trimmed", held, saved, fingerprint(first)
+        return "absent", 0
+    return ("several" if held >= 2 else "single"), held

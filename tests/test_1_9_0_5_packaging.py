@@ -7,7 +7,7 @@ import zipfile
 
 from tests.h1905 import ROOT, PLUGIN_DIR
 
-VERSION = "1.9.0.5"
+VERSION = "1.9.0.6"  # the current version (this file pins the packaging rules since 1.9.0.5)
 DESCRIPTION = ("Rotates many API keys per provider so rate limits and quota errors never stop your agent: the "
                "healthiest key for every call, the next model when one is busy, and a live line in the chat "
                "showing what it did.")

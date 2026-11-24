@@ -85,7 +85,12 @@ def _suppressed():
 # --- D1 ---------------------------------------------------------------------------------------------------
 
 
-def test_remove_all_takes_back_rows_suppression_and_the_key_list_in_env(tmp_path):
+# 1.9.0.6 (Hermes catalog review of #159044): remove-all no longer edits a provider's key line or copies .env (1.9.0.5
+# cut the list to its first key after a full-file backup). The reply names the step instead. The tests below keep
+# every other promise of D1 and check the new one: .env byte for byte untouched, no backup file, the step named.
+
+
+def test_remove_all_takes_back_rows_and_suppression_and_names_the_step_for_the_list_in_env(tmp_path):
     original = f"# my keys\nOTHER=keep-me\n{VAR}={','.join(K[:3])}\nZED=also-kept\n"
     _env(tmp_path, original)
     envsync.sync()
@@ -97,22 +102,21 @@ def test_remove_all_takes_back_rows_suppression_and_the_key_list_in_env(tmp_path
     assert _ours() == []
     assert not _suppressed()
     assert ("manual", K[5]) in _rows()
-    kept = (tmp_path / ".env").read_bytes().decode("utf-8")
-    assert kept == f"# my keys\nOTHER=keep-me\n{VAR}={K[0]}\nZED=also-kept\n"
-    backups = sorted(tmp_path.glob(".env.kame-*.bak"))
-    assert len(backups) == 1 and backups[0].read_bytes().decode("utf-8") == original
-    # counts and fingerprints, never a key
-    assert "3 API Rotation row(s) removed" in text and "held 3 keys" in text and "Backup:" in text
+    assert (tmp_path / ".env").read_bytes().decode("utf-8") == original, ".env is the user's: never edited"
+    assert not list(tmp_path.glob(".env.kame-*.bak")), "and never copied"
+    # counts, fingerprints and the step - never a key
+    assert "3 API Rotation row(s) removed" in text and "still holds 3 keys" in text
+    assert f"hermes config set {VAR} <one of your keys>" in text and "does not edit it" in text
     assert "uninstalled" in text
     assert all(k not in text and k[:12] not in text for k in K)
-    assert carousel.fingerprint(K[0]) in text
 
 
-def test_remove_all_after_it_hermes_reads_one_valid_key(tmp_path):
+def test_remove_all_then_the_step_it_names_hermes_reads_one_valid_key(tmp_path):
     _env(tmp_path, f"{VAR}={','.join(K[:3])}\n")
     envsync.sync()
     commands.handle("remove-all")
-    # the next start has nothing left to take back, and Hermes seeds the first key by itself
+    _env(tmp_path, f"{VAR}={K[0]}\n")          # the user keeps one key, as the reply says
+    # the next start has nothing left to take back, and Hermes seeds that key by itself
     assert envsync.sync() == []
     assert (f"env:{VAR}", K[0]) in _rows()
     assert all("," not in token for _s, token in _rows())
@@ -179,49 +183,25 @@ def test_the_panel_action_is_the_same_removal(tmp_path):
     assert ok and detail.startswith("Nothing to remove")
 
 
-def test_env_backups_are_pruned_to_the_last_few(tmp_path):
-    _env(tmp_path, f"{VAR}={','.join(K[:2])}\n")
-    for index in range(envfile.MAX_BACKUPS + 3):
-        (tmp_path / f".env.kame-20200101-00000{index}.bak").write_text("old", encoding="utf-8")
-    name = envfile.backup()
-    left = sorted(p.name for p in tmp_path.glob(".env.kame-*.bak"))
-    assert len(left) == envfile.MAX_BACKUPS and name in left
-    assert (tmp_path / name).read_bytes() == (tmp_path / ".env").read_bytes()
-
-
-def test_a_backup_never_overwrites_an_earlier_one(tmp_path, monkeypatch):
-    _env(tmp_path, f"{VAR}={','.join(K[:2])}\n")
-    monkeypatch.setattr(envfile.time, "strftime", lambda fmt: "20261122-120000")
-
-    class _Now:
-        microsecond = 7
-
-    monkeypatch.setattr(envfile.datetime, "datetime", type("D", (), {"now": staticmethod(lambda: _Now)}))
-    first = envfile.backup()
-    (tmp_path / ".env").write_text("changed\n", encoding="utf-8")
-    second = envfile.backup()
-    third = envfile.backup()
-    assert len({first, second, third}) == 3
-    assert (tmp_path / first).read_bytes().decode() == f"{VAR}={','.join(K[:2])}\n"
-    assert "000007" in first
-
-
-def test_one_remove_all_over_two_variables_takes_one_backup_with_both_original_lines(tmp_path):
+def test_one_remove_all_over_two_variables_edits_and_copies_nothing(tmp_path):
     original = f"GOOGLE_API_KEY={','.join(K[:3])}\n{VAR}={','.join(K[3:6])}\nOTHER=x\n"
     _env(tmp_path, original)
     envsync.sync()
-    envsync.remove_all("gemini")
-    backups = sorted(tmp_path.glob(".env.kame-*.bak"))
-    assert len(backups) == 1
-    assert backups[0].read_bytes().decode("utf-8") == original
-    text = (tmp_path / ".env").read_bytes().decode("utf-8")
-    assert text == f"GOOGLE_API_KEY={K[0]}\n{VAR}={K[3]}\nOTHER=x\n"
+    text = envsync.describe_removal(envsync.remove_all("gemini"))
+    assert (tmp_path / ".env").read_bytes().decode("utf-8") == original
+    assert not list(tmp_path.glob(".env.kame-*.bak"))
+    assert "GOOGLE_API_KEY still holds 3 keys" in text and f"{VAR} still holds 3 keys" in text
 
 
-def test_keep_first_key_refuses_a_name_that_is_not_a_variable(tmp_path):
-    _env(tmp_path, f"{VAR}={','.join(K[:2])}\n")
-    assert envfile.keep_first_key("A B")[0] == "error"
-    assert envfile.keep_first_key("")[0] == "error"
+def test_keys_in_line_reads_only(tmp_path):
+    _env(tmp_path, f"{VAR}={','.join(K[:2])}\nOTHER=1\n")
+    before = (tmp_path / ".env").read_bytes()
+    assert envfile.keys_in_line(VAR) == ("several", 2)
+    assert envfile.keys_in_line("OTHER")[0] == "single"
+    assert envfile.keys_in_line("MISSING")[0] == "absent"
+    assert envfile.keys_in_line("A B")[0] == "error" and envfile.keys_in_line("")[0] == "error"
+    assert (tmp_path / ".env").read_bytes() == before
+    assert not hasattr(envfile, "keep_first_key") and not hasattr(envfile, "backup")
 
 
 # --- D2 ---------------------------------------------------------------------------------------------------

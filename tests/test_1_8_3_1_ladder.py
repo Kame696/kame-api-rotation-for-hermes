@@ -136,7 +136,9 @@ def test_r13_a_models_own_colon_tag_is_not_a_pool_suffix(home):
     write(home, "model:\n  provider: ollama\n  default: llama3\n"
                 "fallback_providers:\n  - provider: ollama\n    model: llama3:70b\n")
     assert not chain_mod._same("ollama:llama3:8b", "ollama:llama3")
-    assert chain_mod.ladder("ollama:llama3:8b") == ["ollama:llama3:8b", "ollama:llama3", "ollama:llama3:70b"]
+    # 1.9.0.6 (Agent Zero issue #1): the local main model (ollama) is not a switch target for a reply that
+    # started elsewhere; were `llama3:8b` taken for `llama3`, the ladder would start with `ollama:llama3`.
+    assert chain_mod.ladder("ollama:llama3:8b") == ["ollama:llama3:8b", "ollama:llama3:70b"]
     assert chain_mod.after("ollama:llama3", "ollama:llama3:8b") == ["ollama:llama3", "ollama:llama3:70b"]
 
 

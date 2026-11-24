@@ -397,8 +397,12 @@ class Pacer:
         now = time.monotonic()
         out = {}
         with self._lock:
+            groups = set(self._groups.values()) | set(self._setting_groups.values())
             for pair in list(self._log.keys()):
                 identity, scope = pair
+                # 1.9.0.6: a key's own window is labelled by its fingerprint. The snapshot lands in state.json;
+                # 1.8.2.3-1.9.0.5 wrote the raw key there. A named quota group is the user's own word and stays.
+                label = scope if scope in groups else (key_labels(scope)[1:2] or ("key:-",))[0]
                 limit = self._rpm.get(pair)
                 if limit is None:
                     limit = getattr(self, "_identity_override_rpm", {}).get(identity)
@@ -409,7 +413,7 @@ class Pacer:
                 if limit is not None and len(log) >= _eff_limit(int(limit)):
                     eff = _eff_limit(int(limit))
                     ready = max(ready, log[-eff] + _WINDOW_S + _SKEW_S)
-                out[f"{identity}|{scope}"] = {
+                out[f"{identity}|{label}"] = {
                     "rpm": limit,
                     "in_window": recent,
                     "next_free_s": round(max(0.0, ready - now), 1),

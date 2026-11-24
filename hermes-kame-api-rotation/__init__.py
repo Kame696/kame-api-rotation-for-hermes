@@ -431,6 +431,26 @@ def _on_post_api_request(
         _count_empty(provider)
 
 
+def _on_turn_start(*, session_id: Any = "", **_ignored: Any) -> None:
+    """1.9.0.6 (decisions/0037 C2): a turn starts - Hermes' count of model switches for it starts at 0, so does
+    KAME's (``core.switch_budget``). Returns ``None``: it must inject no context into the turn."""
+    try:
+        from .core import switch_budget
+
+        switch_budget.turn_started(str(session_id or ""))
+    except Exception:  # pragma: no cover - bookkeeping must never touch a turn
+        logger.debug("%s: could not reset the switch count", PLUGIN_NAME, exc_info=True)
+    try:
+        # 1.9.0.6 (decisions/0037 C19b, C4b): Hermes' agent is loaded by now - the non-stream guard and the quiet
+        # switch notice are put in place before the turn's first call (a no-op once they are).
+        from .facade import _ensure_guards
+
+        _ensure_guards()
+    except Exception:  # pragma: no cover
+        logger.debug("%s: could not check the guards", PLUGIN_NAME, exc_info=True)
+    return None
+
+
 #: The ``ctx`` this namespace registered with, so a second ``register()`` on the
 #: same context is a no-op and one on a new context replaces the old resources
 #: instead of stacking a second heartbeat.
@@ -508,6 +528,13 @@ def register(ctx) -> None:
         ctx.register_hook("post_api_request", _on_post_api_request)
     except Exception:
         logger.debug("%s: post_api_request unavailable", PLUGIN_NAME, exc_info=True)
+    # 1.9.0.6 (decisions/0037 C2): a turn start resets the count of Hermes' model switches. A host without the hook
+    # still works: the count then resets on the first answer only.
+    try:
+        ctx.register_hook("pre_llm_call", _on_turn_start)
+    except Exception:
+        logger.debug("%s: pre_llm_call unavailable - the switch count resets on an answer only", PLUGIN_NAME,
+                     exc_info=True)
     try:
         ctx.register_hook("on_session_reset", _on_session_reset)
     except Exception:
@@ -579,6 +606,29 @@ def register(ctx) -> None:
         except Exception:
             logger.warning("%s: could not register the provider profiles; Hermes keeps its own clients",
                            PLUGIN_NAME, exc_info=True)
+        # 1.9.0.6 (decisions/0037 C19b): a non-streaming call on a KAME client is never cut by Hermes' stale
+        # timer; KAME applies the same budget to each provider request and keeps the reply alive itself.
+        try:
+            from .core import nonstream_guard
+
+            nonstream_guard.install()
+        except Exception:
+            logger.debug("%s: the non-stream guard is unavailable", PLUGIN_NAME, exc_info=True)
+        # 1.9.0.6 (owner's live test): Hermes has room to switch to every model of the list while KAME carries the
+        # reply, whatever agent.api_max_retries says - no setting of the user's is needed.
+        try:
+            from .core import switch_room
+
+            switch_room.install()
+        except Exception:
+            logger.debug("%s: the switch room is unavailable", PLUGIN_NAME, exc_info=True)
+        # 1.9.0.6 (decisions/0037 C4b): no "Model fallback" line in the chat for a switch KAME asked for.
+        try:
+            from .core import fallback_quiet
+
+            fallback_quiet.install()
+        except Exception:
+            logger.debug("%s: the switch notice stays as Hermes shows it", PLUGIN_NAME, exc_info=True)
     except Exception:
         logger.warning("%s: the rotating client is unavailable; refusals are still classified",
                        PLUGIN_NAME, exc_info=True)
@@ -808,6 +858,24 @@ def _cleanup_runtime() -> None:
         facade.retract(_sys.modules[__name__])
     except Exception:  # pragma: no cover - a registry pop
         logger.debug("%s: could not retract the rotating client", PLUGIN_NAME, exc_info=True)
+    try:
+        from .core import nonstream_guard
+
+        nonstream_guard.uninstall()       # 1.9.0.6 (decisions/0037 C19b): Hermes' own budget is back
+    except Exception:  # pragma: no cover
+        logger.debug("%s: could not remove the non-stream guard", PLUGIN_NAME, exc_info=True)
+    try:
+        from .core import switch_room
+
+        switch_room.uninstall()           # 1.9.0.6: Hermes' own switch limit is back
+    except Exception:  # pragma: no cover
+        logger.debug("%s: could not remove the switch room", PLUGIN_NAME, exc_info=True)
+    try:
+        from .core import fallback_quiet
+
+        fallback_quiet.uninstall()        # 1.9.0.6 (decisions/0037 C4b)
+    except Exception:  # pragma: no cover
+        logger.debug("%s: could not restore the switch notice", PLUGIN_NAME, exc_info=True)
     try:
         from . import chat_line
 

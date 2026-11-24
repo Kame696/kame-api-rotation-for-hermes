@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes-kame-api-rotation"))
 
-from core.pacing import Pacer, rpm_from_overrides  # noqa: E402
+from core.pacing import Pacer, key_labels, rpm_from_overrides  # noqa: E402
 
 
 class TestSlidingAdmission(unittest.TestCase):
@@ -139,10 +139,22 @@ class TestSlidingAdmission(unittest.TestCase):
         self.p.note_limit(self.ident, "k1", 10)
         self.stamp_n("k1", 3)
         snap = self.p.snapshot()
-        entry = snap.get(f"{self.ident}|k1")
+        # 1.9.0.6: the row is labelled by the key's fingerprint (the snapshot lands in state.json; this test read
+        # the raw key back until then, which is how a live key sat in that file since 1.8.2.3).
+        entry = snap.get(f"{self.ident}|{key_labels('k1')[1]}")
         self.assertIsNotNone(entry)
         self.assertEqual(entry["rpm"], 10)
         self.assertEqual(entry["in_window"], 3)
+
+    def test_snapshot_never_carries_a_raw_key(self):
+        secret = "AIzaSyFAKE0123456789abcdefghijklmnopq"
+        self.p.note_limit(self.ident, secret, 10)
+        self.stamp_n(secret, 2)
+        self.p.set_group("k9", "team-a")
+        self.stamp_n("k9", 1)
+        snap = self.p.snapshot()
+        self.assertNotIn(secret, repr(snap))
+        self.assertIn(f"{self.ident}|team-a", snap, "a named quota group is the user's own label and stays")
 
 
 class TestRpmOverrides(unittest.TestCase):

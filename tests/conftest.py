@@ -102,6 +102,19 @@ def _speed_singletons_start_empty():
                 clear = getattr(singleton, "clear", None)
                 if callable(clear):
                     clear()
+    # 1.9.0.6: the switch budget (core/switch_budget.py) is one process-wide table; a test that spent a
+    # conversation's switches must not leave the shared key "" spent for the next one.
+    for name, module in list(sys.modules.items()):
+        if module is not None and name.rsplit(".", 1)[-1] in ("switch_budget", "model_missing"):
+            reset = getattr(module, "reset_all", None) or getattr(module, "forget", None)
+            if callable(reset):
+                reset()
+    # 1.9.0.6 (failures/0034): the payload pace remembers refusals per payload, and most tests send the same one.
+    for name, module in list(sys.modules.items()):
+        if module is not None and name.rsplit(".", 1)[-1] == "payload_pace":
+            pace = getattr(module, "PACE", None)
+            if pace is not None and callable(getattr(pace, "clear", None)):
+                pace.clear()
     yield
 
 

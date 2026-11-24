@@ -15,7 +15,7 @@
   "guidance": "host:2",
   "missing": []
  },
- "build_line": "1.9.0.5",
+ "build_line": "1.9.0.6",
  "control": {},
  "counters": {
   "blamed_another_key": 0,
@@ -1918,5 +1918,5 @@
   "soonest_s": null
  },
  "updated_at": 1795381876.1523318,
- "version": "1.9.0.5"
+ "version": "1.9.0.6"
 }

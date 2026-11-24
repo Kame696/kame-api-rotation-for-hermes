@@ -287,13 +287,14 @@ def remove_all(provider: Optional[str] = None) -> List[Dict[str, Any]]:
     """1.9.0.5 (D1): take back everything :func:`sync` put in place, so the plugin can be uninstalled.
 
     For every key variable Hermes declares (or only ``provider``'s): drop the pool rows this module made
-    (source ``manual:kame-env:<VAR>``), lift the suppression of ``env:<VAR>`` and, when the variable in
-    ``.env`` still holds several keys, back ``.env`` up and keep only the first, so Hermes seeds one valid
-    key instead of the whole list as one credential. Rows the user added by hand are never touched.
+    (source ``manual:kame-env:<VAR>``) and lift the suppression of ``env:<VAR>``. When the variable in ``.env``
+    still holds several keys, the reply names the step that leaves Hermes one key (edit the line, or
+    ``hermes config set <VAR> <one key>``): 1.9.0.6 (Hermes catalog review of #159044) never edits a provider's
+    key line or copies ``.env``, which 1.9.0.5 did. Rows the user added by hand are never touched.
 
     Returns one dict per variable that had something to take back: ``provider``, ``var``, ``removed`` (count),
-    ``fingerprints`` (of the removed rows), ``unsuppressed``, ``env`` (``envfile.keep_first_key`` outcome),
-    ``held``, ``kept`` (fingerprint), ``env_backup``, ``auth_backup``. Key material is never in it. Runs even
+    ``fingerprints`` (of the removed rows), ``unsuppressed``, ``env`` (``envfile.keys_in_line`` outcome),
+    ``held``, ``auth_backup``. Key material is never in it. Runs even
     with the resolver switched off (it is the user's explicit request); never raises.
     """
     try:
@@ -314,7 +315,6 @@ def _remove_all(provider: Optional[str]) -> List[Dict[str, Any]]:
     wanted = str(provider or "").strip().lower()
     results: List[Dict[str, Any]] = []
     saved: List[Optional[str]] = []
-    env_saved: List[str] = []  # the one .env backup of this call
     with _lock():
         for name, var, _url in _variables():
             if wanted and name.lower() != wanted:
@@ -333,7 +333,7 @@ def _remove_all(provider: Optional[str]) -> List[Dict[str, Any]]:
                     saved.append(commands._backup_auth_store())
                 row: Dict[str, Any] = {
                     "provider": name, "var": var, "removed": 0, "fingerprints": [], "unsuppressed": False,
-                    "env": "absent", "held": 0, "kept": "", "env_backup": None,
+                    "env": "absent", "held": 0,
                     "auth_backup": saved[0],
                 }
                 for entry in ours:
@@ -343,14 +343,8 @@ def _remove_all(provider: Optional[str]) -> List[Dict[str, Any]]:
                     unsuppress_credential_source(name, env_source)
                     row["unsuppressed"] = True
                 several = len(split_value(_env_value(var))[0])
-                outcome, held, env_backup, kept = envfile.keep_first_key(var, env_saved)
-                row.update(env=outcome, held=held or several, kept=kept, env_backup=env_backup)
-                if outcome == "trimmed":
-                    import os
-
-                    first = split_value(os.environ.get(var, ""))[0]
-                    if first:
-                        os.environ[var] = first[0]
+                outcome, held = envfile.keys_in_line(var)
+                row.update(env=outcome, held=held or several)
                 results.append(row)
             except Exception as exc:
                 logger.warning("kame: could not take back %s: %s", var, type(exc).__name__)
@@ -371,14 +365,15 @@ def describe_removal(results: List[Dict[str, Any]]) -> str:
         prints = ", ".join(row["fingerprints"])
         lines.append(f"{row['provider']}: {row['var']}: {row['removed']} API Rotation row(s) removed"
                      + (f" ({prints})" if prints else "") + (", source un-suppressed" if row["unsuppressed"] else ""))
-        if row["env"] == "trimmed":
-            lines.append(f"  .env: {row['var']} held {row['held']} keys; kept the first ({row['kept']}). "
-                         f"Backup: {row['env_backup']}")
+        if row["env"] == "several":
+            lines.append(f"  .env: {row['var']} still holds {row['held']} keys, and without API Rotation Hermes reads "
+                         f"that list as ONE key. Keep one: edit that line in Hermes' .env, or run "
+                         f"`hermes config set {row['var']} <one of your keys>`. API Rotation does not edit it.")
         elif row["env"] == "absent" and row["held"] > 1:
             lines.append(f"  {row['var']} holds {row['held']} keys outside Hermes' .env (your system environment); "
                          "API Rotation does not edit that. Keep one key there, or Hermes reads the list as one key.")
-        elif row["env"] == "error":
-            lines.append(f"  .env: {row['var']} was not changed (backup or write failed); "
-                         "Hermes may read its list as one key until you edit it.")
+        elif row["env"] == "error" and row["held"] > 1:
+            lines.append(f"  {row['var']} holds {row['held']} keys; keep one of them in Hermes' .env, or Hermes reads "
+                         "the list as one key.")
     lines.append("Keys you added by hand or in Hermes were not touched. API Rotation can now be uninstalled.")
     return "\n".join(lines)
