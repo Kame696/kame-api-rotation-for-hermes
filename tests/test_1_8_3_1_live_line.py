@@ -33,7 +33,7 @@ def test_every_fixture_row_renders_to_its_words(row):
 
 def test_the_table_has_every_state_of_the_plan():
     assert {r["kind"] for r in TABLE["live"]} == {
-        "calling", "retrying", "racing", "standin", "waiting", "stitching", "recovered", "ended"}
+        "calling", "retrying", "racing", "standin", "waiting", "stitching", "recovered"}
 
 
 def test_an_activity_with_the_hermes_field_names_renders_the_same_words():
@@ -60,15 +60,6 @@ def test_the_phase_of_a_calling_activity_picks_the_row():
 def test_a_stitch_with_an_automatic_budget_has_no_count():
     assert state.live_line({"kind": "stitching", "model": "m", "resume": 2, "budget": None}) == \
         "↻ The answer was cut off - continuing it on another key"
-
-
-def test_the_running_time_is_counted_from_started_at_when_there_is_no_elapsed():
-    # 1.9.0.6 (decisions/0037 C21)
-    base = {"kind": "calling", "model": "m", "ready": 3, "keys": 3, "started_at": 1000.0}
-    assert state.live_line(base, now=1023.0) == "⏳ Asking m · 3 of 3 keys ready · 23s"
-    assert state.live_line(base, now=1125.0) == "⏳ Asking m · 3 of 3 keys ready · 2m 05s"
-    assert state.live_line(base) == "⏳ Asking m · 3 of 3 keys ready", "no clock, no suffix"
-    assert state.live_line({"kind": "ended", "reason": "stopped"}, now=1.0) == "✕ no answer - stopped"
 
 
 def test_nothing_to_say_is_an_empty_line():

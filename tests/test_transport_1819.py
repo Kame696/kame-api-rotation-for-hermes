@@ -433,25 +433,6 @@ class TestAToolCallCutOnEveryKey:
         assert t.tool_call_retries == len(KEYS) - 1
 
 
-class TestAToolCallCutOnTheOnlyKey:
-    """1.9.0.6 (decisions/0037 C17): with one key the same key is asked once more before the half call goes back."""
-
-    def test_the_second_stream_answers_and_the_user_gets_the_answer(self, clock):
-        script = Script({KEYS[0]: [[tool("write_file", '{"pa')], [text("done"), finish()]]})
-        t = _transport(clock)
-        out = list(t.stream(FakeCall(script, keys=KEYS[:1])))
-        assert shown(out) == "done"
-        assert not tool_chunks(out)
-        assert t.tool_call_retries == 1 and t.tool_call_cuts == 0
-
-    def test_cut_twice_it_goes_back_as_it_arrived_and_never_loops(self, clock):
-        script = Script({KEYS[0]: [[tool("write_file", '{"pa')], [tool("write_file", '{"pa')], [tool("write_file", '{"pa')]]})
-        t = _transport(clock)
-        out = list(t.stream(FakeCall(script, keys=KEYS[:1])))
-        assert len(tool_chunks(out)) == 1 and t.tool_call_cuts == 1
-        assert len(script.asked) == 2
-
-
 class TestWhatTheJournalIsToldAnswered:
     """``post_api_request`` fed 1.8.1.8's pool binding; the client now says which key answered."""
 

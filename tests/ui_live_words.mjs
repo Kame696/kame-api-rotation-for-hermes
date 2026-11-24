@@ -19,12 +19,7 @@ const table = readFixture()
 
 for (const row of table.live) {
   // the page counts down from the snapshot's clock; here the number in the row is the time left
-  // 1.9.0.6 (C21): the row's running time is `elapsed_s`; the page counts it from `started_at` (checked below)
-  assert.equal(
-    liveLineText(row.activity, row.activity.eta_s ?? null, row.activity.elapsed_s ?? null),
-    row.line,
-    `${row.kind}: ${JSON.stringify(row.activity)}`
-  )
+  assert.equal(liveLineText(row.activity, row.activity.eta_s ?? null), row.line, `${row.kind}: ${JSON.stringify(row.activity)}`)
 }
 
 // the words of the other half, with the field names Hermes publishes
@@ -50,18 +45,6 @@ assert.equal(
 )
 assert.equal(liveLineText({ kind: 'recovered', model: 'm', waited_s: 130 }, null), '↻ m is back after 2m 10s')
 assert.equal(liveLineText({ kind: 'idle' }, null), '')
-// no time known = no suffix (an older snapshot)
-assert.equal(liveLineText({ kind: 'calling', model: 'm', ready: 3, keys: 3 }, null), '⏳ Asking m · 3 of 3 keys ready')
-// the page counts the running time itself from started_at (epoch seconds) and its own clock
-const { activityOf, elapsedOf } = panelHelpers
-assert.equal(elapsedOf({ started_at: 1000 }, 1023000), 23)
-assert.equal(elapsedOf({ elapsed_s: 125 }, 0), 125)
-assert.equal(elapsedOf({}, 0), null)
-// an ended reply shows its line for 10 s, then the line clears; an answered one is gone at once
-const ended = { kind: 'ended', reason: 'every key was refused', ended_at: 5000 }
-assert.deepEqual(activityOf({ activities: { s1: ended } }, 's1', 5009000), ended)
-assert.equal(activityOf({ activities: { s1: ended } }, 's1', 5011000), null)
-assert.equal(activityOf({ activities: {} }, 's1', 5001000), null)
 assert.equal(liveLineText(null, null), '')
 
 // durations: the same table the Python side checks

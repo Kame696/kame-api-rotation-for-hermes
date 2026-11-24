@@ -179,7 +179,6 @@ def test_two_busy_keys_stop_a_background_job(fresh):
 
 
 def test_a_dry_key_stops_a_cosmetic_job_but_not_an_important_one(fresh):
-    fresh._note_busy("gemini:gemini-3.7-flash")     # 1.9.0.6 (C18): with a free sibling the title moves
     dry = Refusal(429, "Rate limit exceeded. Please retry after 20 seconds.")
     plan = Plan([dry], fresh.clock)
     with pytest.raises(transport.KameAuxTimeout):
@@ -201,7 +200,6 @@ def test_the_request_count_is_the_limit(fresh):
 
 # --- refusing to start: zero requests --------------------------------------------------------------
 def test_cosmetic_never_waits_on_resting_keys(fresh):
-    fresh._note_busy("gemini:gemini-3.7-flash")     # 1.9.0.6 (C18): with a free sibling the title moves
     rest_all(fresh, 3600.0, "daily")
     plan = Plan(["never"], fresh.clock)
     before = fresh.clock.now
@@ -220,7 +218,6 @@ def test_cosmetic_refuses_inside_a_busy_window(fresh):
 
 
 def test_cosmetic_refuses_under_quota_pressure(fresh):
-    fresh._note_busy("gemini:gemini-3.7-flash")     # 1.9.0.6 (C18): with a free sibling the title moves
     for key in KEYS[:8]:
         fresh.engine.mark(IDENTITY, key, False, 3600.0, "daily")
     plan = Plan(["never"], fresh.clock)

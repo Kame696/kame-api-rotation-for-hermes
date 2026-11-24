@@ -178,7 +178,7 @@ def test_inside_the_busy_window_the_next_reply_is_handed_over_without_a_request(
     with pytest.raises(transport.KamePoolResting) as caught:
         with_chain.complete(FakeCall(plan))
     assert plan.asked == []
-    assert "slow a moment ago" in str(caught.value)      # 1.9.0.6 (decisions/0037 C4): the short text
+    assert "busy" in str(caught.value)
 
 
 def test_after_the_busy_window_one_knock_is_enough(with_chain):

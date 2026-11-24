@@ -28,16 +28,6 @@ aux_budget = __import__(f"{B.PACKAGE}.core.aux_budget", fromlist=["x"])
 SECOND_MODEL = "gemini:gemini-3.7-flash"
 
 
-@pytest.fixture(autouse=True)
-def _no_sibling(fresh, tmp_path):
-    """1.9.0.6 (C18): a title with a free sibling is answered by it; these tests pin the stop's shape, so the
-    list has one model."""
-    (tmp_path / "config.yaml").write_text(
-        "model:\n  provider: gemini\n  default: gemini-3.8-flash\n", encoding="utf-8")
-    B.settings.forget()
-    B.chain_mod.forget()
-
-
 def stop_once(t, task_call, plan):
     with pytest.raises((transport.KameAuxTimeout, transport.KameAuxStopped)) as caught:
         t.complete(task_call(plan))

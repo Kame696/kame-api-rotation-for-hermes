@@ -102,13 +102,6 @@ def _speed_singletons_start_empty():
                 clear = getattr(singleton, "clear", None)
                 if callable(clear):
                     clear()
-    # 1.9.0.6: the switch budget (core/switch_budget.py) is one process-wide table; a test that spent a
-    # conversation's switches must not leave the shared key "" spent for the next one.
-    for name, module in list(sys.modules.items()):
-        if module is not None and name.rsplit(".", 1)[-1] in ("switch_budget", "model_missing"):
-            reset = getattr(module, "reset_all", None) or getattr(module, "forget", None)
-            if callable(reset):
-                reset()
     yield
 
 

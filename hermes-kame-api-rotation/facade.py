@@ -355,34 +355,6 @@ class _FacadeCall(Call):
         return self._client._kame_is_cancelled()
 
 
-#: Late-install attempts made by :func:`_ensure_guards` (3 = settled: installed, or the host has no such seam).
-_GUARD_TRIES = [0]
-
-
-def _ensure_guards() -> None:
-    """1.9.0.6 (decisions/0037 C19b, C4b): if ``register`` ran before Hermes' agent modules could be imported, the
-    non-stream guard and the quiet switch notice are put in place on the first call instead (idempotent: two dict
-    lookups once installed). Never raises."""
-    if _GUARD_TRIES[0] >= 3:        # a host without these seams is asked three times, not on every call
-        return
-    try:
-        import sys
-
-        if "run_agent" not in sys.modules:
-            return                  # Hermes' agent is not loaded yet: nothing to wrap, nothing to count
-        from .core import fallback_quiet, nonstream_guard
-
-        missing = False
-        if nonstream_guard._STATE.get("cls") is None:
-            missing = not nonstream_guard.install() or missing
-        if fallback_quiet._STATE.get("module") is None:
-            missing = not fallback_quiet.install() or missing
-        _GUARD_TRIES[0] = _GUARD_TRIES[0] + 1 if missing else 3
-    except Exception:  # pragma: no cover - a guard must never cost a call
-        _GUARD_TRIES[0] += 1
-        logger.debug("kame: the guards could not be installed late", exc_info=True)
-
-
 class _KameMixin:
     """Shared by both client shapes: key source, inner clients, cancellation."""
 
@@ -421,7 +393,6 @@ class _KameMixin:
 
     def _kame_create(self, **kwargs: Any) -> Any:
         call = _FacadeCall(self, kwargs)
-        _ensure_guards()
         if kwargs.get("stream"):
             return TRANSPORT.stream(call)
         return TRANSPORT.complete(call)

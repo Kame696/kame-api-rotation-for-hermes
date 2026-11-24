@@ -144,8 +144,6 @@ _KIND_TO_FAMILY: Dict[str, str] = {
     "upstream_error": "upstream",
     "model_not_ready": "model_not_ready",
     "auth_refresh": "auth_refresh",
-    # 1.9.0.6 (decisions/0037 C13): a 404 naming the MODEL is a request fault the plugin also remembers.
-    "model_missing": "request_fault",
 }
 
 

@@ -298,28 +298,18 @@ def _fallback_view(rows: List[Dict[str, Any]], binding: Any = None) -> Dict[str,
                                 "model below at once; when your keys are resting, after a few seconds (API Rotation learns "
                                 "how long your model usually takes). Your model comes back as soon as it can answer, "
                                 "and the first model in the list is always tried first.")
-        # 1.8.2.7: Hermes switches at most agent.api_max_retries times in one message (default 3).
-        # 1.9.0.6 (decisions/0037 C5): KAME never spends the last switch and answers with the models of the same
-        # provider itself, so the reply is no longer ended; what the limit still costs is the number of PROVIDER
-        # hops one answer can reach. Warn only when the list has more provider hops than switches KAME may spend.
+        # 1.8.2.7: Hermes switches at most agent.api_max_retries times in one
+        # message (default 3); past that the turn ends with "No reply".
         limit = fallback_chain.switch_limit()
         warning = ""
-        if chain and state == "on":
-            order = ([primary] if primary else []) + list(chain)
-            providers = [str(e).split(":", 1)[0] for e in order]
-            hops = sum(1 for a, b in zip(providers, providers[1:]) if a != b)
-            if hops > max(limit - 1, 0):
-                left = max(limit - 1, 0)
-                nth = f"{left}{'th' if 10 <= left % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(left % 10, 'th')}"
-                warning = (f"Hermes switches model at most {limit} times per answer. KAME keeps every answer alive and "
-                           f"answers with the models of the same provider itself; models on other providers past the "
-                           f"{nth} switch wait for the next answer. To reach all of them in one answer, set "
-                           f"agent.api_max_retries: {len(chain) + 1} in Hermes' config.yaml (Hermes also retries an "
-                           f"ordinary error that many times).")
-        # 1.9.0.6 (decisions/0037 C13): one line per model of the list the provider does not know
-        missing = [row["line"] for row in _missing_models()]
+        if chain and state == "on" and len(chain) > limit:
+            warning = (f"Hermes switches model at most {limit} times in one message, and your list has "
+                       f"{len(chain)} fallback models: when the first {limit} are all out, the rest are "
+                       f"never reached and the message ends with no reply. Set agent.api_max_retries: "
+                       f"{len(chain) + 1} in Hermes' config.yaml to reach all of them. That number is also how "
+                       f"many times Hermes retries an ordinary error, so raising it makes a failing call try longer.")
         return {"state": state, "why": why, "threshold_s": threshold, "entries": entries,
-                "switch_limit": limit, "warning": warning, "missing": missing}
+                "switch_limit": limit, "warning": warning}
     except Exception:
         logger.debug("kame: could not build the fallback view", exc_info=True)
         return {"state": "unknown", "why": "", "threshold_s": 0, "entries": []}
@@ -554,8 +544,6 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # 1.8.2.7: calls handed to Hermes' fallback list, and dry pools probed
         # several keys at once (decisions/0025, 0027).
         "handed_over": int(getattr(binding, "handed_over", 0) or 0),
-        # 1.9.0.6 (decisions/0037 C2): hand-overs KAME held back because Hermes' switches were spent
-        "budget_held": int(getattr(binding, "budget_held", 0) or 0),
         "probe_bursts": int(getattr(binding, "probe_bursts", 0) or 0),
         "waits": int(getattr(binding, "waits", 0) or 0),
         "waited_s": float(getattr(binding, "waited_s", 0.0) or 0.0),
@@ -622,13 +610,6 @@ def snapshot(binding: Any = None, activity: Optional[Dict[str, Any]] = None) -> 
         # this to say "on key 3" while a turn is running and fall back to plain
         # health when nothing is in flight.
         "activity": activity,
-        # 1.9.0.6 (decisions/0037 C11): the latest activity of EACH conversation (at most 32), keyed by the session
-        # id the transport reads (``core.switch_budget.conversation_key``: Hermes' stored session id, the one the
-        # desktop calls ``focusedStoredSessionId``). The chip and the composer line read the open chat's entry only,
-        # never another chat's. ``activity`` stays the latest of all, for older readers.
-        "activities": _activities_view(),
-        # 1.9.0.6 (decisions/0037 C13): models of the user's list the provider does not know.
-        "missing_models": _missing_models(),
         # 1.8.1.9. Whether Hermes draws KAME's status line on its own spinner
         # (``notify_turn_status``). When it does, the panel's composer line
         # stays empty, so the Desktop shows the one line 1.8.1.8 showed.
@@ -942,12 +923,8 @@ def _first(activity: Dict[str, Any], *names: str) -> Any:
     return None
 
 
-def live_line(activity: Any, now: Optional[float] = None) -> str:
+def live_line(activity: Any) -> str:
     """The one live sentence for an activity, in the words of ``tests/fixtures/live_words_1831.json``.
-
-    1.9.0.6 (decisions/0037 C21): every in-flight state ends with the reply's running time, `` · 23s`` / `` · 2m 05s``
-    (``elapsed_s`` when the activity carries it, else ``now - started_at``; nothing when neither is known), and
-    ``ended`` is ``✕ no answer - <reason>`` with no time.
 
     1.8.3.1 (PLAN_1.8.3.1 D2). Seven states, icons included: calling, retrying (a key was refused, or
     some keys rest), racing (a backup key asks beside the first), standin (a ladder model answers for the
@@ -959,22 +936,6 @@ def live_line(activity: Any, now: Optional[float] = None) -> str:
     if not isinstance(activity, dict):
         return ""
     kind = str(activity.get("phase") or activity.get("kind") or "")
-    if kind == "ended":
-        reason = str(activity.get("reason") or "").strip()
-        return f"✕ no answer - {reason}" if reason else "✕ no answer"
-    text = _live_words(activity, kind)
-    if not text:
-        return ""
-    elapsed = activity.get("elapsed_s")
-    if elapsed is None and now is not None and activity.get("started_at") is not None:
-        try:
-            elapsed = max(0.0, float(now) - float(activity["started_at"]))
-        except (TypeError, ValueError):
-            elapsed = None
-    return text if elapsed is None else f"{text} · {live_duration(elapsed)}"
-
-
-def _live_words(activity: Dict[str, Any], kind: str) -> str:
     model = str(activity.get("model") or "")
     ready = _first(activity, "ready", "healthy")
     keys = activity.get("keys")
@@ -1244,11 +1205,6 @@ _wake = threading.Event()
 _pending_lock = threading.Lock()
 _pending: Optional[Tuple[Any, Optional[Dict[str, Any]]]] = None
 _current_activity: Optional[Dict[str, Any]] = None
-#: 1.9.0.6 (decisions/0037 C11): conversation id -> its latest activity, oldest first, at most ``MAX_ACTIVITIES``.
-_activities: "Dict[str, Dict[str, Any]]" = {}
-MAX_ACTIVITIES = 32
-#: 1.9.0.6 (decisions/0037 C21): conversation id -> when its reply began (epoch seconds), for the running time.
-_started: "Dict[str, float]" = {}
 _consumers = 0
 _in_flight = False
 
@@ -1274,8 +1230,6 @@ def request_publish(binding: Any = None, *, activity: Optional[Dict[str, Any]] =
     the heartbeat keeps the last activity for its own periodic writes so the panel's
     'Right now' line does not fall back to idle every few seconds during a long call."""
     global _pending, _current_activity
-    activity = _stamped(activity)
-    _note_activity(activity)
     with _pending_lock:
         if _consumers > 0:
             _pending = (binding, activity)
@@ -1287,89 +1241,6 @@ def request_publish(binding: Any = None, *, activity: Optional[Dict[str, Any]] =
         _wake.set()
     else:
         publish(binding, activity=activity)
-
-
-def note_reply_start() -> None:
-    """1.9.0.6 (decisions/0037 C21): a main-channel reply of this conversation begins; its running time counts from now."""
-    try:
-        from .core import switch_budget
-
-        sid = switch_budget.conversation_key()
-        with _pending_lock:
-            _started[sid] = time.time()
-            while len(_started) > 4 * MAX_ACTIVITIES:
-                _started.pop(next(iter(_started)), None)
-    except Exception:  # pragma: no cover - a readout must never cost a reply
-        logger.debug("kame: could not note the start of a reply", exc_info=True)
-
-
-def note_reply_end(reason: str = "") -> None:
-    """1.9.0.6 (decisions/0037 C21): this conversation's reply is over. An answer (no ``reason``) clears its line at
-    once; a reply that ended WITHOUT an answer publishes ``ended`` (the page shows ``✕ no answer - <reason>`` for ten
-    seconds, then clears it). Never raises."""
-    try:
-        from .core import switch_budget
-
-        sid = switch_budget.conversation_key()
-        with _pending_lock:
-            _started.pop(sid, None)
-        if reason:
-            request_publish(None, activity={"kind": "ended", "reason": str(reason)[:80], "ended_at": time.time()})
-        else:
-            _note_activity(None)
-    except Exception:  # pragma: no cover - a readout must never cost a reply
-        logger.debug("kame: could not note the end of a reply", exc_info=True)
-
-
-def _stamped(activity: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The activity with the reply's ``started_at`` (a copy; never raises)."""
-    try:
-        if not isinstance(activity, dict) or activity.get("kind") == "ended" or "started_at" in activity:
-            return activity
-        from .core import switch_budget
-
-        with _pending_lock:
-            began = _started.get(switch_budget.conversation_key())
-        return dict(activity, started_at=began) if began is not None else activity
-    except Exception:  # pragma: no cover
-        return activity
-
-
-def _note_activity(activity: Optional[Dict[str, Any]]) -> None:
-    """Keep the latest activity of this conversation (C11). ``None`` = this conversation's call ended. Never raises."""
-    try:
-        from .core import switch_budget
-
-        sid = switch_budget.conversation_key()
-        if not sid:
-            return
-        with _pending_lock:
-            if activity is None:
-                _activities.pop(sid, None)
-                return
-            _activities.pop(sid, None)
-            _activities[sid] = dict(activity)
-            while len(_activities) > MAX_ACTIVITIES:
-                _activities.pop(next(iter(_activities)), None)
-    except Exception:  # pragma: no cover - a readout must never cost a reply
-        logger.debug("kame: could not note the conversation's activity", exc_info=True)
-
-
-def _missing_models() -> List[Dict[str, Any]]:
-    try:
-        from .core import model_missing
-
-        return model_missing.entries()
-    except Exception:  # pragma: no cover
-        return []
-
-
-def _activities_view() -> Dict[str, Dict[str, Any]]:
-    try:
-        with _pending_lock:
-            return {sid: dict(a) for sid, a in _activities.items()}
-    except Exception:  # pragma: no cover
-        return {}
 
 
 def take_pending() -> Optional[Tuple[Any, Optional[Dict[str, Any]]]]:

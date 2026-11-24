@@ -55,9 +55,6 @@ MODELS = [f"{p}:gemini-3.{n}-flash" for p, n in zip(PROVIDERS, (8, 7, 6, 5, 4))]
 KEYS = {m: [f"AIzaSy{m[-9:-6]}{i:02d}" + "0" * 24 for i in range(14)] for m in MODELS}
 CONFIG = (f"model:\n  provider: {PROVIDERS[0]}\n  default: gemini-3.8-flash\nfallback_providers:\n" + "".join(
     f"  - provider: {m.split(':', 1)[0]}\n    model: {m.split(':', 1)[1]}\n" for m in MODELS[1:]))
-# 1.9.0.6 (decisions/0037 C2): KAME never spends Hermes' last switch (limit 3 -> two hand-overs per answer). This
-# simulation walks three hops, so its Hermes is configured for them, as a user with a long mixed list would.
-CONFIG += "agent:\n  api_max_retries: 5\n"
 
 
 def answer(text):

@@ -320,9 +320,6 @@ def trouble_lines(snapshot: Dict[str, Any], kinds: Sequence[Any]) -> List[str]:
                 f"{getattr(stat, 'blocks')} × {getattr(stat, 'kind')} — no timer fixes this one."
             )
 
-    for row in snapshot.get("missing_models") or []:
-        trouble.append(f"  {row.get('line') or row.get('model')}.")      # 1.9.0.6 (decisions/0037 C13)
-
     build = snapshot.get("build") or {}
     if not build.get("complete", True):
         trouble.append("  This install is missing files it was packaged with.")

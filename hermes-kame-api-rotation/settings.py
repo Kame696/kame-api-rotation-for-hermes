@@ -978,13 +978,10 @@ CRON_TOTAL_WAIT_DEFAULT_S = 300.0
 
 
 def _in_cron_session() -> bool:
-    """Is THIS task a cron job? 1.9.0.6 (decisions/0037 C16): the task-local ContextVar only. ``get_session_env`` fell
-    back to ``os.environ``, where a cron job running beside a chat leaves ``HERMES_CRON_SESSION`` for the whole
-    process: the chat would then be capped at 300 s."""
     try:
-        from .core import session_key
+        from gateway.session_context import get_session_env
 
-        return session_key.bound("HERMES_CRON_SESSION").lower() in ("1", "true", "yes", "on")
+        return get_session_env("HERMES_CRON_SESSION", "").strip().lower() in ("1", "true", "yes", "on")
     except Exception:
         return False
 

@@ -195,8 +195,8 @@ class TestSurfaces:
         ctx = attach(FakeCtx("telegram"))
         call = make_call()
         chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 20})
-        chat_line.note(call, "recovery", "answered on attempt 2", {"identity": "gemini:m", "seconds": 21})
+        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 8})
+        chat_line.note(call, "recovery", "answered on attempt 2", {"identity": "gemini:m", "seconds": 9})
         line.flush()
         assert ctx.said == []
 
@@ -205,21 +205,21 @@ class TestSurfaces:
         for name in ("client:1", "client:2"):
             call = make_call(name)
             chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-            chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 70})
+            chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 45})
             chat_line.flush()
             chat_line.note_status(name, "⏳ waiting on a key to come back — API Rotation 0/3 keys ready, next key in 00:44")
-            chat_line.note(call, "recovery", "answered on attempt 2", {"identity": "gemini:m", "key": "k2", "seconds": 72})
+            chat_line.note(call, "recovery", "answered on attempt 2", {"identity": "gemini:m", "key": "k2", "seconds": 46})
             line.flush()
         assert len(ctx.posts) == 2, ctx.posts
         assert ctx.posts[0].startswith("⏳ Every key of m is resting")
-        assert ctx.edits[-1] == "✓ KAME: answered after 72 s"
+        assert ctx.edits[-1].startswith("✓ answered by m in 46.0 s")
 
     def test_messaging_ignores_status_ticks_and_edits_only_on_events(self, line, monkeypatch):
         monkeypatch.setattr(chat_line, "MESSAGING_EDIT_EVERY_S", 5.0)
         ctx = attach(FakeCtx("telegram"))
         call = make_call()
         chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 70})
+        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 45})
         line.flush()
         for i in range(10):
             chat_line.note_status(call.status_owner(), f"tick {i}")
@@ -231,41 +231,17 @@ class TestSurfaces:
         ctx = attach(FakeCtx("telegram"))
         call = make_call()
         chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 70})
+        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 45})
         line.flush()
         started = time.monotonic()
         chat_line.note(call, "wait", "again", {"identity": "gemini:m", "seconds": 40})   # throttled
         chat_line.note(call, "wait", "again", {"identity": "gemini:m", "seconds": 30})   # replaces it
         time.sleep(0.1)
         assert ctx.edits == []
-        chat_line.note(call, "recovery", "answered", {"identity": "gemini:m", "key": "k2", "seconds": 72})
+        chat_line.note(call, "recovery", "answered", {"identity": "gemini:m", "key": "k2", "seconds": 46})
         line.flush()
         assert time.monotonic() - started < 0.45, "the final edit must not wait for the throttle"
-        assert len(ctx.edits) == 1 and ctx.edits[0].startswith("✓ KAME: answered after")
-
-    def test_a_twenty_second_wait_posts_nothing_and_a_seventy_second_wait_posts_once_and_ends_short(self, line):
-        # 1.9.0.6 (decisions/0037 C20)
-        ctx = attach(FakeCtx("telegram"))
-        short, long_ = make_call("client:1"), make_call("client:2")
-        for call, wait, took in ((short, 20, 21), (long_, 70, 72)):
-            chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-            chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": wait})
-            chat_line.flush()
-            chat_line.note(call, "recovery", "answered", {"identity": "gemini:m", "key": "k2", "seconds": took})
-            line.flush()
-        assert len(ctx.posts) == 1, ctx.posts
-        assert ctx.edits == ["✓ KAME: answered after 72 s"], ctx.edits
-        assert "keys tried" not in ctx.edits[-1]
-
-    def test_a_failure_on_a_messaging_surface_keeps_its_text(self, line):
-        ctx = attach(FakeCtx("telegram"))
-        call = make_call()
-        chat_line.note(call, "sent", "", {"identity": "gemini:m", "key": "k1"})
-        chat_line.note(call, "wait", "every key resting", {"identity": "gemini:m", "seconds": 70})
-        chat_line.flush()
-        chat_line.note(call, "gave_up", "every key was refused", {"identity": "gemini:m"})
-        line.flush()
-        assert ctx.edits[-1] == "✕ no answer: every key was refused"
+        assert len(ctx.edits) == 1 and ctx.edits[0].startswith("✓ answered by m")
 
     def test_messaging_throttle_is_at_least_twenty_seconds_by_default(self, line):
         assert chat_line.MESSAGING_EDIT_EVERY_S >= 20.0 and chat_line.EDIT_EVERY_S <= 1.5
